@@ -53,6 +53,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // ExecConfig describes a command to be run inside an existing container.
@@ -151,14 +153,9 @@ func ExecInit(containerPID int, rootfs string, command []string, debug bool) err
 		// setns(fd, nstype) — attaches the current thread to the namespace.
 		// nstype is a CLONE_NEW* flag that validates the fd's type.
 		// Using 0 as nstype would work too but the flag makes the code explicit.
-		if _, _, errno := syscall.RawSyscall(
-			syscall.SYS_SETNS,
-			fd.Fd(),
-			ns.flag,
-			0,
-		); errno != 0 {
+		if err := unix.Setns(int(fd.Fd()), int(ns.flag)); err != nil {
 			fd.Close()
-			return fmt.Errorf("setns(%s): %w", ns.name, errno)
+			return fmt.Errorf("setns(%s): %w", ns.name, err)
 		}
 		fd.Close()
 
