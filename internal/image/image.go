@@ -1,0 +1,195 @@
+// internal/image/image.go
+//
+// Container Image Unpacking
+// ──────────────────────────
+// A container image is, at its core, a layered tar archive.  OCI images
+// consist of one or more "layers" (each a tar.gz) stacked via overlayfs.
+// For this educational runtime we support a single-layer rootfs: either
+// a plain .tar or a .tar.gz archive, as produced by:
+//
+//   • Alpine Linux minirootfs downloads  (alpine-minirootfs-*.tar.gz)
+//   • Docker export:  docker export <cid> > rootfs.tar
+//   • docker save + manual layer extraction
+//
+// Security note
+// ─────────────
+// Tar archives can contain path components like "../../../etc/passwd" that
+// would escape the destination directory (a "zip-slip" / tar-slip attack).
+// safePath() rejects any entry whose resolved path falls outside destDir.
+//
+// Entry types handled
+// ───────────────────
+//   TypeReg      regular file
+//   TypeDir      directory
+//   TypeSymlink  symbolic link (linkname is stored in the archive header)
+//   TypeLink     hard link     (linkname points to another archive entry)
+//   TypeChar     character device node (Linux only, requires root)
+//   TypeBlock    block device node     (Linux only, requires root)
+//   TypeFifo     named pipe            (Linux only)
+
+package image
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+)
+
+// Unpack extracts a tar or tar.gz archive to destDir, creating destDir if
+// needed.  It prints a summary line on completion.
+func Unpack(tarPath, destDir string) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tarPath, err)
+	}
+	defer f.Close()
+
+	// Wrap with a gzip reader for .gz / .tgz files.
+	var reader io.Reader = f
+	lower := strings.ToLower(tarPath)
+	if strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz") {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("gzip: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
+	destDir = filepath.Clean(destDir)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+
+	tr := tar.NewReader(reader)
+	var extracted int
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("reading tar entry: %w", err)
+		}
+
+		target, err := safePath(destDir, hdr.Name)
+		if err != nil {
+			return err
+		}
+
+		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
+			return err
+		}
+		extracted++
+	}
+
+	fmt.Printf("Extracted %d entries → %s\n", extracted, destDir)
+	return nil
+}
+
+// applyTarEntry writes a single tar entry to the filesystem under destDir.
+// It is shared by Unpack (plain tar) and applyLayer (OCI image layers).
+// Device-node and FIFO entries that cannot be created are skipped silently.
+func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) error {
+	switch hdr.Typeflag {
+	case tar.TypeDir:
+		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
+
+	case tar.TypeReg, tar.TypeRegA:
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		return writeRegular(target, hdr, r)
+
+	case tar.TypeSymlink:
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		_ = os.Remove(target)
+		if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("symlink %s → %s: %w", target, hdr.Linkname, err)
+		}
+
+	case tar.TypeLink:
+		linkTarget, err := safePath(destDir, hdr.Linkname)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		_ = os.Remove(target)
+		if err := os.Link(linkTarget, target); err != nil {
+			return fmt.Errorf("hardlink %s → %s: %w", target, linkTarget, err)
+		}
+
+	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+		if err := makeSpecial(target, hdr); err != nil {
+			if !strings.Contains(err.Error(), "not supported") {
+				fmt.Fprintf(os.Stderr, "warning: mknod %s: %v\n", target, err)
+			}
+		}
+	}
+	return nil
+}
+
+// writeRegular creates or truncates target and copies the tar entry into it.
+func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+	if err != nil {
+		return fmt.Errorf("create %s: %w", target, err)
+	}
+	if _, err := io.Copy(out, r); err != nil {
+		out.Close()
+		return fmt.Errorf("write %s: %w", target, err)
+	}
+	return out.Close()
+}
+
+// safePath joins base and name, and returns an error if the result escapes base.
+// This prevents tar-slip (directory traversal) attacks.
+func safePath(base, name string) (string, error) {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return "", fmt.Errorf("resolve destination %q: %w", base, err)
+	}
+
+	// Tar paths are slash-separated regardless of host OS. Treat backslashes
+	// as separators too so Windows-style traversal is rejected everywhere.
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	if strings.HasPrefix(normalized, "/") {
+		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
+	}
+	trimmed := strings.TrimLeft(normalized, "/")
+	if hasWindowsDrivePrefix(trimmed) {
+		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
+	}
+	for _, part := range strings.Split(normalized, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
+		}
+	}
+
+	cleaned := strings.TrimPrefix(path.Clean("/"+normalized), "/")
+	if cleaned == "." {
+		cleaned = ""
+	}
+
+	target := filepath.Join(baseAbs, filepath.FromSlash(cleaned))
+	rel, err := filepath.Rel(baseAbs, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
+	}
+	return target, nil
+}
+
+func hasWindowsDrivePrefix(name string) bool {
+	return len(name) >= 2 && name[1] == ':' &&
+		((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z'))
+}

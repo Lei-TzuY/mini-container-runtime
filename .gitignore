@@ -1,0 +1,7 @@
+/minictl
+/bin/
+/build/
+/rootfs/
+coverage.out
+*.tar
+*.tar.gz
