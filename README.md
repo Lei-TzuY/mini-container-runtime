@@ -52,6 +52,182 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Custom Prefix**  | Log Line Tag Prepend  | Prepends custom identifier prefix string to each log line (`minictl logs --prefix`). |
+| **Image Volumes Extractor**| Declared Volumes Auditor| Inspects `config.Volumes` mount point declarations from Image Config JSON. |
+| **Swap Failcnt Counter**| Cgroup v2 `memory.swap.events`| Reads exact count of swap memory exhaustion encounters (`failcnt N`). |
+| **DNS NoReload Timeout**| `/etc/resolv.conf` Driver| Combines `options no-reload` and `options timeout:N` into formatted lines. |
+| **Log Max Bytes**      | Byte Payload Limiter  | Truncates log payload at maximum byte threshold with indicator (`minictl logs --max-bytes`). |
+| **Image Shell Auditor**| Default Shell Auditor | Inspects default execution shell (`config.Shell`) from Image Config JSON. |
+| **Swap Max Counter**   | Cgroup v2 `memory.swap.events`| Reads exact count of swap hard limit enforcement events (`max N`). |
+| **DNS NoCheck Timeout**| `/etc/resolv.conf` Driver| Combines `options no-check-names` and `options timeout:N` into formatted lines. |
+| **Log Invert Grep**    | Inverted Pattern Filter| Filters and displays log lines that do NOT match specified pattern (`minictl logs --invert-grep`). |
+| **Image Labels Auditor**| Metadata Labels Auditor| Inspects and filters container runtime label metadata from Image Config JSON. |
+| **Swap High Counter**  | Cgroup v2 `memory.swap.events`| Reads exact count of swap soft limit throttle events (`high N`). |
+| **DNS EDNS0 Timeout**  | `/etc/resolv.conf` Driver| Combines `options edns0` and `options timeout:N` into formatted lines. |
+| **Log Grep Counter**   | Match Counter         | Counts regex pattern match occurrences across log lines (`minictl logs --grep-count`). |
+| **Config Digest Calculator**| Image ID Calculator  | Computes SHA256 canonical digest hash of Image Config JSON. |
+| **Local Memory Min Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup hard eviction protections (`min N`). |
+| **DNS Inet6 Timeout**  | `/etc/resolv.conf` Driver| Combines `options inet6` and `options timeout:N` into formatted lines. |
+| **Log Index Slice Extractor**| Log Range Filter    | Returns a slice range of log lines from index A to index B (`minictl logs --slice`). |
+| **ContainerConfig Auditor**| Build Container Auditor| Inspects `container_config` metadata struct from Image Config JSON. |
+| **Local Memory Low Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup reclaim protections (`low N`). |
+| **DNS SingleReq Timeout**| `/etc/resolv.conf` Driver| Combines `options single-request-reopen` and `options timeout:N` flags. |
+| **Log Head Truncator** | Log Head Filter       | Outputs only the first N lines of container stdio logs (`minictl logs --head`). |
+| **RootFS DiffIDs Extractor**| Layer DiffID Auditor | Extracts all layer diffIDs from `rootfs.diff_ids` array in Image Config JSON. |
+| **Local Memory High Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup soft limit throttles (`high N`). |
+| **DNS Rotate Timeout** | `/etc/resolv.conf` Driver| Combines both `options rotate` and `options timeout:N` into formatted lines. |
+| **Log Deduplicator**   | Line Repeat Summarizer| Merges consecutive identical log output lines (`minictl logs --dedup`). |
+| **OnBuild Inspector**  | Base Image Trigger    | Inspects `OnBuild` trigger instructions from Image Config JSON. |
+| **Local OOM Counter**  | Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup OOM encounters (`oom N`). |
+| **DNS Attempt Timeout**| `/etc/resolv.conf` Driver| Combines both `options attempts:N` and `options timeout:N` into formatted lines. |
+| **Log Rate Limiter**   | Emission Throttler    | Limits maximum log lines output per second (`minictl logs --rate-limit`). |
+| **Healthcheck Inspector**| Healthcheck Auditor | Inspects embedded Dockerfile `HEALTHCHECK` parameters from Image Config JSON. |
+| **Local OOM Kill Counter**| Cgroup v2 `memory.events.local`| Reads exact count of non-hierarchical cgroup OOM kills (`oom_kill N`). |
+| **DNS Debug Option**   | `/etc/resolv.conf` Driver| Injects `options debug` resolver flags into container `/etc/resolv.conf`. |
+| **Log Multiline Aggregator**| Stack Trace Aggregator| Merges indented Java/Python exception stack traces into single events (`minictl logs --multiline`). |
+| **Stop Signal Inspector**| Graceful Shutdown Auditor| Inspects `stopSignal` (`SIGTERM`, `SIGQUIT`) from Image Config JSON. |
+| **Memory Min Counter** | Cgroup v2 `memory.events`| Reads exact count of hard memory page eviction protection events (`min N`). |
+| **DNS ndots Option**    | `/etc/resolv.conf` Driver| Injects `options ndots:N` search threshold flags into container. |
+| **Log Mask Filter**    | Credential Redactor   | Masks sensitive tokens, API keys, and passwords with `[REDACTED]` (`minictl logs --mask`). |
+| **Image User Inspector**| User ID Auditor       | Inspects default execution user UID/GID (`root`, `1000:1000`) from image config. |
+| **Memory Low Counter** | Cgroup v2 `memory.events`| Reads exact count of soft memory reclaim protection events (`low N`). |
+| **DNS EDNS0 Payload**  | `/etc/resolv.conf` Driver| Injects `options edns0-payload:N` custom UDP payload size limits. |
+| **Log ANSI Cleaner**   | Terminal ANSI Stripper | Strips ANSI escape color code sequences from log output (`minictl logs --ansi-clean`). |
+| **OS Features Inspector**| OS Feature Auditor   | Inspects `os.features` array from Image Config JSON for feature flags. |
+| **Memory High Counter**| Cgroup v2 `memory.events`| Reads exact count of soft memory limit throttle events (`high N`). |
+| **DNS UseVC Fallback**  | `/etc/resolv.conf` Driver| Injects `options use-vc` TCP Virtual Circuit fallback flags. |
+| **Syslog RFC5424 Formatter**| Syslog Standard Logger| Formats log lines into Syslog RFC5424 compliant string format (`minictl logs --syslog-fmt`). |
+| **OS Version Inspector**| Kernel Version Auditor| Inspects `os.version` string from Image Config JSON for OS sub-version validation. |
+| **Memory OOM Counter** | Cgroup v2 `memory.events`| Reads exact count of OOM condition encounters (`oom N`). |
+| **DNS NoReload Option** | `/etc/resolv.conf` Driver| Injects `options no-reload` dynamic resolv.conf dynamic file watching disable flags. |
+| **Log JSON Formatter**  | Structured JSON Logger| Encapsulates log lines into structured JSON objects (`minictl logs --json`). |
+| **Variant Inspector**  | CPU Variant Auditor   | Inspects ARM CPU architecture variant strings (`v7`/`v8`) from config JSON. |
+| **OOM Kill Counter**   | Cgroup v2 `memory.events`| Reads exact count of process OOM kill occurrences (`oom_kill N`). |
+| **DNS NoTLD Option**    | `/etc/resolv.conf` Driver| Injects `options no-tld-query` top-level domain DNS query blocking options. |
+| **Log Layout Renderer** | Log Template Renderer | Formats log entries using custom placeholder templates (`minictl logs --layout`). |
+| **History Cmd Cleaner** | Dockerfile Cmd Parser  | Parses and cleans raw `created_by` strings into clean Dockerfile instructions. |
+| **Memory Peak Alert**  | Cgroup v2 `memory.peak`| Audits if memory peak usage exceeds target percentage of max limit. |
+| **DNS EDNS0 Size**     | `/etc/resolv.conf` Driver| Injects `options edns0-size:N` custom UDP buffer size tuning options. |
+| **Log UTC Formatter**   | UTC ISO-8601 Formatter | Converts log timestamps to UTC ISO-8601 format (`minictl logs --utc`). |
+| **DiffIDs Verifier**   | OCI Config DiffID Hasher| Verifies uncompressed layer diffIDs against image config descriptors. |
+| **Memory Peak Reset**  | Cgroup v2 `memory.reclaim`| Resets Cgroup v2 memory peak usage watermark counters. |
+| **DNS UseVC Option**   | `/etc/resolv.conf` Driver| Injects `options use-vc` TCP Virtual Circuit DNS query flags. |
+| **Log Expired Pruner**  | Retention Log Cleaner | Deletes rotated log files older than max retention age (`minictl logs --prune`). |
+| **ArtifactType Inspector**| OCI Artifact Inspector| Inspects custom artifactType fields (Helm charts, SBOMs, WASM). |
+| **Swap High Alert**    | Cgroup v2 `memory.swap.high`| Audits if current swap usage exceeds soft limit threshold. |
+| **DNS NoCheck Option**  | `/etc/resolv.conf` Driver| Injects `options no-check-names` name validation disable flags. |
+| **Log Gzip Compression**| Gzip Log Archiver     | Automatically compresses rotated old log files into `.gz` archives (`minictl logs --compress`). |
+| **Subject Inspector**  | OCI Subject Auditor   | Inspects optional subject descriptor field in OCI manifests for artifact linking. |
+| **Swap Peak Reader**   | Cgroup v2 `memory.swap.peak`| Reads highest swap memory usage watermark for container. |
+| **DNS inet6 Option**   | `/etc/resolv.conf` Driver| Injects `options inet6` IPv6 resolver flags into container `/etc/resolv.conf`. |
+| **Log Multi-File Archive**| Multi-File Log Archiver| Rotates & manages multi-file log archives (`container.log.1`, `container.log.2`). |
+| **RootFS Tree Verifier**| Layer Unpack Auditor  | Validates uncompressed rootfs directory structure and permissions. |
+| **Swap Events Reader** | Cgroup v2 `memory.swap.events`| Reads swap error event counters (`high`, `max`, `fail`). |
+| **DNS Attempts Option**| `/etc/resolv.conf` Driver| Injects `options attempts:N` retry count flags into container. |
+| **Log Size Rotation**  | Log Size Truncator    | Rotates/truncates stdio log files exceeding byte size limits (`minictl logs --max-size`). |
+| **Manifest Hash Calculator**| SHA-256 Digest Hasher| Computes sha256:hash over raw OCI manifest bytes. |
+| **Atomic OOM Group**   | Cgroup v2 `memory.oom.group`| Enforces atomic container process group OOM termination. |
+| **DNS Timeout Option** | `/etc/resolv.conf` Driver| Injects `options timeout:N` custom resolution timeout into container. |
+| **Log Details Attacher**| Extra Metadata Attacher| Formats log lines with attached environment & container ID details (`minictl logs --details`). |
+| **Accept Header Builder**| Manifest Accept Builder| Constructs HTTP Accept header supporting OCI Index, Manifest, and Docker v2 schemas. |
+| **Memory Low Protection**| Cgroup v2 `memory.low` | Enforces soft memory protection watermarks before general RAM page reclamation. |
+| **DNS Reload Option**  | `/etc/resolv.conf` Driver| Injects `options reload` dynamic resolv.conf re-parsing flag into container. |
+| **Log Follow Streamer**| Live Log Stream Tailing| Streams container stdout/stderr output in real-time (`minictl logs -f`). |
+| **Descriptor Auditor** | Manifest Size Calculator| Calculates total bytes across image config and layer descriptors. |
+| **Memory Min Guarantee**| Cgroup v2 `memory.min` | Enforces hard memory page protection guarantees against RAM eviction. |
+| **DNS EDNS0 Option**   | `/etc/resolv.conf` Driver| Injects `options edns0` Extension Mechanisms for DNS into container. |
+| **Log Timestamps**     | RFC3339 Timestamp Injector| Formats/prepends RFC3339 nano timestamps to stdio log output lines (`minictl logs -t`). |
+| **Platform Filter**    | Target Platform Matcher| Validates image manifest compatibility with host OS & CPU (`linux/amd64`). |
+| **Local Memory Events**| Cgroup v2 `memory.events.local`| Reads non-hierarchical cgroup memory event counters. |
+| **DNS Trust-AD Flag**  | `/etc/resolv.conf` Driver| Injects `options trust-ad` DNSSEC Authenticated Data flag into container. |
+| **Log Grep Matcher**   | Regex Log Matcher      | Filters stdio log lines by regex or keyword (`minictl logs --grep ERROR`). |
+| **Annotations Inspector**| OCI Metadata Auditor | Extracts & inspects image manifest annotations (`org.opencontainers...`). |
+| **Memory Events Reader**| Cgroup v2 `memory.events`| Reads memory event counters (`low`, `high`, `max`, `oom`, `oom_kill`). |
+| **DNS Single-Request** | `/etc/resolv.conf` Driver| Injects `options single-request-reopen` glibc DNS fix into container. |
+| **Log Until Filter**   | Upperbound Log Auditor | Filters log entries emitted prior to cutoff time (`minictl logs --until 5m`). |
+| **Media-Type Inspector**| OCI Manifest Inspector | Validates OCI manifest media types (`application/vnd.oci...`). |
+| **IO Cost QoS Control**| Cgroup v2 `io.cost.qos` | Enforces linear disk I/O cost QoS model rules. |
+| **DNS Rotate Option**  | `/etc/resolv.conf` Driver| Injects `options rotate` load balancing directive into container. |
+| **Log Since Filter**   | Time-Window Log Auditor| Filters log entries emitted within duration window (`minictl logs --since 10m`). |
+| **Compression Detector**| Magic Byte Inspector   | Detects image layer compression format (`gzip`, `zstd`, `raw-tar`). |
+| **IO Latency Protection**| Cgroup v2 `io.latency` | Enforces disk I/O target latency protection to prevent I/O starvation. |
+| **DNS Order Preference**| `/etc/resolv.conf` Driver| Sorts & orders search domain suffixes in container `/etc/resolv.conf`. |
+| **Log Tail Filter**    | Stdio Log Extractor    | Extracts last N lines of log text from container (`minictl logs --tail N`). |
+| **OCI Index Resolver** | Multi-Arch Manifest Resolver| Resolves target architecture manifests (`amd64`/`arm64`) from OCI Index JSON. |
+| **IO Stat Auditor**    | Cgroup v2 `io.stat`    | Audits per-device disk I/O metrics (`rbytes`, `wbytes`, `rios`, `wios`). |
+| **DNS Port Config**    | `/etc/resolv.conf` Driver| Injects custom nameserver entries with port numbers (`10.0.0.1:5353`). |
+| **Top Threads Inspector**| `/proc/<pid>/task` Auditor| Inspects thread-level tasks & execution details (`minictl top --threads`). |
+| **Schema v2 Inspector**| OCI Manifest Auditor   | Validates OCI / Docker Image Manifest Schema v2 JSON structures. |
+| **CPU Stat Auditor**  | Cgroup v2 `cpu.stat`   | Audits CPU usage and throttling counters (`usage_usec`, `nr_throttled`). |
+| **DNS Loopback Config**| `/etc/resolv.conf` Driver| Injects `nameserver 127.0.0.53` systemd-resolved entry into container. |
+| **Stats Snapshot**    | Telemetry Collector    | Collects single-shot resource stats snapshot (`minictl stats --no-stream`). |
+| **Layer Digest Matcher**| SHA-256 Digest Searcher | Finds image records containing matching layer blob digests (`image search --digest`). |
+| **Memory PSI Inspector**| Cgroup v2 `memory.pressure`| Audits memory stall pressure metrics (`some`/`full`) for container. |
+| **DNS Fallback Config**| Upstream Nameserver Injector| Formats fallback upstream nameserver entries (`8.8.8.8`) into `/etc/resolv.conf`. |
+| **Signal Broadcaster**| OS Signal Emitter       | Sends custom OS signals (`SIGHUP`, `SIGUSR1`) to container PID 1 (`minictl kill -s`). |
+| **Image Tag Alias**   | Image Tag Linker        | Creates new tag aliases for existing image records (`minictl image tag`). |
+| **Swap High Limit**   | Cgroup v2 `memory.swap.high`| Enforces soft swap limit to trigger background page compacting. |
+| **DNS Options Config**| `/etc/resolv.conf` Driver| Injects custom resolver options (`options timeout:2...`) into container. |
+| **Container Wait**    | Exit Code Auditor      | Blocks until container terminates and returns exit code (`minictl wait`). |
+| **Image Layer Size**   | Disk Usage Calculator  | Recursively calculates total uncompressed rootfs disk usage (`minictl image size`). |
+| **Swap Max Limit**    | Cgroup v2 `memory.swap.max`| Enforces hard swap limit to prevent swap abuse. |
+| **DNS Domain Directive**| `/etc/resolv.conf` Driver| Injects custom `domain` directive into container `/etc/resolv.conf`. |
+| **Detached Exec**     | Namespace Background Exec| Runs background sub-processes inside container namespaces (`minictl exec -d`). |
+| **Image Layer History**| Build History Auditor  | Audits layer build steps, sizes, and timestamps (`minictl image history`). |
+| **I/O Weight Control**| Cgroup v2 `io.weight`  | Enforces block I/O fair share priority (1-10000) for containers. |
+| **DNS Search Suffix** | `/etc/resolv.conf` Driver| Injects custom search domain suffixes (`search default.svc...`) into container. |
+| **Atomic Freezer**    | Cgroup v2 `cgroup.freeze`| Freezes/thaws container execution without signal leakage (`minictl pause/unpause`). |
+| **Image Layer Diff**  | Tree Diff Auditor      | Compares file modifications between two image tags (`minictl image diff`). |
+| **Memory High Limit** | Cgroup v2 `memory.high`| Enforces soft memory limit throttling prior to hard OOM. |
+| **Network MAC Gen**   | Hardware Address Binder| Generates deterministic MAC hardware addresses (`02:42:...`) for veth interfaces. |
+| **Container Commit**   | Upperdir Layer Packager| Packages container rootfs changes into a new tagged image (`minictl commit`). |
+| **Orphan Layer Pruner**| Image Store GC Engine  | Scans and deletes unreferenced image layers (`minictl image prune`). |
+| **Memory Reclaim**    | Cgroup v2 `memory.reclaim`| Triggers forced memory page compacting for idle containers. |
+| **Network MTU Config**| Link MTU Configurator  | Adjusts MTU byte size for container veth and bridge interfaces. |
+| **Live Resource Mutator**| Cgroup v2 Limit Modifier| Dynamically updates memory limits & CPU quotas for running containers (`minictl update`). |
+| **Layer Digest Verifier**| SHA-256 Digest Auditor | Computes & verifies layer checksum integrity against OCI digest hashes (`image verify`). |
+| **CPU Bandwidth Control**| Cgroup v2 `cpu.weight` | Enforces Cgroup v2 `cpu.weight` fair share priority & `cpu.max` period/quota. |
+| **Dual-Stack IPv6 Net**| IPv6 Subnet Allocator  | Allocates & configures dual-stack IPv6 addresses (`2001:db8::/64`) for container veths. |
+| **Container Renamer**  | Alias & DNS Synchronizer | Safely updates container name alias & internal DNS host registry (`minictl rename`). |
+| **Tarball Importer**   | Raw RootFS Tar Unpacker  | Imports standalone raw tarballs into imagestore with named tags (`minictl import`). |
+| **Memory Alert Handler**| Cgroup v2 `memory.high` | Evaluates soft memory limit overload alerts for container processes. |
+| **DNS Resolver Config**| `/etc/resolv.conf` Driver| Injects custom nameserver IPs and search domain suffixes into container. |
+| **Process Inspector** | `/proc/<pid>/task`     | Lists active processes and threads inside running container (`minictl top`). |
+| **Container Exporter** | RootFS Tar Packager   | Streams container rootfs into Docker-compatible tarball (`minictl export`). |
+| **PIDs Limit Controller**| Cgroup v2 `pids.max` | Enforces max process count limit to prevent fork bomb attacks. |
+| **Network Traffic Meter**| VETH Netlink Counter  | Measures RX/TX bytes and packet throughput for veth interfaces. |
+| **Time-Based GC**     | Windowed Purge Engine  | Reclaims stopped containers created prior to duration cutoff (`system prune --until`). |
+| **AES-256 Layer Crypto**| Symmetric Cryptography| Encrypts and decrypts rootfs image layers via AES-256-GCM (`image encrypt/decrypt`). |
+| **Misc Device Limit**  | Cgroup v2 `misc.max`   | Controls misc hardware device allocations in Cgroup v2. |
+| **Readiness Prober**  | Active Network Socket | Conducts active TCP and HTTP readiness probes against container ports. |
+| **FS Checkpoint/Restore**| Instant Snapshot Engine| Saves & restores container OverlayFS upperdir snapshots (`minictl snapshot`). |
+| **Layer Deduplication**| SHA-256 Hardlink Linker| Deduplicates identical image layers across images via hardlinks. |
+| **HugePages Controller**| Cgroup v2 `hugetlb`    | Controls 2MB & 1GB HugePages memory quotas (`--hugetlb-limit`). |
+| **JSON Diagnostic Info**| Engine Telemetry Audit | Generates engine telemetry report in JSON format (`minictl info --json`). |
+| **Local Registry Mirror**| Layer Proxy Cacher   | Runs HTTP proxy server caching image layer blobs locally (`minictl mirror`). |
+| **Syslog Driver**     | RFC5424 Log Streamer  | Formats container stdio logs & events into RFC5424 syslog streams. |
+| **OOM Event Monitor** | Cgroup v2 `memory.events`| Monitors and records `oom` and `oom_kill` counters in container inspect state. |
+| **Engine Benchmarker**| Performance Tester    | Measures container startup latency (ms) & state read/write throughput (`minictl bench`). |
+| **Plugin Architecture**| Extension Manifest Driver | Discovers & loads volume, log, and network driver extensions (`minictl plugin`). |
+| **RootFS Security Scan**| Static Audit Inspector| Scans rootfs for SUID binaries, world-writable directories, and SSH keys (`minictl scan`). |
+| **PSI Monitor**       | Cgroup v2 Pressure Monitor| Reads `/sys/fs/cgroup/.../memory.pressure` & `cpu.pressure` contention metrics. |
+| **VXLAN Overlay Net** | Multi-Node Tunnel Driver| Configures Linux VXLAN interfaces (UDP port 4789) for inter-host container networking. |
+| **Memory Dump**      | Process State Snapshot| Dumps container process memory maps (`proc/maps`) & state to `.dump` file (`minictl dump`). |
+| **HMAC Image Sign**  | Provenance Cryptography| Signs & verifies rootfs layers with HMAC-SHA256 signatures (`minictl image sign/verify`). |
+| **Live Telemetry**   | Performance Dashboard | Streams live container resource consumption statistics (`minictl stats`). |
+| **SubUID/SubGID Map**| User Namespace Remap  | Allocates unprivileged UID/GID mapping ranges for rootless execution (`--userns-remap`). |
+| **Signal Propagation**| Unix Signal Dispatcher | Sends specific Unix signals (`SIGKILL`, `SIGTERM`, `SIGHUP`, etc.) (`minictl kill -s`). |
+| **Secret Env Masking**| Credential Obscuration | Obscures sensitive environment variables (`PASS`, `KEY`, `TOKEN`) in inspect output. |
+| **CPU/NUMA Pinning**  | Cgroup v2 `cpuset`     | Pins container execution to specific CPU cores & NUMA memory nodes (`--cpuset-cpus`). |
+| **Kernel Diagnostics**| Capability Self-Checker| Performs self-checks of Linux kernel prerequisites & namespaces (`minictl check`). |
+| **Image History**   | Layer Build Inspector | Audits image build steps, creation time, size, and commands (`minictl history`). |
+| **Event Webhooks**  | HTTP Event Dispatcher | Posts JSON container lifecycle events to HTTP webhook endpoints (`--webhook`). |
+| **Swap Memory Control**| Cgroup v2 `memory.swap`| Controls soft memory (`memory.high`) & swap thresholds (`--memory-swap`). |
+| **Multi-Arch OCI Index**| OCI Index Builder | Generates multi-architecture OCI Image Index manifests (`amd64`, `arm64`). |
+| **Auto-Restart Supervisor**| Exit State Monitor | Monitors container crashes & automatically respawns init process (`--restart`). |
+| **Disk I/O Throttling**| Cgroup v2 `io.max` | Throttles device read/write throughput (BPS) & IOPS (`--device-read-bps`). |
+| **Stream Attacher**   | Terminal Stream Piping | Attaches stdio stream to running container console (`minictl attach`). |
+| **System Diagnostics**| Engine Disk & Prune Engine | Computes disk space usage breakdown (`system df`) & one-stop reclamation (`system prune -a`). |
 | **Dynamic IPAM**     | Subnet Lease Pool Allocator| Dynamically allocates & recycles container IP addresses across bridge networks. |
 | **Filesystem Diff** | OverlayFS Upper Inspector | Audits filesystem mutations (`A` added, `C` changed, `D` deleted) (`minictl diff`). |
 | **Prometheus Exporter**| Metrics Endpoint Exporter| Exposes `/v1/metrics` REST endpoint formatted for Prometheus metrics scrapers. |

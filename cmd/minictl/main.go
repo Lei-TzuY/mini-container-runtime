@@ -12,6 +12,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"minicontainer/internal/attach"
+	"minicontainer/internal/bench"
 	"minicontainer/internal/builder"
 	"minicontainer/internal/cgroups"
 	"minicontainer/internal/compose"
@@ -25,9 +27,13 @@ import (
 	"minicontainer/internal/imagestore"
 	"minicontainer/internal/logs"
 	"minicontainer/internal/network"
+	"minicontainer/internal/plugin"
 	"minicontainer/internal/pty"
 	"minicontainer/internal/registry"
+	"minicontainer/internal/security"
 	"minicontainer/internal/state"
+	"minicontainer/internal/stats"
+	"minicontainer/internal/system"
 	"minicontainer/internal/volume"
 )
 
@@ -177,6 +183,34 @@ func main() {
 		cmdDiff(os.Args[2:])
 	case "push":
 		cmdPush(os.Args[2:])
+	case "attach":
+		cmdAttach(os.Args[2:])
+	case "system":
+		cmdSystem(os.Args[2:])
+	case "history":
+		cmdHistory(os.Args[2:])
+	case "version":
+		cmdVersion()
+	case "check":
+		cmdCheck()
+	case "dump":
+		cmdDump(os.Args[2:])
+	case "plugin":
+		cmdPlugin(os.Args[2:])
+	case "scan":
+		cmdScan(os.Args[2:])
+	case "bench":
+		cmdBench(os.Args[2:])
+	case "snapshot":
+		cmdSnapshot(os.Args[2:])
+	case "info":
+		cmdInfo(os.Args[2:])
+	case "rename":
+		cmdRename(os.Args[2:])
+	case "import":
+		cmdImport(os.Args[2:])
+	case "wait":
+		cmdWait(os.Args[2:])
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -634,6 +668,10 @@ func cmdInspect(args []string) {
 		os.Exit(1)
 	}
 
+	if len(rec.Env) > 0 {
+		rec.Env = container.MaskEnvVars(rec.Env)
+	}
+
 	raw, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "json error: %v\n", err)
@@ -680,6 +718,9 @@ func cmdStats(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+
+	collectedStats, _ := stats.CollectStats(store)
+	_ = collectedStats
 
 	var targetContainers []*state.Container
 	if len(args) > 0 {
@@ -896,8 +937,21 @@ func cmdPs(args []string) {
 }
 
 func cmdKill(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl kill <id>")
+	fs := flag.NewFlagSet("kill", flag.ExitOnError)
+	sigStr := fs.String("s", "SIGKILL", "signal to send to container")
+	_ = fs.String("signal", "SIGKILL", "signal to send to container")
+	fs.SetOutput(os.Stderr)
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl kill [-s SIGNAL] <id>")
+		os.Exit(1)
+	}
+
+	sig, err := container.ParseSignal(*sigStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid signal: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -907,7 +961,7 @@ func cmdKill(args []string) {
 		os.Exit(1)
 	}
 
-	rec, err := store.Resolve(args[0])
+	rec, err := store.Resolve(rest[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -923,8 +977,8 @@ func cmdKill(args []string) {
 		fmt.Fprintf(os.Stderr, "find process %d: %v\n", rec.PID, err)
 		os.Exit(1)
 	}
-	if err := proc.Kill(); err != nil {
-		fmt.Fprintf(os.Stderr, "kill %d: %v\n", rec.PID, err)
+	if err := proc.Signal(sig); err != nil {
+		fmt.Fprintf(os.Stderr, "signal %v to %d: %v\n", sig, rec.PID, err)
 		os.Exit(1)
 	}
 
@@ -935,7 +989,7 @@ func cmdKill(args []string) {
 	if err := store.Save(rec); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: update state: %v\n", err)
 	}
-	_ = events.Publish(events.EventDie, rec.ID, rec.RootFS, "killed container")
+	_ = events.Publish(events.EventDie, rec.ID, rec.RootFS, fmt.Sprintf("signaled container (%v)", sig))
 	fmt.Printf("%s\n", rec.ID[:8])
 }
 
@@ -1265,6 +1319,325 @@ func cmdPush(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Successfully exported OCI layer archive and manifest (%s.manifest.json)\n", outArchive)
+}
+
+func cmdAttach(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl attach <container-id>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := attach.AttachContainer(st, args[0], os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "attach failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func cmdSystem(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl system <df|prune>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "df":
+		df, err := system.CalculateDF(st)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "system df error: %v\n", err)
+			os.Exit(1)
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "TYPE\tTOTAL\tSIZE")
+		fmt.Fprintf(w, "Containers\t%d\t%d B\n", df.ContainersCount, df.ContainersSize)
+		fmt.Fprintf(w, "Images\t%d\t%d B\n", df.ImagesCount, df.ImagesSize)
+		fmt.Fprintf(w, "Local Volumes\t%d\t%d B\n", df.VolumesCount, df.VolumesSize)
+		_ = w.Flush()
+
+	case "prune":
+		pruneAll := false
+		untilStr := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "-a" || args[i] == "--all" {
+				pruneAll = true
+			} else if strings.HasPrefix(args[i], "--until=") {
+				untilStr = strings.TrimPrefix(args[i], "--until=")
+			} else if args[i] == "--until" && i+1 < len(args) {
+				untilStr = args[i+1]
+			}
+		}
+
+		if untilStr != "" {
+			dur, err := system.ParseUntilDuration(untilStr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --until duration: %v\n", err)
+				os.Exit(1)
+			}
+			cutoff := time.Now().Add(-dur)
+			res, err := system.PruneUntil(st, cutoff)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "system prune --until error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Deleted Containers (older than %s): %d\n", untilStr, res.ContainersReclaimed)
+			return
+		}
+
+		res, err := system.SystemPrune(st, pruneAll)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "system prune error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Deleted Containers: %d\n", res.ContainersReclaimed)
+		fmt.Printf("Deleted Images: %d\n", res.ImagesReclaimed)
+		fmt.Printf("Deleted Volumes: %d\n", res.VolumesReclaimed)
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown system subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func cmdHistory(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl history <image-name-or-id>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	layers, err := imagestore.GetImageHistory(st, args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "history failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CREATED BY\tSIZE\tCREATED")
+	for _, l := range layers {
+		age := time.Since(l.CreatedAt).Round(time.Second)
+		fmt.Fprintf(w, "%s\t%d B\t%s ago\n", l.CreatedBy, l.Size, age)
+	}
+	_ = w.Flush()
+}
+
+func cmdVersion() {
+	res := system.CheckKernelFeatures()
+	fmt.Printf("minictl Engine Version: v1.6.0\n")
+	fmt.Printf("Go Version:           %s\n", res.GoVersion)
+	fmt.Printf("OS/Arch:              %s/%s\n", res.OS, res.Arch)
+}
+
+func cmdCheck() {
+	res := system.CheckKernelFeatures()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "FEATURE\tSUPPORTED")
+	fmt.Fprintf(w, "Linux Namespaces\t%v\n", res.NamespacesSupported)
+	fmt.Fprintf(w, "Cgroups v2\t%v\n", res.CgroupsV2Supported)
+	fmt.Fprintf(w, "OverlayFS\t%v\n", res.OverlayFSSupported)
+	fmt.Fprintf(w, "Seccomp BPF\t%v\n", res.SeccompSupported)
+	fmt.Fprintf(w, "PivotRoot\t%v\n", res.PivotRootSupported)
+	_ = w.Flush()
+}
+
+func cmdDump(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl dump <container-id> [out.dump]")
+		os.Exit(1)
+	}
+	outPath := ""
+	if len(args) >= 2 {
+		outPath = args[1]
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	info, err := container.DumpContainerMemory(st, args[0], outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dump error: %v\n", err)
+		os.Exit(1)
+	}
+	if outPath != "" {
+		fmt.Printf("Dumped container %s state -> %s\n", info.ContainerID[:8], outPath)
+	} else {
+		raw, _ := json.MarshalIndent(info, "", "  ")
+		fmt.Println(string(raw))
+	}
+}
+
+func cmdPlugin(args []string) {
+	plugins, err := plugin.ListPlugins()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "plugin error: %v\n", err)
+		os.Exit(1)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tTYPE\tVERSION\tENABLED")
+	for _, p := range plugins {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%v\n", p.Name, p.Type, p.Version, p.Enabled)
+	}
+	_ = w.Flush()
+}
+
+func cmdScan(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl scan <rootfs-path-or-id>")
+		os.Exit(1)
+	}
+	target := args[0]
+	st, err := openStore()
+	if err == nil {
+		rec, resolveErr := st.Resolve(target)
+		if resolveErr == nil && rec.RootFS != "" {
+			target = rec.RootFS
+		}
+	}
+
+	report, err := security.ScanRootFS(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scan error: %v\n", err)
+		os.Exit(1)
+	}
+
+	raw, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(raw))
+}
+
+func cmdBench(args []string) {
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Running minictl engine benchmark (50 iterations)...")
+	res, err := bench.RunBenchmark(st, 50)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "benchmark error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("State Write Latency:   %.4f ms/op\n", res.StateWriteMs)
+	fmt.Printf("State Read Latency:    %.4f ms/op\n", res.StateReadMs)
+	fmt.Printf("Init Startup Overhead: %.4f ms/op\n", res.StartupLatencyMs)
+}
+
+func cmdSnapshot(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl snapshot <create|restore> <container-id> [snapshot-name]")
+		os.Exit(1)
+	}
+	subCmd := args[0]
+	containerID := args[1]
+	snapName := "snap-default"
+	if len(args) >= 3 {
+		snapName = args[2]
+	}
+
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch subCmd {
+	case "create":
+		snap, err := container.CreateSnapshot(st, containerID, snapName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot create failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Created snapshot %q for container %s -> %s\n", snap.Name, snap.ContainerID[:8], snap.Path)
+	case "restore":
+		if err := container.RestoreSnapshot(st, containerID, snapName); err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot restore failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Restored container %s from snapshot %q\n", containerID[:8], snapName)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown snapshot command: %s\n", subCmd)
+		os.Exit(1)
+	}
+}
+
+func cmdInfo(args []string) {
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	report, err := system.GenerateEngineReport(st)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "report error: %v\n", err)
+		os.Exit(1)
+	}
+	raw, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(raw))
+}
+
+func cmdRename(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl rename <container-id> <new-name>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := container.RenameContainer(st, args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "rename error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Renamed container %s -> %s\n", args[0][:min(8, len(args[0]))], args[1])
+}
+
+func cmdImport(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl import <tarball> <image-tag>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	rec, err := imagestore.ImportRawRootFS(st, args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "import error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Imported image %s [%s]\n", rec.ID[:8], rec.Tag)
+}
+
+func cmdWait(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: minictl wait <container-id>")
+		os.Exit(1)
+	}
+	st, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store error: %v\n", err)
+		os.Exit(1)
+	}
+	exitCode, err := container.WaitContainer(st, args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wait error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%d\n", exitCode)
 }
 
 func cmdImages() {

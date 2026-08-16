@@ -80,6 +80,9 @@ type Container struct {
 
 	// ExitCode is the exit status code of the container process (-1 if killed).
 	ExitCode int `json:"exit_code"`
+
+	// Env is environment variables set inside container.
+	Env []string `json:"env,omitempty"`
 }
 
 // Image holds metadata for a registered rootfs image.
@@ -121,6 +124,10 @@ func Open(dir string) (*Store, error) {
 		ctrDir: ctrDir,
 		imgDir: imgDir,
 	}, nil
+}
+
+func (s *Store) Dir() string {
+	return s.dir
 }
 
 func (s *Store) Save(c *Container) error {
