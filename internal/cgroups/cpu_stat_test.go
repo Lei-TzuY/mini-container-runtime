@@ -1,11 +1,14 @@
 package cgroups
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestReadCPUStat(t *testing.T) {
 	tmpDir := t.TempDir()
-	writePath := tmpDir + "/cpu.stat"
-	if err := os.WriteFile(writePath, []byte("usage_usec 100\nuser_usec 60\nsystem_usec 40\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "cpu.stat"), []byte("usage_usec 100\nuser_usec 60\nsystem_usec 40\n"), 0o644); err != nil {
 		t.Fatalf("write cpu.stat fixture: %v", err)
 	}
 	metrics, err := ReadCPUStat(tmpDir)
