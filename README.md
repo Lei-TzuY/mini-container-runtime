@@ -1,440 +1,129 @@
-# Mini Docker & Container Runtime (`minictl`)
+# Mini Container Runtime (`minictl`)
 
-A minimal, educational Linux container runtime written in Go from scratch. `minictl` directly invokes Linux kernel syscalls (`clone`, `pivot_root`, `setns`, `mount`, `prctl`) to implement process isolation, namespaces, cgroups v2 resource controls, OverlayFS copy-on-write storage, veth bridge networking, port mapping via iptables DNAT, Linux capabilities management, HTTP OCI registry image pulling, multi-container orchestration (`minictl compose`), dynamic resource updates (`minictl update`), real-time event streaming (`minictl events`), bidirectional container file transfer (`minictl cp`), health checking, and BPF seccomp syscall filtering without depending on Docker, containerd, or runc internally.
+An educational Linux container runtime written in Go from scratch. `minictl` uses Linux kernel primitives directly — namespaces, cgroups v2, mounts, `pivot_root`, veth networking, capabilities and seccomp — without using Docker, containerd or runc as its runtime.
 
----
+> **Goal:** make the mechanics behind containers visible and hackable, not compete with production runtimes.
 
-## 🏛️ Architecture & Syscall Mapping
+## What it actually implements
 
-```
-                       ┌──────────────────────────────┐
-                       │          minictl CLI         │
-                       └──────────────┬───────────────┘
-                                      │
-              ┌───────────────────────┴───────────────────────┐
-              ▼                                               ▼
-   Stage 1: Parent Process                          Stage 2: Container Init
-   • clone(CLONE_NEWPID|NEWUTS|NEWNS|...)           • Wait on sync pipe from parent
-   • Apply cgroups v2 limits & cpus quota           • sethostname(2) in UTS netns
-   • Create veth-h<pid> ↔ eth0 pair                 • Mount OverlayFS (--overlay)
-   • Configure iptables DNAT (-p)                   • Mount /proc, /sys, /dev/pts
-   • Move veth-peer to child netns                  • Bind mount volumes (-v)
-   • Unblock child via sync pipe                    • pivot_root(2) into rootfs
-   • Wait for child exit & cleanup NAT              • Remount root read-only (--read-only)
-                                                    • chdir(2) to workdir (-w)
-                                                    • Drop capabilities (PR_CAPBSET_DROP)
-                                                    • Install seccomp BPF filter
-                                                    • Inject env vars (-e) & execve(2)
-```
+The core runtime path covers the pieces that make a Linux container a container:
 
-### Key Subsystems & Syscalls Used
+- **Isolation:** PID, UTS, mount, network, IPC and user namespaces
+- **Filesystem:** rootfs isolation with `pivot_root`, bind mounts and OverlayFS copy-on-write layers
+- **Resources:** cgroups v2 memory, CPU and PID controls, plus runtime updates
+- **Networking:** network namespaces, veth pairs, Linux bridges and host-port forwarding
+- **Images:** OCI / Docker Registry HTTP pulling and layer extraction
+- **Security:** Linux capability dropping and seccomp BPF filtering
+- **Lifecycle:** run, exec, stop/kill, pause/unpause, inspect, logs, events and cleanup
+- **Orchestration:** a small declarative compose-style runner for multi-container experiments
 
-| Feature | Mechanism / Syscall | Purpose |
-| :--- | :--- | :--- |
-| **PID Namespace** | `clone(CLONE_NEWPID)` | Isolated PID number space; container payload becomes PID 1 inside. |
-| **UTS Namespace** | `clone(CLONE_NEWUTS)` + `sethostname(2)` | Isolated hostname & NIS domain name. |
-| **Mount Namespace** | `clone(CLONE_NEWNS)` + `mount(2)` | Isolated mount table; host mounts remain hidden. |
-| **Network Namespace** | `clone(CLONE_NEWNET)` + Netlink sockets | Isolated network stack (lo interface + veth pair). |
-| **IPC Namespace** | `clone(CLONE_NEWIPC)` | Isolated System V IPC & POSIX message queues. |
-| **User Namespace** | `clone(CLONE_NEWUSER)` + `uid_map` / `gid_map` | Maps host UID to container root (0/0); enables unprivileged containers. |
-| **RootFS Isolation** | `pivot_root(2)` (with `chroot(2)` fallback) | Swaps `/` to new rootfs and unmounts host root via `MNT_DETACH`. |
-| **OverlayFS (CoW)** | `mount -t overlay ...` | Merges read-only image layers with a per-container writable `upper` directory. |
-| **Resource Limits** | Cgroups v2 (`/sys/fs/cgroup/...`) | Hard memory limits, fractional CPU quotas (`cpu.max`), CPU weights, and PIDs limit. |
-| **Dynamic Updates** | Cgroups v2 `/sys/fs/cgroup` | Dynamically modifies memory (`memory.max`) and CPU (`cpu.max`) quotas on the fly. |
-| **Process Freezer** | Cgroup v2 `cgroup.freeze` | Atomic pause/unpause of container processes without signal leakage. |
-| **Container Exec** | `setns(2)` + `chroot(2)` | Attaches to an existing container's namespaces by host PID. |
-| **Capabilities Control**| `prctl(PR_CAPBSET_DROP)` | Drops specific privileges (`CAP_SYS_ADMIN`, `CAP_NET_RAW`) from bounding set. |
-| **OCI Image Pulling** | HTTP REST API v2 | Downloads image manifests and layer blobs directly from Docker Hub (`minictl pull`). |
-| **Mini Compose** | Declarative JSON Runner | Orchestrates multi-container applications (`minictl compose up -f compose.json`). |
-| **Event Audit Stream**| Real-time Event Logger | Streams container lifecycle events (`minictl events -f`). |
-| **Container File Copy** | Bidirectional File Transfer | Copies files/directories between host and container (`minictl cp`). |
-| **Health Checking** | State & Exec Evaluator | Evaluates container health status (`starting` -> `healthy` / `unhealthy`). |
-| **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
-| **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
-| **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
-| **Log Custom Prefix**  | Log Line Tag Prepend  | Prepends custom identifier prefix string to each log line (`minictl logs --prefix`). |
-| **Image Volumes Extractor**| Declared Volumes Auditor| Inspects `config.Volumes` mount point declarations from Image Config JSON. |
-| **Swap Failcnt Counter**| Cgroup v2 `memory.swap.events`| Reads exact count of swap memory exhaustion encounters (`failcnt N`). |
-| **DNS NoReload Timeout**| `/etc/resolv.conf` Driver| Combines `options no-reload` and `options timeout:N` into formatted lines. |
-| **Log Max Bytes**      | Byte Payload Limiter  | Truncates log payload at maximum byte threshold with indicator (`minictl logs --max-bytes`). |
-| **Image Shell Auditor**| Default Shell Auditor | Inspects default execution shell (`config.Shell`) from Image Config JSON. |
-| **Swap Max Counter**   | Cgroup v2 `memory.swap.events`| Reads exact count of swap hard limit enforcement events (`max N`). |
-| **DNS NoCheck Timeout**| `/etc/resolv.conf` Driver| Combines `options no-check-names` and `options timeout:N` into formatted lines. |
-| **Log Invert Grep**    | Inverted Pattern Filter| Filters and displays log lines that do NOT match specified pattern (`minictl logs --invert-grep`). |
-| **Image Labels Auditor**| Metadata Labels Auditor| Inspects and filters container runtime label metadata from Image Config JSON. |
-| **Swap High Counter**  | Cgroup v2 `memory.swap.events`| Reads exact count of swap soft limit throttle events (`high N`). |
-| **DNS EDNS0 Timeout**  | `/etc/resolv.conf` Driver| Combines `options edns0` and `options timeout:N` into formatted lines. |
-| **Log Grep Counter**   | Match Counter         | Counts regex pattern match occurrences across log lines (`minictl logs --grep-count`). |
-| **Config Digest Calculator**| Image ID Calculator  | Computes SHA256 canonical digest hash of Image Config JSON. |
-| **Local Memory Min Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup hard eviction protections (`min N`). |
-| **DNS Inet6 Timeout**  | `/etc/resolv.conf` Driver| Combines `options inet6` and `options timeout:N` into formatted lines. |
-| **Log Index Slice Extractor**| Log Range Filter    | Returns a slice range of log lines from index A to index B (`minictl logs --slice`). |
-| **ContainerConfig Auditor**| Build Container Auditor| Inspects `container_config` metadata struct from Image Config JSON. |
-| **Local Memory Low Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup reclaim protections (`low N`). |
-| **DNS SingleReq Timeout**| `/etc/resolv.conf` Driver| Combines `options single-request-reopen` and `options timeout:N` flags. |
-| **Log Head Truncator** | Log Head Filter       | Outputs only the first N lines of container stdio logs (`minictl logs --head`). |
-| **RootFS DiffIDs Extractor**| Layer DiffID Auditor | Extracts all layer diffIDs from `rootfs.diff_ids` array in Image Config JSON. |
-| **Local Memory High Counter**| Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup soft limit throttles (`high N`). |
-| **DNS Rotate Timeout** | `/etc/resolv.conf` Driver| Combines both `options rotate` and `options timeout:N` into formatted lines. |
-| **Log Deduplicator**   | Line Repeat Summarizer| Merges consecutive identical log output lines (`minictl logs --dedup`). |
-| **OnBuild Inspector**  | Base Image Trigger    | Inspects `OnBuild` trigger instructions from Image Config JSON. |
-| **Local OOM Counter**  | Cgroup v2 `memory.events.local`| Reads exact count of local non-hierarchical cgroup OOM encounters (`oom N`). |
-| **DNS Attempt Timeout**| `/etc/resolv.conf` Driver| Combines both `options attempts:N` and `options timeout:N` into formatted lines. |
-| **Log Rate Limiter**   | Emission Throttler    | Limits maximum log lines output per second (`minictl logs --rate-limit`). |
-| **Healthcheck Inspector**| Healthcheck Auditor | Inspects embedded Dockerfile `HEALTHCHECK` parameters from Image Config JSON. |
-| **Local OOM Kill Counter**| Cgroup v2 `memory.events.local`| Reads exact count of non-hierarchical cgroup OOM kills (`oom_kill N`). |
-| **DNS Debug Option**   | `/etc/resolv.conf` Driver| Injects `options debug` resolver flags into container `/etc/resolv.conf`. |
-| **Log Multiline Aggregator**| Stack Trace Aggregator| Merges indented Java/Python exception stack traces into single events (`minictl logs --multiline`). |
-| **Stop Signal Inspector**| Graceful Shutdown Auditor| Inspects `stopSignal` (`SIGTERM`, `SIGQUIT`) from Image Config JSON. |
-| **Memory Min Counter** | Cgroup v2 `memory.events`| Reads exact count of hard memory page eviction protection events (`min N`). |
-| **DNS ndots Option**    | `/etc/resolv.conf` Driver| Injects `options ndots:N` search threshold flags into container. |
-| **Log Mask Filter**    | Credential Redactor   | Masks sensitive tokens, API keys, and passwords with `[REDACTED]` (`minictl logs --mask`). |
-| **Image User Inspector**| User ID Auditor       | Inspects default execution user UID/GID (`root`, `1000:1000`) from image config. |
-| **Memory Low Counter** | Cgroup v2 `memory.events`| Reads exact count of soft memory reclaim protection events (`low N`). |
-| **DNS EDNS0 Payload**  | `/etc/resolv.conf` Driver| Injects `options edns0-payload:N` custom UDP payload size limits. |
-| **Log ANSI Cleaner**   | Terminal ANSI Stripper | Strips ANSI escape color code sequences from log output (`minictl logs --ansi-clean`). |
-| **OS Features Inspector**| OS Feature Auditor   | Inspects `os.features` array from Image Config JSON for feature flags. |
-| **Memory High Counter**| Cgroup v2 `memory.events`| Reads exact count of soft memory limit throttle events (`high N`). |
-| **DNS UseVC Fallback**  | `/etc/resolv.conf` Driver| Injects `options use-vc` TCP Virtual Circuit fallback flags. |
-| **Syslog RFC5424 Formatter**| Syslog Standard Logger| Formats log lines into Syslog RFC5424 compliant string format (`minictl logs --syslog-fmt`). |
-| **OS Version Inspector**| Kernel Version Auditor| Inspects `os.version` string from Image Config JSON for OS sub-version validation. |
-| **Memory OOM Counter** | Cgroup v2 `memory.events`| Reads exact count of OOM condition encounters (`oom N`). |
-| **DNS NoReload Option** | `/etc/resolv.conf` Driver| Injects `options no-reload` dynamic resolv.conf dynamic file watching disable flags. |
-| **Log JSON Formatter**  | Structured JSON Logger| Encapsulates log lines into structured JSON objects (`minictl logs --json`). |
-| **Variant Inspector**  | CPU Variant Auditor   | Inspects ARM CPU architecture variant strings (`v7`/`v8`) from config JSON. |
-| **OOM Kill Counter**   | Cgroup v2 `memory.events`| Reads exact count of process OOM kill occurrences (`oom_kill N`). |
-| **DNS NoTLD Option**    | `/etc/resolv.conf` Driver| Injects `options no-tld-query` top-level domain DNS query blocking options. |
-| **Log Layout Renderer** | Log Template Renderer | Formats log entries using custom placeholder templates (`minictl logs --layout`). |
-| **History Cmd Cleaner** | Dockerfile Cmd Parser  | Parses and cleans raw `created_by` strings into clean Dockerfile instructions. |
-| **Memory Peak Alert**  | Cgroup v2 `memory.peak`| Audits if memory peak usage exceeds target percentage of max limit. |
-| **DNS EDNS0 Size**     | `/etc/resolv.conf` Driver| Injects `options edns0-size:N` custom UDP buffer size tuning options. |
-| **Log UTC Formatter**   | UTC ISO-8601 Formatter | Converts log timestamps to UTC ISO-8601 format (`minictl logs --utc`). |
-| **DiffIDs Verifier**   | OCI Config DiffID Hasher| Verifies uncompressed layer diffIDs against image config descriptors. |
-| **Memory Peak Reset**  | Cgroup v2 `memory.reclaim`| Resets Cgroup v2 memory peak usage watermark counters. |
-| **DNS UseVC Option**   | `/etc/resolv.conf` Driver| Injects `options use-vc` TCP Virtual Circuit DNS query flags. |
-| **Log Expired Pruner**  | Retention Log Cleaner | Deletes rotated log files older than max retention age (`minictl logs --prune`). |
-| **ArtifactType Inspector**| OCI Artifact Inspector| Inspects custom artifactType fields (Helm charts, SBOMs, WASM). |
-| **Swap High Alert**    | Cgroup v2 `memory.swap.high`| Audits if current swap usage exceeds soft limit threshold. |
-| **DNS NoCheck Option**  | `/etc/resolv.conf` Driver| Injects `options no-check-names` name validation disable flags. |
-| **Log Gzip Compression**| Gzip Log Archiver     | Automatically compresses rotated old log files into `.gz` archives (`minictl logs --compress`). |
-| **Subject Inspector**  | OCI Subject Auditor   | Inspects optional subject descriptor field in OCI manifests for artifact linking. |
-| **Swap Peak Reader**   | Cgroup v2 `memory.swap.peak`| Reads highest swap memory usage watermark for container. |
-| **DNS inet6 Option**   | `/etc/resolv.conf` Driver| Injects `options inet6` IPv6 resolver flags into container `/etc/resolv.conf`. |
-| **Log Multi-File Archive**| Multi-File Log Archiver| Rotates & manages multi-file log archives (`container.log.1`, `container.log.2`). |
-| **RootFS Tree Verifier**| Layer Unpack Auditor  | Validates uncompressed rootfs directory structure and permissions. |
-| **Swap Events Reader** | Cgroup v2 `memory.swap.events`| Reads swap error event counters (`high`, `max`, `fail`). |
-| **DNS Attempts Option**| `/etc/resolv.conf` Driver| Injects `options attempts:N` retry count flags into container. |
-| **Log Size Rotation**  | Log Size Truncator    | Rotates/truncates stdio log files exceeding byte size limits (`minictl logs --max-size`). |
-| **Manifest Hash Calculator**| SHA-256 Digest Hasher| Computes sha256:hash over raw OCI manifest bytes. |
-| **Atomic OOM Group**   | Cgroup v2 `memory.oom.group`| Enforces atomic container process group OOM termination. |
-| **DNS Timeout Option** | `/etc/resolv.conf` Driver| Injects `options timeout:N` custom resolution timeout into container. |
-| **Log Details Attacher**| Extra Metadata Attacher| Formats log lines with attached environment & container ID details (`minictl logs --details`). |
-| **Accept Header Builder**| Manifest Accept Builder| Constructs HTTP Accept header supporting OCI Index, Manifest, and Docker v2 schemas. |
-| **Memory Low Protection**| Cgroup v2 `memory.low` | Enforces soft memory protection watermarks before general RAM page reclamation. |
-| **DNS Reload Option**  | `/etc/resolv.conf` Driver| Injects `options reload` dynamic resolv.conf re-parsing flag into container. |
-| **Log Follow Streamer**| Live Log Stream Tailing| Streams container stdout/stderr output in real-time (`minictl logs -f`). |
-| **Descriptor Auditor** | Manifest Size Calculator| Calculates total bytes across image config and layer descriptors. |
-| **Memory Min Guarantee**| Cgroup v2 `memory.min` | Enforces hard memory page protection guarantees against RAM eviction. |
-| **DNS EDNS0 Option**   | `/etc/resolv.conf` Driver| Injects `options edns0` Extension Mechanisms for DNS into container. |
-| **Log Timestamps**     | RFC3339 Timestamp Injector| Formats/prepends RFC3339 nano timestamps to stdio log output lines (`minictl logs -t`). |
-| **Platform Filter**    | Target Platform Matcher| Validates image manifest compatibility with host OS & CPU (`linux/amd64`). |
-| **Local Memory Events**| Cgroup v2 `memory.events.local`| Reads non-hierarchical cgroup memory event counters. |
-| **DNS Trust-AD Flag**  | `/etc/resolv.conf` Driver| Injects `options trust-ad` DNSSEC Authenticated Data flag into container. |
-| **Log Grep Matcher**   | Regex Log Matcher      | Filters stdio log lines by regex or keyword (`minictl logs --grep ERROR`). |
-| **Annotations Inspector**| OCI Metadata Auditor | Extracts & inspects image manifest annotations (`org.opencontainers...`). |
-| **Memory Events Reader**| Cgroup v2 `memory.events`| Reads memory event counters (`low`, `high`, `max`, `oom`, `oom_kill`). |
-| **DNS Single-Request** | `/etc/resolv.conf` Driver| Injects `options single-request-reopen` glibc DNS fix into container. |
-| **Log Until Filter**   | Upperbound Log Auditor | Filters log entries emitted prior to cutoff time (`minictl logs --until 5m`). |
-| **Media-Type Inspector**| OCI Manifest Inspector | Validates OCI manifest media types (`application/vnd.oci...`). |
-| **IO Cost QoS Control**| Cgroup v2 `io.cost.qos` | Enforces linear disk I/O cost QoS model rules. |
-| **DNS Rotate Option**  | `/etc/resolv.conf` Driver| Injects `options rotate` load balancing directive into container. |
-| **Log Since Filter**   | Time-Window Log Auditor| Filters log entries emitted within duration window (`minictl logs --since 10m`). |
-| **Compression Detector**| Magic Byte Inspector   | Detects image layer compression format (`gzip`, `zstd`, `raw-tar`). |
-| **IO Latency Protection**| Cgroup v2 `io.latency` | Enforces disk I/O target latency protection to prevent I/O starvation. |
-| **DNS Order Preference**| `/etc/resolv.conf` Driver| Sorts & orders search domain suffixes in container `/etc/resolv.conf`. |
-| **Log Tail Filter**    | Stdio Log Extractor    | Extracts last N lines of log text from container (`minictl logs --tail N`). |
-| **OCI Index Resolver** | Multi-Arch Manifest Resolver| Resolves target architecture manifests (`amd64`/`arm64`) from OCI Index JSON. |
-| **IO Stat Auditor**    | Cgroup v2 `io.stat`    | Audits per-device disk I/O metrics (`rbytes`, `wbytes`, `rios`, `wios`). |
-| **DNS Port Config**    | `/etc/resolv.conf` Driver| Injects custom nameserver entries with port numbers (`10.0.0.1:5353`). |
-| **Top Threads Inspector**| `/proc/<pid>/task` Auditor| Inspects thread-level tasks & execution details (`minictl top --threads`). |
-| **Schema v2 Inspector**| OCI Manifest Auditor   | Validates OCI / Docker Image Manifest Schema v2 JSON structures. |
-| **CPU Stat Auditor**  | Cgroup v2 `cpu.stat`   | Audits CPU usage and throttling counters (`usage_usec`, `nr_throttled`). |
-| **DNS Loopback Config**| `/etc/resolv.conf` Driver| Injects `nameserver 127.0.0.53` systemd-resolved entry into container. |
-| **Stats Snapshot**    | Telemetry Collector    | Collects single-shot resource stats snapshot (`minictl stats --no-stream`). |
-| **Layer Digest Matcher**| SHA-256 Digest Searcher | Finds image records containing matching layer blob digests (`image search --digest`). |
-| **Memory PSI Inspector**| Cgroup v2 `memory.pressure`| Audits memory stall pressure metrics (`some`/`full`) for container. |
-| **DNS Fallback Config**| Upstream Nameserver Injector| Formats fallback upstream nameserver entries (`8.8.8.8`) into `/etc/resolv.conf`. |
-| **Signal Broadcaster**| OS Signal Emitter       | Sends custom OS signals (`SIGHUP`, `SIGUSR1`) to container PID 1 (`minictl kill -s`). |
-| **Image Tag Alias**   | Image Tag Linker        | Creates new tag aliases for existing image records (`minictl image tag`). |
-| **Swap High Limit**   | Cgroup v2 `memory.swap.high`| Enforces soft swap limit to trigger background page compacting. |
-| **DNS Options Config**| `/etc/resolv.conf` Driver| Injects custom resolver options (`options timeout:2...`) into container. |
-| **Container Wait**    | Exit Code Auditor      | Blocks until container terminates and returns exit code (`minictl wait`). |
-| **Image Layer Size**   | Disk Usage Calculator  | Recursively calculates total uncompressed rootfs disk usage (`minictl image size`). |
-| **Swap Max Limit**    | Cgroup v2 `memory.swap.max`| Enforces hard swap limit to prevent swap abuse. |
-| **DNS Domain Directive**| `/etc/resolv.conf` Driver| Injects custom `domain` directive into container `/etc/resolv.conf`. |
-| **Detached Exec**     | Namespace Background Exec| Runs background sub-processes inside container namespaces (`minictl exec -d`). |
-| **Image Layer History**| Build History Auditor  | Audits layer build steps, sizes, and timestamps (`minictl image history`). |
-| **I/O Weight Control**| Cgroup v2 `io.weight`  | Enforces block I/O fair share priority (1-10000) for containers. |
-| **DNS Search Suffix** | `/etc/resolv.conf` Driver| Injects custom search domain suffixes (`search default.svc...`) into container. |
-| **Atomic Freezer**    | Cgroup v2 `cgroup.freeze`| Freezes/thaws container execution without signal leakage (`minictl pause/unpause`). |
-| **Image Layer Diff**  | Tree Diff Auditor      | Compares file modifications between two image tags (`minictl image diff`). |
-| **Memory High Limit** | Cgroup v2 `memory.high`| Enforces soft memory limit throttling prior to hard OOM. |
-| **Network MAC Gen**   | Hardware Address Binder| Generates deterministic MAC hardware addresses (`02:42:...`) for veth interfaces. |
-| **Container Commit**   | Upperdir Layer Packager| Packages container rootfs changes into a new tagged image (`minictl commit`). |
-| **Orphan Layer Pruner**| Image Store GC Engine  | Scans and deletes unreferenced image layers (`minictl image prune`). |
-| **Memory Reclaim**    | Cgroup v2 `memory.reclaim`| Triggers forced memory page compacting for idle containers. |
-| **Network MTU Config**| Link MTU Configurator  | Adjusts MTU byte size for container veth and bridge interfaces. |
-| **Live Resource Mutator**| Cgroup v2 Limit Modifier| Dynamically updates memory limits & CPU quotas for running containers (`minictl update`). |
-| **Layer Digest Verifier**| SHA-256 Digest Auditor | Computes & verifies layer checksum integrity against OCI digest hashes (`image verify`). |
-| **CPU Bandwidth Control**| Cgroup v2 `cpu.weight` | Enforces Cgroup v2 `cpu.weight` fair share priority & `cpu.max` period/quota. |
-| **Dual-Stack IPv6 Net**| IPv6 Subnet Allocator  | Allocates & configures dual-stack IPv6 addresses (`2001:db8::/64`) for container veths. |
-| **Container Renamer**  | Alias & DNS Synchronizer | Safely updates container name alias & internal DNS host registry (`minictl rename`). |
-| **Tarball Importer**   | Raw RootFS Tar Unpacker  | Imports standalone raw tarballs into imagestore with named tags (`minictl import`). |
-| **Memory Alert Handler**| Cgroup v2 `memory.high` | Evaluates soft memory limit overload alerts for container processes. |
-| **DNS Resolver Config**| `/etc/resolv.conf` Driver| Injects custom nameserver IPs and search domain suffixes into container. |
-| **Process Inspector** | `/proc/<pid>/task`     | Lists active processes and threads inside running container (`minictl top`). |
-| **Container Exporter** | RootFS Tar Packager   | Streams container rootfs into Docker-compatible tarball (`minictl export`). |
-| **PIDs Limit Controller**| Cgroup v2 `pids.max` | Enforces max process count limit to prevent fork bomb attacks. |
-| **Network Traffic Meter**| VETH Netlink Counter  | Measures RX/TX bytes and packet throughput for veth interfaces. |
-| **Time-Based GC**     | Windowed Purge Engine  | Reclaims stopped containers created prior to duration cutoff (`system prune --until`). |
-| **AES-256 Layer Crypto**| Symmetric Cryptography| Encrypts and decrypts rootfs image layers via AES-256-GCM (`image encrypt/decrypt`). |
-| **Misc Device Limit**  | Cgroup v2 `misc.max`   | Controls misc hardware device allocations in Cgroup v2. |
-| **Readiness Prober**  | Active Network Socket | Conducts active TCP and HTTP readiness probes against container ports. |
-| **FS Checkpoint/Restore**| Instant Snapshot Engine| Saves & restores container OverlayFS upperdir snapshots (`minictl snapshot`). |
-| **Layer Deduplication**| SHA-256 Hardlink Linker| Deduplicates identical image layers across images via hardlinks. |
-| **HugePages Controller**| Cgroup v2 `hugetlb`    | Controls 2MB & 1GB HugePages memory quotas (`--hugetlb-limit`). |
-| **JSON Diagnostic Info**| Engine Telemetry Audit | Generates engine telemetry report in JSON format (`minictl info --json`). |
-| **Local Registry Mirror**| Layer Proxy Cacher   | Runs HTTP proxy server caching image layer blobs locally (`minictl mirror`). |
-| **Syslog Driver**     | RFC5424 Log Streamer  | Formats container stdio logs & events into RFC5424 syslog streams. |
-| **OOM Event Monitor** | Cgroup v2 `memory.events`| Monitors and records `oom` and `oom_kill` counters in container inspect state. |
-| **Engine Benchmarker**| Performance Tester    | Measures container startup latency (ms) & state read/write throughput (`minictl bench`). |
-| **Plugin Architecture**| Extension Manifest Driver | Discovers & loads volume, log, and network driver extensions (`minictl plugin`). |
-| **RootFS Security Scan**| Static Audit Inspector| Scans rootfs for SUID binaries, world-writable directories, and SSH keys (`minictl scan`). |
-| **PSI Monitor**       | Cgroup v2 Pressure Monitor| Reads `/sys/fs/cgroup/.../memory.pressure` & `cpu.pressure` contention metrics. |
-| **VXLAN Overlay Net** | Multi-Node Tunnel Driver| Configures Linux VXLAN interfaces (UDP port 4789) for inter-host container networking. |
-| **Memory Dump**      | Process State Snapshot| Dumps container process memory maps (`proc/maps`) & state to `.dump` file (`minictl dump`). |
-| **HMAC Image Sign**  | Provenance Cryptography| Signs & verifies rootfs layers with HMAC-SHA256 signatures (`minictl image sign/verify`). |
-| **Live Telemetry**   | Performance Dashboard | Streams live container resource consumption statistics (`minictl stats`). |
-| **SubUID/SubGID Map**| User Namespace Remap  | Allocates unprivileged UID/GID mapping ranges for rootless execution (`--userns-remap`). |
-| **Signal Propagation**| Unix Signal Dispatcher | Sends specific Unix signals (`SIGKILL`, `SIGTERM`, `SIGHUP`, etc.) (`minictl kill -s`). |
-| **Secret Env Masking**| Credential Obscuration | Obscures sensitive environment variables (`PASS`, `KEY`, `TOKEN`) in inspect output. |
-| **CPU/NUMA Pinning**  | Cgroup v2 `cpuset`     | Pins container execution to specific CPU cores & NUMA memory nodes (`--cpuset-cpus`). |
-| **Kernel Diagnostics**| Capability Self-Checker| Performs self-checks of Linux kernel prerequisites & namespaces (`minictl check`). |
-| **Image History**   | Layer Build Inspector | Audits image build steps, creation time, size, and commands (`minictl history`). |
-| **Event Webhooks**  | HTTP Event Dispatcher | Posts JSON container lifecycle events to HTTP webhook endpoints (`--webhook`). |
-| **Swap Memory Control**| Cgroup v2 `memory.swap`| Controls soft memory (`memory.high`) & swap thresholds (`--memory-swap`). |
-| **Multi-Arch OCI Index**| OCI Index Builder | Generates multi-architecture OCI Image Index manifests (`amd64`, `arm64`). |
-| **Auto-Restart Supervisor**| Exit State Monitor | Monitors container crashes & automatically respawns init process (`--restart`). |
-| **Disk I/O Throttling**| Cgroup v2 `io.max` | Throttles device read/write throughput (BPS) & IOPS (`--device-read-bps`). |
-| **Stream Attacher**   | Terminal Stream Piping | Attaches stdio stream to running container console (`minictl attach`). |
-| **System Diagnostics**| Engine Disk & Prune Engine | Computes disk space usage breakdown (`system df`) & one-stop reclamation (`system prune -a`). |
-| **Dynamic IPAM**     | Subnet Lease Pool Allocator| Dynamically allocates & recycles container IP addresses across bridge networks. |
-| **Filesystem Diff** | OverlayFS Upper Inspector | Audits filesystem mutations (`A` added, `C` changed, `D` deleted) (`minictl diff`). |
-| **Prometheus Exporter**| Metrics Endpoint Exporter| Exposes `/v1/metrics` REST endpoint formatted for Prometheus metrics scrapers. |
-| **OCI Image Push**   | Tarball & Manifest Packager| Packages rootfs layers and OCI manifest for image registry upload (`minictl push`). |
-| **REST API Daemon**  | HTTP over Unix/TCP Socket | Runs background engine server listening on `/tmp/minictl.sock` or `:2375` (`minictl daemon`). |
-| **Interactive PTY**   | Master/Slave PTY Allocator | Provides raw terminal mode pass-through & stream piping for interactive sessions (`-it`). |
-| **Health Supervisor**| Periodic Background Evaluator | Background worker evaluating container health command status (`healthy`/`unhealthy`). |
-| **Dockerfile Builder**| AST Parser & Layer Executor| Builds container images step-by-step from Dockerfile (`minictl build`). |
-| **Image Tag & Store**| Local Manifest Index | Manages local image repositories, tags, IDs, and disk sizes (`minictl images/tag/rmi`). |
-| **Named Volumes**   | Persistent Data Driver | Manages named data volumes and automatic volume binding (`minictl volume`). |
-| **Container DNS**    | Network Hosts Injector | Auto-registers container hostnames & IPs for service discovery inside bridge networks. |
-| **Container Export** | `tar.Writer` | Packages container rootfs into `.tar` / `.tar.gz` (`minictl export`). |
-| **Container Commit** | Metadata snapshot | Commits container filesystem as new local image (`minictl commit`). |
-| **Container Top** | `/proc/<pid>/task` parsing | Displays tasks/threads running inside the container (`minictl top`). |
+The repository also contains a larger set of inspection and observability helpers. Those are secondary to the runtime core above; the README intentionally keeps them out of the opening pitch so the important mechanisms are easy to audit.
 
----
+## Architecture
 
-## 🚀 Requirements & Environment Setup
-
-Linux kernel features (namespaces, cgroups, pivot_root) require a Linux kernel environment.
-
-### Option A: WSL 2 (Windows 10 / 11) — Recommended
-1. Open PowerShell as Administrator:
-   ```powershell
-   wsl --install
-   ```
-2. Restart your computer and open Ubuntu from the Start menu.
-3. Install Go:
-   ```bash
-   sudo apt update && sudo apt install -y golang-go
-   ```
-
-### Option B: Native Linux / Cloud VM / VirtualBox
-Install Go (v1.21+):
-```bash
-sudo apt update && sudo apt install -y golang-go make wget
-```
-
----
-
-## 🛠️ Build & Usage
-
-### 1. Build `minictl`
-```bash
-make build
-# or manually:
-go build -o build/minictl ./cmd/minictl
-```
-
-### 2. Prepare RootFS Image
-Pull an Alpine Linux image directly from Docker Hub:
-```bash
-./build/minictl pull alpine:3.19 ./rootfs
-```
-
-Or download and unpack an Alpine Linux minirootfs manually:
-```bash
-make rootfs
-# or manually:
-./build/minictl unpack alpine-minirootfs-3.19.0-x86_64.tar.gz ./rootfs
-```
-
----
-
-## 💻 CLI Command Reference
-
-### `minictl update` — Dynamic Resource Updates
-```bash
-# Dynamically change memory limit to 128MB and CPU quota to 1.5 CPUs on running container
-sudo ./build/minictl update --memory 128m --cpus 1.5 <container-id>
-```
-
-### `minictl events` — Real-time Lifecycle Audit Stream
-```bash
-# Stream real-time container events (create, start, exec, pause, stop, die, destroy)
-./build/minictl events -f
-```
-
-### `minictl cp` — Bidirectional Container File Transfer
-```bash
-# Copy file from host into container
-./build/minictl cp /tmp/config.json <container-id>:/etc/config.json
-
-# Copy file from container out to host
-./build/minictl cp <container-id>:/var/log/app.log /tmp/app.log
-```
-
-### `minictl compose up` — Multi-container Orchestration
-```bash
-sudo ./build/minictl compose up -f compose.json
-```
-
-### `minictl pull` — Download Images from Docker Hub
-```bash
-./build/minictl pull alpine:3.19 ./rootfs-alpine
-./build/minictl pull ubuntu:22.04 ./rootfs-ubuntu
-```
-
-### `minictl run` — Launch a Container
-```bash
-# Basic shell with OverlayFS layer isolation, environment variables & working directory
-sudo ./build/minictl run --overlay -w /app -e MODE=production ./rootfs /bin/sh
-
-# Resource limits (Memory, CPU quota 50%, PIDs limit) & custom hostname
-sudo ./build/minictl run \
-  --hostname demo-box \
-  --memory 64m \
-  --cpus 0.5 \
-  --pids-limit 32 \
-  ./rootfs /bin/sh
-
-# Security: Drop CAP_SYS_ADMIN & CAP_NET_RAW capabilities + Seccomp BPF filter
-sudo ./build/minictl run \
-  --cap-drop CAP_SYS_ADMIN \
-  --cap-drop CAP_NET_RAW \
-  --seccomp \
-  ./rootfs /bin/sh
-
-# Bind volumes (-v host:container[:ro])
-sudo ./build/minictl run \
-  -v /tmp/data:/data \
-  -v /etc/hosts:/etc/hosts:ro \
-  ./rootfs /bin/sh
-
-# Bridge networking & Port mapping (-p hostPort:containerPort)
-sudo ./build/minictl run --bridge -p 8080:80 ./rootfs /bin/nc -l -p 80
-```
-
-### Management Commands
-```bash
-# List containers
-./build/minictl ps [-a]
-
-# Inspect JSON metadata
-./build/minictl inspect <id>
-
-# View process list inside container
-./build/minictl top <id>
-
-# Manage custom bridge networks
-sudo ./build/minictl network create demo-net 172.28.0.1/24
-./build/minictl network ls
-sudo ./build/minictl network rm demo-net
-
-# Execute command inside running container
-sudo ./build/minictl exec <id> /bin/sh
-
-# Export container rootfs to a tarball archive
-./build/minictl export <id> container-backup.tar.gz
-
-# Commit container to new local image
-./build/minictl commit <id> my-custom-app:v1
-
-# View live resource metrics (cgroup v2)
-./build/minictl stats [id]
-
-# View container logs
-./build/minictl logs [-f] [--tail n] <id>
-
-# Pause / Unpause container processes (cgroup freezer)
-sudo ./build/minictl pause <id>
-sudo ./build/minictl unpause <id>
-
-# Gracefully stop container (SIGTERM -> SIGKILL)
-sudo ./build/minictl stop -t 5 <id>
-
-# Force kill container (SIGKILL)
-./build/minictl kill <id>
-
-# Remove container or prune stopped containers
-./build/minictl rm <id>
-./build/minictl prune
-```
-
----
-
-## 🧪 Testing
-
-Run all unit tests across state store, image unpacking, compose parsing, health check evaluation, container cp transfer, events stream, OCI image ref parsing, export round-tripping, safe-path traversal protection, port parsing, and platform stubs:
-```bash
-make test
-# or manually:
-go test -v ./...
-```
-
----
-
-## 🔬 Learning Highlights & Debugging
-
-To observe raw syscall execution and namespace creation in real-time, set `MINICONTAINER_DEBUG=1`:
-```bash
-sudo MINICONTAINER_DEBUG=1 ./build/minictl run --overlay --cap-drop CAP_SYS_ADMIN ./rootfs /bin/sh
-```
-Output log trace:
 ```text
-[parent] spawning child with new namespaces
-[parent] child started, PID=14205
-[cgroup] using cgroup v2 (unified hierarchy)
-[cgroup v2] cpu.max = 50000 100000
-[parent] veth: host side veth-h14205 ready (172.20.0.1/24)
-[init] running inside new namespaces
-[init] received sync signal from parent
-[init] mount namespace propagation set to private
-[init] overlayfs mounted (./rootfs -> /tmp/minicontainer-overlay-1234/merged)
-[init] hostname set to "minicontainer"
-[init] /proc mounted
-[init] dropped capability CAP_SYS_ADMIN (21)
-[init] pivot_root complete
-[init] exec: /bin/sh []
+                         minictl CLI
+                             |
+              +--------------+--------------+
+              |                             |
+              v                             v
+       Parent / runtime                Container init
+       ----------------                --------------
+       clone namespaces                wait for setup
+       configure cgroups               set hostname
+       create veth pair                mount rootfs
+       configure bridge/NAT            mount proc/sys/dev
+       prepare rootfs                   pivot_root
+       apply policy                     drop capabilities
+       release child                    install seccomp
+       track / clean up                 exec payload
 ```
+
+The runtime directly reaches kernel interfaces such as:
+
+```text
+clone / setns / mount / pivot_root / prctl
+/sys/fs/cgroup/*
+netlink + veth / bridge
+iptables DNAT
+OCI Registry HTTP API
+```
+
+## Why this project is useful
+
+A normal `docker run` hides a lot of machinery. `minictl` keeps that machinery in one readable codebase so you can trace questions such as:
+
+- When does a process enter its PID namespace?
+- How is a container root filesystem separated from the host?
+- Where are memory and CPU limits enforced?
+- How does a veth pair connect an isolated network namespace back to the host?
+- What does an OCI image pull actually download and unpack?
+- Which privileges remain after capabilities and seccomp are applied?
+
+That makes it useful as a systems-programming project and as a reference for learning Linux container internals.
+
+## Repository structure
+
+```text
+cmd/minictl/        CLI and command wiring
+internal/           runtime subsystems
+.github/workflows/  CI
+Makefile             build / test helpers
+compose.json         small orchestration example
+```
+
+The implementation is split into focused `internal/` packages rather than one monolithic runtime file. Tests live next to many of those packages and GitHub Actions exercises the repository automatically.
+
+## Build and test
+
+Linux is required for the full runtime because the implementation depends on Linux namespaces, cgroups, OverlayFS and networking primitives.
+
+```sh
+go build ./...
+go test ./...
+```
+
+Or use the provided Makefile targets where appropriate.
+
+Some integration paths require root privileges or host capabilities to create namespaces, mounts, bridges and iptables rules.
+
+## Minimal walkthrough
+
+Build the CLI:
+
+```sh
+go build -o minictl ./cmd/minictl
+```
+
+Then use the CLI to pull an image / prepare a rootfs and launch isolated processes according to the commands exposed by the current build.
+
+The important part is not the Docker-like command surface; it is what happens underneath it: namespace creation, rootfs setup, resource control, networking, privilege reduction and process execution.
+
+## Core subsystem map
+
+| Subsystem | Linux mechanism | Responsibility |
+| --- | --- | --- |
+| Process isolation | PID namespace | independent PID view / container init |
+| Hostname isolation | UTS namespace | isolated hostname |
+| Filesystem isolation | mount namespace + `pivot_root` | separate mount table and root |
+| Network isolation | network namespace | independent interfaces / routes |
+| Rootfs layers | OverlayFS | copy-on-write image + writable layer |
+| Resource limits | cgroups v2 | memory / CPU / PIDs |
+| Exec | `setns` | join an existing container's namespaces |
+| Networking | veth + bridge | connect container namespace to host |
+| Port mapping | iptables DNAT | forward host traffic to container |
+| Image distribution | OCI Registry API | fetch manifests, configs and layers |
+| Capabilities | `prctl` / capability sets | reduce privileged operations |
+| Syscall policy | seccomp BPF | deny selected syscall classes |
+
+## Scope and limitations
+
+`minictl` is deliberately educational. It does **not** claim Docker/containerd/runc compatibility, production-grade security hardening, or complete OCI runtime-spec coverage.
+
+The codebase favors explicit mechanisms and experiments over abstraction layers. Some features depend on the host kernel, cgroup configuration, filesystem support and privileges, so behavior can vary across Linux environments.
+
+When evaluating the project, the most meaningful parts are the runtime path, tests and kernel interactions — not the raw number of CLI flags.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
