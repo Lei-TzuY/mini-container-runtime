@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Context Extractor**| Context Lines Grep (-A -B -C)| Extracts matches with configurable preceding/following context lines & separators (`--`). |
+| **Manifest Schema Auditor**| OCI/Docker Manifest Auditor| Inspects `schemaVersion` & `mediaType` format (OCI v1 vs Docker Manifest v2/List). |
+| **CPU Burst/Throttle Metrics**| Cgroup v2 `cpu.stat`| Calculates CPU throttling ratio and burst utilization ratio for autoscaling signals. |
+| **DNS SingleReq-Recheck Timeout**| `/etc/resolv.conf` Driver| Combines `options single-request-recheck` and `options timeout:N` into formatted lines. |
 | **Log Line Number Annotator**| Sequential Line Numbering| Prepends padded sequential line numbers for debugging (`minictl logs --line-numbers`). |
 | **Author & Maintainer Auditor**| Image Metadata Inspector| Extracts `author` field and `maintainer` label from Image Config for provenance tracking. |
 | **I/O PSI Pressure**    | Cgroup v2 `io.pressure`| Reads total I/O pressure stall time (µs) from PSI "some" line for disk bottleneck detection. |
