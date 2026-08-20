@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log CSV/TSV Exporter**| RFC 4180 Table Exporter| Exports container logs as structured CSV/TSV records with header rows (`minictl logs --csv`). |
+| **Image Created-At Auditor**| Creation Timestamp Auditor| Inspects `created` timestamp and computes human-readable relative age (e.g. "3 days ago"). |
+| **Memory OOM Group Controller**| Cgroup v2 `memory.oom.group`| Reads/sets group OOM kill policy: kill all cgroup processes on OOM instead of individual. |
+| **DNS Use-VC Attempts**| `/etc/resolv.conf` Driver| Combines `options use-vc` (force TCP) and `options attempts:N` into formatted lines. |
 | **Log Entropy Filter**  | Shannon Entropy Analyzer| Detects high-entropy encrypted blobs, tokens, and secret leakage (`minictl logs --entropy-min`). |
 | **OS Compatibility Auditor**| Kernel Features Auditor| Inspects `os`, `os.version`, and `os.features` platform compatibility requirements. |
 | **PIDs Events Max Counter**| Cgroup v2 `pids.events`| Reads fork/clone limit failure counts (`max N`) for container fork-bomb monitoring. |
