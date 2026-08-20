@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Syslog RFC 5424 Formatter**| Syslog Protocol Encoder| Formats logs into standard RFC 5424 Syslog records for centralized log daemon forwarding. |
+| **Env Variable Interpolator**| Runtime POSIX Expander | Expands nested `${VAR}`, `${VAR:-default}`, and `$VAR` substitutions in OCI Image Config. |
+| **Misc Events Max Counter**| Cgroup v2 `misc.events`| Reads hardware security extension capacity failure counters (SEV, TDX limits). |
+| **DNS Debug Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `debug`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Delta Time Annotator**| Inter-Line Latency Profiler| Computes elapsed time offsets between logs (`[+15.2ms]`, `[+1.50s]`) to locate slow steps (`minictl logs --delta-time`). |
 | **Security Risk Auditor**| Privilege & Vulnerability Checker| Audits root execution, exposed privileged ports (<1024), and hardcoded environment credentials. |
 | **Misc Resources Reader**| Cgroup v2 `misc.current`| Tracks hardware security extension ASID allocations (AMD SEV, SEV-ES, Intel TDX). |
