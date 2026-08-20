@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Template Miner**  | Drain Template Clusterer| Clusters unstructured logs and extracts recurring templates with `<*>` parameterization (`minictl logs --templates`). |
+| **Layer Uncompressed & DiffID Auditor**| Layer Chain Correlator| Maps compressed manifest layer digests to uncompressed rootfs diff_ids and calculates volume savings. |
+| **Local Zswap Max Events**| Cgroup v2 `memory.events.local`| Reads non-hierarchical local container zswap max allocation rejections (Linux 6.8+). |
+| **DNS NoReload Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `no-reload`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Fuzzy Search Matcher**| Levenshtein Distance Matcher| Finds approximate query matches in log streams for typos and corrupt text (`minictl logs --fuzzy`). |
 | **Multi-Platform Index Matcher**| OCI Manifest List Resolver| Selects matching image manifest descriptor for host target `os/arch/variant` from index. |
 | **Local Zswap Writeback Events**| Cgroup v2 `memory.events.local`| Reads non-hierarchical local container zswap writeback evictions (Linux 6.8+). |
