@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Line Number Annotator**| Sequential Line Numbering| Prepends padded sequential line numbers for debugging (`minictl logs --line-numbers`). |
+| **Author & Maintainer Auditor**| Image Metadata Inspector| Extracts `author` field and `maintainer` label from Image Config for provenance tracking. |
+| **I/O PSI Pressure**    | Cgroup v2 `io.pressure`| Reads total I/O pressure stall time (µs) from PSI "some" line for disk bottleneck detection. |
+| **DNS Inet6 Attempts**  | `/etc/resolv.conf` Driver| Combines `options inet6` (prefer IPv6 AAAA) and `options attempts:N` into formatted lines. |
 | **Log Truncate Filter** | Line Length Limiter   | Caps individual log lines to configurable max bytes with `...[truncated]` suffix. |
 | **RootFS Layers Auditor**| Layer Diff ID Inspector| Lists rootfs `diff_ids` layer digests, counts, and types from Image Config. |
 | **CPU PSI Pressure**    | Cgroup v2 `cpu.pressure`| Reads total CPU pressure stall time (µs) from PSI "some" line for scheduling analysis. |
