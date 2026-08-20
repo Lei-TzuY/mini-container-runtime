@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Delta Time Annotator**| Inter-Line Latency Profiler| Computes elapsed time offsets between logs (`[+15.2ms]`, `[+1.50s]`) to locate slow steps (`minictl logs --delta-time`). |
+| **Security Risk Auditor**| Privilege & Vulnerability Checker| Audits root execution, exposed privileged ports (<1024), and hardcoded environment credentials. |
+| **Misc Resources Reader**| Cgroup v2 `misc.current`| Tracks hardware security extension ASID allocations (AMD SEV, SEV-ES, Intel TDX). |
+| **DNS NoCheck Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `no-check-names`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Alert Engine**    | Trigger-Based Alert Engine| Real-time scanning for panic, fatal, OOM killer, and segfault alert triggers (`minictl logs --alert-on`). |
 | **Reproducible Build Auditor**| Deterministic Build Auditor| Checks for epoch zero/fixed timestamps, sorted environment variables, and build reproducibility. |
 | **RDMA Resources Reader**| Cgroup v2 `rdma.current`| Tracks HCA device handle and object allocations for high-performance AI/GPU containers. |
