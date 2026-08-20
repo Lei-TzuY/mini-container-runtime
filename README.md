@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log URL Sanitizer**   | URL Credentials Stripper| Strips Basic-Auth passwords & masks sensitive query parameters in log URLs (`minictl logs --sanitize-urls`). |
+| **Layer MediaTypes Auditor**| Image Compression Auditor| Detects gzip, zstd, and tar compression formats across OCI/Docker layer descriptors. |
+| **Memory Breakdown & Slab Ratio**| Cgroup v2 `memory.stat`| Computes Kernel vs User memory breakdown, and slab reclaimable efficiency ratios. |
+| **DNS Inet6 Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `inet6`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log IP Address Masker**| PII & IP Anonymizer    | Anonymizes IPv4 and IPv6 addresses into `192.168.1.xxx` or `[IP_MASKED]` (`minictl logs --mask-ip`). |
 | **Artifact Type Auditor**| OCI 1.1 Artifact Inspector| Inspects `artifactType` and `subject` descriptors for Cosign signatures and SBOM attestations. |
 | **Zswap Max Events Counter**| Cgroup v2 `memory.events`| Reads `zswap_max N` rejected page compression counts from memory events (Linux 6.8+). |
