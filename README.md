@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Column Extractor**| Delimited Field Extractor| Extracts positional columns from delimited log streams (`minictl logs --columns 1,3 --delimiter ","`). |
+| **Healthcheck Timing Auditor**| Interval & Timeout Auditor| Inspects `Healthcheck.Interval`, `Timeout`, `StartPeriod`, and `Retries` from Image Config. |
+| **Zswap Max Limit Controller**| Cgroup v2 `memory.zswap.max`| Reads and enforces maximum compressed zswap memory byte limits for the container. |
+| **DNS EDNS0 Attempts**  | `/etc/resolv.conf` Driver| Combines `options edns0` and `options attempts:N` into formatted lines. |
 | **Log Downsampling Filter**| Stream Rate Sampler   | Downsamples high-throughput container logs via interval (1-in-N) or probability (`minictl logs --sample`). |
 | **Healthcheck Test Auditor**| Health Command Auditor| Inspects and normalizes `Healthcheck.Test` command slice types (`CMD`, `CMD-SHELL`, `NONE`). |
 | **Zswap Usage Reader**   | Cgroup v2 `memory.zswap.current`| Reads exact compressed RAM bytes used by container zswap memory pages. |
