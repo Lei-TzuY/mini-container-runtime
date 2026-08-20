@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Entropy Filter**  | Shannon Entropy Analyzer| Detects high-entropy encrypted blobs, tokens, and secret leakage (`minictl logs --entropy-min`). |
+| **OS Compatibility Auditor**| Kernel Features Auditor| Inspects `os`, `os.version`, and `os.features` platform compatibility requirements. |
+| **PIDs Events Max Counter**| Cgroup v2 `pids.events`| Reads fork/clone limit failure counts (`max N`) for container fork-bomb monitoring. |
+| **DNS Trust-AD Attempts**| `/etc/resolv.conf` Driver| Combines `options trust-ad` and `options attempts:N` into formatted lines. |
 | **Log Multi-line Regex Splitter**| Stream Record Assembler| Groups fragmented lines and stack traces by message start pattern (`minictl logs --multiline-regex`). |
 | **Architecture Variant Auditor**| CPU Variant Auditor   | Inspects `architecture` and `variant` (e.g. `arm64/v8`, `arm/v7`) from Image Config. |
 | **Memory NUMA Stat Reader**| Cgroup v2 `memory.numa_stat`| Reads per-NUMA-node memory distribution across anon, file, and kernel pages. |
