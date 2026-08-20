@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Downsampling Filter**| Stream Rate Sampler   | Downsamples high-throughput container logs via interval (1-in-N) or probability (`minictl logs --sample`). |
+| **Healthcheck Test Auditor**| Health Command Auditor| Inspects and normalizes `Healthcheck.Test` command slice types (`CMD`, `CMD-SHELL`, `NONE`). |
+| **Zswap Usage Reader**   | Cgroup v2 `memory.zswap.current`| Reads exact compressed RAM bytes used by container zswap memory pages. |
+| **DNS SingleReq Attempts**| `/etc/resolv.conf` Driver| Combines `options single-request` and `options attempts:N` into formatted lines. |
 | **Log Color Highlighter**| Terminal Stream Colorizer| Decorates log stream severity levels and custom keywords with ANSI colors (`minictl logs --color`). |
 | **Image Network Auditor**| Network Config Auditor | Inspects `config.NetworkDisabled` and `config.MacAddress` flags from Image Config. |
 | **CPU Idle Controller**  | Cgroup v2 `cpu.idle`   | Manages SCHED_IDLE background priority class for low-priority batch containers (0 or 1). |
