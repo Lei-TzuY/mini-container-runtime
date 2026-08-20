@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Truncate Filter** | Line Length Limiter   | Caps individual log lines to configurable max bytes with `...[truncated]` suffix. |
+| **RootFS Layers Auditor**| Layer Diff ID Inspector| Lists rootfs `diff_ids` layer digests, counts, and types from Image Config. |
+| **CPU PSI Pressure**    | Cgroup v2 `cpu.pressure`| Reads total CPU pressure stall time (µs) from PSI "some" line for scheduling analysis. |
+| **DNS SingleReq-Recheck Attempts**| `/etc/resolv.conf` Driver| Combines `options single-request-recheck` and `options attempts:N` into formatted lines. |
 | **Log Dedup Filter**    | Line Deduplication Filter| Suppresses consecutive identical lines and emits `[repeated N times]` summaries. |
 | **Build History Auditor**| Dockerfile Layer Inspector| Parses OCI image `history[]` entries (Dockerfile commands) with LAYER/META markers. |
 | **Memory PSI Pressure** | Cgroup v2 `memory.pressure`| Reads total memory pressure stall time (µs) from PSI "some" line for throttle detection. |
