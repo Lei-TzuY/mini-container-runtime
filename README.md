@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Regex Replacer**  | Stream Pattern Masker | Performs regex substitution and redaction over log output lines (`minictl logs --regex-replace`). |
+| **Empty Layer Auditor** | History Layer Auditor | Differentiates metadata-only (`empty_layer: true`) vs data layers in OCI Image Config. |
+| **Local Swap High Counter**| Cgroup v2 `memory.swap.events.local`| Reads count of local non-hierarchical swap soft limit throttle events (`high N`). |
+| **DNS NoTLD Timeout**   | `/etc/resolv.conf` Driver| Combines `options no-tld-query` and `options timeout:N` into formatted lines. |
 | **Log Custom Prefix**  | Log Line Tag Prepend  | Prepends custom identifier prefix string to each log line (`minictl logs --prefix`). |
 | **Image Volumes Extractor**| Declared Volumes Auditor| Inspects `config.Volumes` mount point declarations from Image Config JSON. |
 | **Swap Failcnt Counter**| Cgroup v2 `memory.swap.events`| Reads exact count of swap memory exhaustion encounters (`failcnt N`). |
