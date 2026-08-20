@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Fuzzy Search Matcher**| Levenshtein Distance Matcher| Finds approximate query matches in log streams for typos and corrupt text (`minictl logs --fuzzy`). |
+| **Multi-Platform Index Matcher**| OCI Manifest List Resolver| Selects matching image manifest descriptor for host target `os/arch/variant` from index. |
+| **Local Zswap Writeback Events**| Cgroup v2 `memory.events.local`| Reads non-hierarchical local container zswap writeback evictions (Linux 6.8+). |
+| **DNS EDNS0 Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `edns0`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log URL Sanitizer**   | URL Credentials Stripper| Strips Basic-Auth passwords & masks sensitive query parameters in log URLs (`minictl logs --sanitize-urls`). |
 | **Layer MediaTypes Auditor**| Image Compression Auditor| Detects gzip, zstd, and tar compression formats across OCI/Docker layer descriptors. |
 | **Memory Breakdown & Slab Ratio**| Cgroup v2 `memory.stat`| Computes Kernel vs User memory breakdown, and slab reclaimable efficiency ratios. |
