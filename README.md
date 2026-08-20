@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Multi-line Regex Splitter**| Stream Record Assembler| Groups fragmented lines and stack traces by message start pattern (`minictl logs --multiline-regex`). |
+| **Architecture Variant Auditor**| CPU Variant Auditor   | Inspects `architecture` and `variant` (e.g. `arm64/v8`, `arm/v7`) from Image Config. |
+| **Memory NUMA Stat Reader**| Cgroup v2 `memory.numa_stat`| Reads per-NUMA-node memory distribution across anon, file, and kernel pages. |
+| **DNS NoTLD Attempts**  | `/etc/resolv.conf` Driver| Combines `options no-tld-query` and `options attempts:N` into formatted lines. |
 | **Log Time Range Filter**| Timestamp Window Filter| Filters container logs within `Since` and `Until` time boundaries (`minictl logs --since/--until`). |
 | **Healthcheck StartInterval**| Probe Interval Auditor | Inspects `Healthcheck.StartInterval` custom probe interval during container startup. |
 | **Zswap Writeback Events**| Cgroup v2 `memory.events`| Reads exact count of compressed zswap pages evicted to disk swap (`zswap_writeback N`). |
