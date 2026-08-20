@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Dedup Filter**    | Line Deduplication Filter| Suppresses consecutive identical lines and emits `[repeated N times]` summaries. |
+| **Build History Auditor**| Dockerfile Layer Inspector| Parses OCI image `history[]` entries (Dockerfile commands) with LAYER/META markers. |
+| **Memory PSI Pressure** | Cgroup v2 `memory.pressure`| Reads total memory pressure stall time (µs) from PSI "some" line for throttle detection. |
+| **DNS Rotate+Attempts+NDots**| `/etc/resolv.conf` Driver| Triple-option decorator: `rotate`, `attempts:N`, and `ndots:M` in one formatted line. |
 | **Log CSV/TSV Exporter**| RFC 4180 Table Exporter| Exports container logs as structured CSV/TSV records with header rows (`minictl logs --csv`). |
 | **Image Created-At Auditor**| Creation Timestamp Auditor| Inspects `created` timestamp and computes human-readable relative age (e.g. "3 days ago"). |
 | **Memory OOM Group Controller**| Cgroup v2 `memory.oom.group`| Reads/sets group OOM kill policy: kill all cgroup processes on OOM instead of individual. |
