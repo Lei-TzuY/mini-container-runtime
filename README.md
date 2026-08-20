@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Alert Engine**    | Trigger-Based Alert Engine| Real-time scanning for panic, fatal, OOM killer, and segfault alert triggers (`minictl logs --alert-on`). |
+| **Reproducible Build Auditor**| Deterministic Build Auditor| Checks for epoch zero/fixed timestamps, sorted environment variables, and build reproducibility. |
+| **RDMA Resources Reader**| Cgroup v2 `rdma.current`| Tracks HCA device handle and object allocations for high-performance AI/GPU containers. |
+| **DNS SingleReq Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `single-request`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Sliding Window Rate Limiter**| Log Surge Flood Limiter| Suppresses logging spikes and crash loops using in-memory sliding window rate limits (`minictl logs --rate-limit`). |
 | **Image Size Footprint Estimator**| Download & Disk Estimator| Projects total image download volume and expanded container rootfs disk footprints. |
 | **HugeTLB Events & Allocation**| Cgroup v2 `hugetlb.*`  | Reads current allocated hugepage memory bytes and max allocation failure counters. |
