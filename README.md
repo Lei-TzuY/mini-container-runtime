@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log IP Address Masker**| PII & IP Anonymizer    | Anonymizes IPv4 and IPv6 addresses into `192.168.1.xxx` or `[IP_MASKED]` (`minictl logs --mask-ip`). |
+| **Artifact Type Auditor**| OCI 1.1 Artifact Inspector| Inspects `artifactType` and `subject` descriptors for Cosign signatures and SBOM attestations. |
+| **Zswap Max Events Counter**| Cgroup v2 `memory.events`| Reads `zswap_max N` rejected page compression counts from memory events (Linux 6.8+). |
+| **DNS Use-VC Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `use-vc`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Secret Redactor** | Credentials & PII Masker| Masks Bearer tokens, passwords, JWTs, emails, and custom secret patterns (`minictl logs --redact-secrets`). |
 | **Manifest Annotations Auditor**| OCI Annotations Inspector| Extracts `org.opencontainers.image.*` standard metadata (title, version, vendor, license). |
 | **I/O Stat Bandwidth Reader**| Cgroup v2 `io.stat`| Aggregates per-device read/write throughput bytes, IOPS, and discard statistics. |
