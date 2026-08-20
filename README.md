@@ -56,6 +56,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Image Volumes Extractor**| Declared Volumes Auditor| Inspects `config.Volumes` mount point declarations from Image Config JSON. |
 | **Swap Failcnt Counter**| Cgroup v2 `memory.swap.events`| Reads exact count of swap memory exhaustion encounters (`failcnt N`). |
 | **DNS NoReload Timeout**| `/etc/resolv.conf` Driver| Combines `options no-reload` and `options timeout:N` into formatted lines. |
+| **Log Field Extractor** | Structured Log Parser | Extracts specific named `key=value` fields from structured log lines (`minictl logs --fields`). |
+| **Image Domainname Inspector**| Network Domain Auditor| Inspects `config.Domainname` declared network domain from Image Config JSON. |
+| **CPU Weight Reader**   | Cgroup v2 `cpu.weight` | Reads container CPU scheduling weight share (1–10000, default 100). |
+| **DNS Ndots Timeout**   | `/etc/resolv.conf` Driver| Combines `options ndots:N` and `options timeout:T` into formatted lines. |
 | **Log Max Bytes**      | Byte Payload Limiter  | Truncates log payload at maximum byte threshold with indicator (`minictl logs --max-bytes`). |
 | **Image Shell Auditor**| Default Shell Auditor | Inspects default execution shell (`config.Shell`) from Image Config JSON. |
 | **Swap Max Counter**   | Cgroup v2 `memory.swap.events`| Reads exact count of swap hard limit enforcement events (`max N`). |
