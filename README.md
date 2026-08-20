@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Severity Filter** | Log Stream Level Filter| Filters container logs based on minimum severity rank (`minictl logs --level warn`). |
+| **Image TTY Auditor**   | Terminal Config Auditor| Inspects `config.Tty`, `config.OpenStdin`, and `config.StdinOnce` flags from Image Config. |
+| **Local Swap Failcnt Counter**| Cgroup v2 `memory.swap.events.local`| Reads count of local non-hierarchical swap allocation failures (`failcnt N`). |
+| **DNS Use-VC Timeout**  | `/etc/resolv.conf` Driver| Combines `options use-vc` and `options timeout:N` into formatted lines. |
 | **JSON Log Key Filter** | Structured Log Projector| Filters and projects specific JSON keys from structured log streams (`minictl logs --json-keys`). |
 | **Image Attach Auditor**| Stdio Attachment Auditor| Inspects `config.AttachStdin`, `config.AttachStdout`, and `config.AttachStderr` flags from Image Config. |
 | **Local Swap Max Counter**| Cgroup v2 `memory.swap.events.local`| Reads count of local non-hierarchical swap hard limit hits (`max N`). |
