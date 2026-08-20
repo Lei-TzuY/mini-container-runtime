@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Secret Redactor** | Credentials & PII Masker| Masks Bearer tokens, passwords, JWTs, emails, and custom secret patterns (`minictl logs --redact-secrets`). |
+| **Manifest Annotations Auditor**| OCI Annotations Inspector| Extracts `org.opencontainers.image.*` standard metadata (title, version, vendor, license). |
+| **I/O Stat Bandwidth Reader**| Cgroup v2 `io.stat`| Aggregates per-device read/write throughput bytes, IOPS, and discard statistics. |
+| **DNS Trust-AD Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `trust-ad`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Context Extractor**| Context Lines Grep (-A -B -C)| Extracts matches with configurable preceding/following context lines & separators (`--`). |
 | **Manifest Schema Auditor**| OCI/Docker Manifest Auditor| Inspects `schemaVersion` & `mediaType` format (OCI v1 vs Docker Manifest v2/List). |
 | **CPU Burst/Throttle Metrics**| Cgroup v2 `cpu.stat`| Calculates CPU throttling ratio and burst utilization ratio for autoscaling signals. |
