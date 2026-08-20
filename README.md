@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Time Range Filter**| Timestamp Window Filter| Filters container logs within `Since` and `Until` time boundaries (`minictl logs --since/--until`). |
+| **Healthcheck StartInterval**| Probe Interval Auditor | Inspects `Healthcheck.StartInterval` custom probe interval during container startup. |
+| **Zswap Writeback Events**| Cgroup v2 `memory.events`| Reads exact count of compressed zswap pages evicted to disk swap (`zswap_writeback N`). |
+| **DNS NoReload Attempts**| `/etc/resolv.conf` Driver| Combines `options no-reload` and `options attempts:N` into formatted lines. |
 | **Log Summary Stats Aggregator**| Stream Stats Calculator| Computes total lines, bytes, average length, and severity breakdown (`minictl logs --stats`). |
 | **ExposedPorts Auditor**| Port & Protocol Auditor| Inspects and categorizes `config.ExposedPorts` into sorted TCP/UDP port listings. |
 | **Zswap Writeback Controller**| Cgroup v2 `memory.zswap.writeback`| Enables or disables writing compressed zswap pool pages back to swap disk (0 or 1). |
