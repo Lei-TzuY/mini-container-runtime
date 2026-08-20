@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **JSON Log Key Filter** | Structured Log Projector| Filters and projects specific JSON keys from structured log streams (`minictl logs --json-keys`). |
+| **Image Attach Auditor**| Stdio Attachment Auditor| Inspects `config.AttachStdin`, `config.AttachStdout`, and `config.AttachStderr` flags from Image Config. |
+| **Local Swap Max Counter**| Cgroup v2 `memory.swap.events.local`| Reads count of local non-hierarchical swap hard limit hits (`max N`). |
+| **DNS Trust-AD Timeout**| `/etc/resolv.conf` Driver| Combines `options trust-ad` and `options timeout:N` into formatted lines. |
 | **Log Regex Replacer**  | Stream Pattern Masker | Performs regex substitution and redaction over log output lines (`minictl logs --regex-replace`). |
 | **Empty Layer Auditor** | History Layer Auditor | Differentiates metadata-only (`empty_layer: true`) vs data layers in OCI Image Config. |
 | **Local Swap High Counter**| Cgroup v2 `memory.swap.events.local`| Reads count of local non-hierarchical swap soft limit throttle events (`high N`). |
