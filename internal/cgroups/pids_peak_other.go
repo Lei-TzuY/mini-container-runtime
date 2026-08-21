@@ -2,12 +2,7 @@
 
 package cgroups
 
-// ReadPIDSPeak is a non-Linux stub.
+// ReadPIDSPeak reports unsupported telemetry on non-Linux platforms.
 func ReadPIDSPeak(cgroupPath string) (uint64, error) {
-	return 0, nil
-}
-
-// ResetPIDSPeak is a non-Linux stub.
-func ResetPIDSPeak(cgroupPath string) error {
-	return nil
+	return 0, ErrPIDSPeakUnavailable
 }
