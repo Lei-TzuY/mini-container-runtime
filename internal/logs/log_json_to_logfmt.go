@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-// JSONToLogfmt converts a JSON object log line into logfmt key=value format.
+// JSONToLogfmt converts a JSON object log line into flat logfmt key=value format.
+// Nested objects are flattened with dot notation (e.g., http.status=200).
 // Non-JSON lines are returned unchanged.
 func JSONToLogfmt(line string) string {
 	trimmed := strings.TrimSpace(line)
@@ -24,15 +25,18 @@ func JSONToLogfmt(line string) string {
 		return line
 	}
 
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
+	flat := make(map[string]interface{})
+	flattenMap("", obj, flat)
+
+	keys := make([]string, 0, len(flat))
+	for k := range flat {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
 	var parts []string
 	for _, k := range keys {
-		v := obj[k]
+		v := flat[k]
 		valStr := formatLogfmtValue(v)
 		parts = append(parts, fmt.Sprintf("%s=%s", k, valStr))
 	}
@@ -40,10 +44,25 @@ func JSONToLogfmt(line string) string {
 	return strings.Join(parts, " ")
 }
 
-// formatLogfmtValue formats a value for logfmt output.
+func flattenMap(prefix string, in map[string]interface{}, out map[string]interface{}) {
+	for k, v := range in {
+		fullKey := k
+		if prefix != "" {
+			fullKey = prefix + "." + k
+		}
+
+		if subMap, ok := v.(map[string]interface{}); ok && len(subMap) > 0 {
+			flattenMap(fullKey, subMap, out)
+		} else {
+			out[fullKey] = v
+		}
+	}
+}
+
+// formatLogfmtValue formats a scalar or array value for logfmt output.
 func formatLogfmtValue(v interface{}) string {
 	if v == nil {
-		return ""
+		return `""`
 	}
 	switch val := v.(type) {
 	case string:
@@ -58,6 +77,13 @@ func formatLogfmtValue(v interface{}) string {
 		return fmt.Sprintf("%g", val)
 	case bool:
 		return fmt.Sprintf("%t", val)
+	case []interface{}:
+		var itemStrs []string
+		for _, item := range val {
+			itemStrs = append(itemStrs, fmt.Sprintf("%v", item))
+		}
+		joined := strings.Join(itemStrs, ",")
+		return fmt.Sprintf("%q", joined)
 	default:
 		b, _ := json.Marshal(val)
 		return fmt.Sprintf("%q", string(b))
