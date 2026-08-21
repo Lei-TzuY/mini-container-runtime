@@ -7,11 +7,12 @@ import (
 
 func TestEvaluateStopSignal(t *testing.T) {
 	tests := []struct {
-		name         string
-		json         string
+		name          string
+		json          string
 		wantCanonical string
-		wantNum      int
-		wantGraceful bool
+		wantNum       int
+		wantGraceful  bool
+		wantErr       bool
 	}{
 		{
 			name:          "default unset signal",
@@ -41,11 +42,44 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantNum:       2,
 			wantGraceful:  true,
 		},
+		{
+			name:          "numeric realtime signal",
+			json:          `{"config":{"StopSignal":"34"}}`,
+			wantCanonical: "SIG_34",
+			wantNum:       34,
+			wantGraceful:  true,
+		},
+		{
+			name:    "zero is invalid",
+			json:    `{"config":{"StopSignal":"0"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "negative is invalid",
+			json:    `{"config":{"StopSignal":"-1"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "out of range is invalid",
+			json:    `{"config":{"StopSignal":"65"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "unknown named signal is invalid",
+			json:    `{"config":{"StopSignal":"SIGBANANA"}}`,
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			res, err := EvaluateStopSignal([]byte(tc.json))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got result %+v", res)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -66,5 +100,12 @@ func TestFormatStopSignal(t *testing.T) {
 	got := FormatStopSignal([]byte(`{"config":{"StopSignal":"SIGTERM"}}`))
 	if !strings.Contains(got, "Stop Signal: SIGTERM (num: 15, graceful: true") {
 		t.Errorf("expected SIGTERM summary in %q", got)
+	}
+}
+
+func TestFormatStopSignal_InvalidSignal(t *testing.T) {
+	got := FormatStopSignal([]byte(`{"config":{"StopSignal":"SIGBANANA"}}`))
+	if !strings.Contains(got, "error: unknown stop signal") {
+		t.Errorf("expected validation error in %q", got)
 	}
 }
