@@ -130,7 +130,21 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
+func validateID(id string) error {
+	if id == "" {
+		return fmt.Errorf("id cannot be empty")
+	}
+	if id == "." || id == ".." || strings.ContainsAny(id, "/\\:\x00") {
+		return fmt.Errorf("invalid id %q: path separators and relative components not allowed", id)
+	}
+	return nil
+}
+
 func (s *Store) Save(c *Container) error {
+	if err := validateID(c.ID); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -155,6 +169,10 @@ func (s *Store) Save(c *Container) error {
 }
 
 func (s *Store) Get(id string) (*Container, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -183,6 +201,10 @@ func (s *Store) getUnlocked(id string) (*Container, error) {
 }
 
 func (s *Store) Resolve(idOrPrefix string) (*Container, error) {
+	if err := validateID(idOrPrefix); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -241,6 +263,10 @@ func (s *Store) List() ([]*Container, error) {
 }
 
 func (s *Store) Delete(id string) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -264,8 +290,20 @@ func (s *Store) SaveImage(img *Image) error {
 	if key == "" {
 		key = img.ID
 	}
-	target := filepath.Join(s.imgDir, sanitizeImageFilename(key)+".json")
-	return os.WriteFile(target, data, 0644)
+	filename := sanitizeImageFilename(key)
+	target := filepath.Join(s.imgDir, filename+".json")
+	tmp := target + ".tmp"
+
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("write image state tmp: %w", err)
+	}
+
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("atomic rename image state: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Store) GetImage(nameOrID string) (*Image, error) {
@@ -355,8 +393,8 @@ func (s *Store) listImagesUnlocked() ([]*Image, error) {
 }
 
 func sanitizeImageFilename(name string) string {
-	r := strings.NewReplacer("/", "_", ":", "_", "\\", "_")
-	cleaned := r.Replace(name)
+	r := strings.NewReplacer("/", "_", ":", "_", "\\", "_", "..", "_")
+	cleaned := strings.Trim(r.Replace(name), " ._")
 	if cleaned == "" {
 		return "default"
 	}
