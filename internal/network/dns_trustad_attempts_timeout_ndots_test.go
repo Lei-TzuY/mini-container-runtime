@@ -14,25 +14,39 @@ func TestGenerateDNSTrustADAttemptsTimeoutNdotsConfig(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "custom values",
+			name:     "custom valid values",
 			attempts: 4,
 			timeout:  6,
 			ndots:    3,
 			want:     "options trust-ad attempts:4 timeout:6 ndots:3\n",
 		},
 		{
-			name:     "defaults on zero",
+			name:     "zero values are explicit",
 			attempts: 0,
 			timeout:  0,
 			ndots:    0,
-			want:     "options trust-ad attempts:2 timeout:5 ndots:1\n",
+			want:     "options trust-ad attempts:0 timeout:0 ndots:0\n",
 		},
 		{
-			name:     "negative values",
+			name:     "negative values request defaults",
 			attempts: -1,
 			timeout:  -1,
 			ndots:    -1,
 			want:     "options trust-ad attempts:2 timeout:5 ndots:1\n",
+		},
+		{
+			name:     "values above glibc caps are clamped",
+			attempts: 100,
+			timeout:  50,
+			ndots:    20,
+			want:     "options trust-ad attempts:5 timeout:30 ndots:15\n",
+		},
+		{
+			name:     "boundary values are preserved",
+			attempts: 5,
+			timeout:  30,
+			ndots:    15,
+			want:     "options trust-ad attempts:5 timeout:30 ndots:15\n",
 		},
 	}
 
