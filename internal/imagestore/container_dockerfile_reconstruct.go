@@ -13,14 +13,31 @@ import (
 
 // DockerfileInstruction represents a single reconstructed Dockerfile directive.
 type DockerfileInstruction struct {
-	Command   string // RUN, COPY, ADD, ENV, WORKDIR, EXPOSE, CMD, ENTRYPOINT, etc.
-	Arguments string
+	Command    string // RUN, COPY, ADD, ENV, WORKDIR, EXPOSE, CMD, ENTRYPOINT, USER, VOLUME, STOPSIGNAL, LABEL, etc.
+	Arguments  string
 	EmptyLayer bool
 }
 
 var (
-	runCmdRegex  = regexp.MustCompile(`(?i)^/bin/sh -c (.+)$`)
-	nopCmdRegex  = regexp.MustCompile(`(?i)^/bin/sh -c #\(nop\)\s+(.+)$`)
+	runCmdRegex = regexp.MustCompile(`(?i)^/bin/sh -c (.+)$`)
+	nopCmdRegex = regexp.MustCompile(`(?i)^(?:/bin/sh -c )?#\s*\(nop\)\s+(.+)$`)
+
+	knownDirectives = map[string]struct{}{
+		"ENV":         {},
+		"WORKDIR":     {},
+		"EXPOSE":      {},
+		"CMD":         {},
+		"ENTRYPOINT":  {},
+		"USER":        {},
+		"VOLUME":      {},
+		"STOPSIGNAL":  {},
+		"LABEL":       {},
+		"HEALTHCHECK": {},
+		"COPY":        {},
+		"ADD":         {},
+		"MAINTAINER":  {},
+		"ARG":         {},
+	}
 )
 
 // ReconstructDockerfile parses image config JSON and reconstructs Dockerfile instructions.
@@ -44,7 +61,7 @@ func ReconstructDockerfile(configJSON []byte) ([]DockerfileInstruction, error) {
 
 		inst := DockerfileInstruction{EmptyLayer: h.EmptyLayer}
 
-		// Match #(nop) directives (ENV, WORKDIR, EXPOSE, CMD, ENTRYPOINT, etc.)
+		// 1. Match #(nop) directives (ENV, WORKDIR, EXPOSE, CMD, ENTRYPOINT, etc.)
 		if m := nopCmdRegex.FindStringSubmatch(cmd); len(m) == 2 {
 			directive := strings.TrimSpace(m[1])
 			parts := strings.SplitN(directive, " ", 2)
@@ -52,12 +69,15 @@ func ReconstructDockerfile(configJSON []byte) ([]DockerfileInstruction, error) {
 			if len(parts) == 2 {
 				inst.Arguments = strings.TrimSpace(parts[1])
 			}
+		} else if isDirectKnownDirective(cmd, &inst) {
+			// Direct OCI instruction (e.g. ENTRYPOINT ["/app"], WORKDIR /app)
+			// inst is populated by isDirectKnownDirective
 		} else if m := runCmdRegex.FindStringSubmatch(cmd); len(m) == 2 {
-			// Match /bin/sh -c <command>
+			// Match /bin/sh -c <command> -> RUN <command>
 			inst.Command = "RUN"
 			inst.Arguments = strings.TrimSpace(m[1])
 		} else {
-			// Raw command
+			// Fallback raw command -> RUN <cmd>
 			inst.Command = "RUN"
 			inst.Arguments = cmd
 		}
@@ -66,6 +86,19 @@ func ReconstructDockerfile(configJSON []byte) ([]DockerfileInstruction, error) {
 	}
 
 	return instructions, nil
+}
+
+func isDirectKnownDirective(cmd string, inst *DockerfileInstruction) bool {
+	parts := strings.SplitN(cmd, " ", 2)
+	candidate := strings.ToUpper(parts[0])
+	if _, ok := knownDirectives[candidate]; ok {
+		inst.Command = candidate
+		if len(parts) == 2 {
+			inst.Arguments = strings.TrimSpace(parts[1])
+		}
+		return true
+	}
+	return false
 }
 
 // FormatReconstructedDockerfile returns a formatted Dockerfile string.
@@ -81,7 +114,11 @@ func FormatReconstructedDockerfile(configJSON []byte) string {
 	var sb strings.Builder
 	sb.WriteString("# Reconstructed Dockerfile (best-effort)\n")
 	for _, inst := range instructions {
-		sb.WriteString(fmt.Sprintf("%s %s\n", inst.Command, inst.Arguments))
+		if inst.Arguments != "" {
+			sb.WriteString(fmt.Sprintf("%s %s\n", inst.Command, inst.Arguments))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s\n", inst.Command))
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
