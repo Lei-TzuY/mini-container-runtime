@@ -12,6 +12,7 @@ func TestEvaluateStopSignal(t *testing.T) {
 		wantCanonical string
 		wantNum       int
 		wantGraceful  bool
+		wantTimeout   int
 		wantErr       bool
 	}{
 		{
@@ -20,6 +21,7 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantCanonical: "SIGTERM",
 			wantNum:       15,
 			wantGraceful:  true,
+			wantTimeout:   10,
 		},
 		{
 			name:          "custom SIGQUIT",
@@ -27,6 +29,15 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantCanonical: "SIGQUIT",
 			wantNum:       3,
 			wantGraceful:  true,
+			wantTimeout:   10,
+		},
+		{
+			name:          "common signal SIGABRT",
+			json:          `{"config":{"StopSignal":"SIGABRT"}}`,
+			wantCanonical: "SIGABRT",
+			wantNum:       6,
+			wantGraceful:  true,
+			wantTimeout:   10,
 		},
 		{
 			name:          "numeric 9 (SIGKILL)",
@@ -34,6 +45,15 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantCanonical: "SIGKILL",
 			wantNum:       9,
 			wantGraceful:  false,
+			wantTimeout:   0,
+		},
+		{
+			name:          "SIGSTOP cannot be handled gracefully",
+			json:          `{"config":{"StopSignal":"SIGSTOP"}}`,
+			wantCanonical: "SIGSTOP",
+			wantNum:       19,
+			wantGraceful:  false,
+			wantTimeout:   0,
 		},
 		{
 			name:          "without SIG prefix 'INT'",
@@ -41,6 +61,7 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantCanonical: "SIGINT",
 			wantNum:       2,
 			wantGraceful:  true,
+			wantTimeout:   10,
 		},
 		{
 			name:          "numeric realtime signal",
@@ -48,6 +69,31 @@ func TestEvaluateStopSignal(t *testing.T) {
 			wantCanonical: "SIG_34",
 			wantNum:       34,
 			wantGraceful:  true,
+			wantTimeout:   10,
+		},
+		{
+			name:          "OCI realtime signal",
+			json:          `{"config":{"StopSignal":"SIGRTMIN+3"}}`,
+			wantCanonical: "SIGRTMIN+3",
+			wantNum:       37,
+			wantGraceful:  true,
+			wantTimeout:   10,
+		},
+		{
+			name:          "realtime signal without SIG prefix",
+			json:          `{"config":{"StopSignal":"RTMIN+3"}}`,
+			wantCanonical: "SIGRTMIN+3",
+			wantNum:       37,
+			wantGraceful:  true,
+			wantTimeout:   10,
+		},
+		{
+			name:          "realtime signal from max",
+			json:          `{"config":{"StopSignal":"SIGRTMAX-3"}}`,
+			wantCanonical: "SIGRTMAX-3",
+			wantNum:       61,
+			wantGraceful:  true,
+			wantTimeout:   10,
 		},
 		{
 			name:    "zero is invalid",
@@ -62,6 +108,16 @@ func TestEvaluateStopSignal(t *testing.T) {
 		{
 			name:    "out of range is invalid",
 			json:    `{"config":{"StopSignal":"65"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "realtime offset out of range",
+			json:    `{"config":{"StopSignal":"SIGRTMIN+31"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "malformed realtime signal",
+			json:    `{"config":{"StopSignal":"SIGRTMIN+X"}}`,
 			wantErr: true,
 		},
 		{
@@ -92,7 +148,20 @@ func TestEvaluateStopSignal(t *testing.T) {
 			if res.IsGraceful != tc.wantGraceful {
 				t.Errorf("IsGraceful = %t, want %t", res.IsGraceful, tc.wantGraceful)
 			}
+			if res.DefaultTimeoutSec != tc.wantTimeout {
+				t.Errorf("DefaultTimeoutSec = %d, want %d", res.DefaultTimeoutSec, tc.wantTimeout)
+			}
 		})
+	}
+}
+
+func TestEvaluateStopSignal_AliasCanonicalization(t *testing.T) {
+	res, err := EvaluateStopSignal([]byte(`{"config":{"StopSignal":"SIGIOT"}}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.CanonicalSignal != "SIGABRT" || res.SignalNumber != 6 {
+		t.Fatalf("alias resolved to %+v, want SIGABRT/6", res)
 	}
 }
 
@@ -105,7 +174,7 @@ func TestFormatStopSignal(t *testing.T) {
 
 func TestFormatStopSignal_InvalidSignal(t *testing.T) {
 	got := FormatStopSignal([]byte(`{"config":{"StopSignal":"SIGBANANA"}}`))
-	if !strings.Contains(got, "error: unknown stop signal") {
+	if !strings.Contains(got, "error: unknown or unsupported stop signal") {
 		t.Errorf("expected validation error in %q", got)
 	}
 }
