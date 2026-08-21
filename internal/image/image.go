@@ -97,21 +97,27 @@ func Unpack(tarPath, destDir string) error {
 // It is shared by Unpack (plain tar) and applyLayer (OCI image layers).
 // Device-node and FIFO entries that cannot be created are skipped silently.
 func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) error {
+	if err := ensureSafeParentDirs(target, destDir); err != nil {
+		return err
+	}
+
 	switch hdr.Typeflag {
 	case tar.TypeDir:
+		if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+			_ = os.Remove(target)
+		}
 		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
 
 	case tar.TypeReg, tar.TypeRegA:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
+		if fi, err := os.Lstat(target); err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 || fi.IsDir() {
+				_ = os.RemoveAll(target)
+			}
 		}
 		return writeRegular(target, hdr, r)
 
 	case tar.TypeSymlink:
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		_ = os.Remove(target)
+		_ = os.RemoveAll(target)
 		if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
 			return fmt.Errorf("symlink %s → %s: %w", target, hdr.Linkname, err)
 		}
@@ -121,15 +127,16 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		if err := ensureSafeParentDirs(linkTarget, destDir); err != nil {
 			return err
 		}
-		_ = os.Remove(target)
+		_ = os.RemoveAll(target)
 		if err := os.Link(linkTarget, target); err != nil {
 			return fmt.Errorf("hardlink %s → %s: %w", target, linkTarget, err)
 		}
 
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+		_ = os.RemoveAll(target)
 		if err := makeSpecial(target, hdr); err != nil {
 			if !strings.Contains(err.Error(), "not supported") {
 				fmt.Fprintf(os.Stderr, "warning: mknod %s: %v\n", target, err)
@@ -137,6 +144,62 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		}
 	}
 	return nil
+}
+
+// ensureSafeParentDirs verifies that all ancestor directory components of target
+// within destDir exist and do not point outside destDir via symlinks.
+func ensureSafeParentDirs(target, destDir string) error {
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+
+	rel, err := filepath.Rel(destAbs, targetAbs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path traversal detected: %q escapes %q", target, destDir)
+	}
+
+	parts := strings.Split(filepath.Dir(rel), string(filepath.Separator))
+	curr := destAbs
+	for _, part := range parts {
+		if part == "." || part == "" {
+			continue
+		}
+		curr = filepath.Join(curr, part)
+		fi, err := os.Lstat(curr)
+		if err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				eval, err := filepath.EvalSymlinks(curr)
+				if err != nil || !isSubDir(destAbs, eval) {
+					return fmt.Errorf("symlink path traversal detected: directory component %q escapes destination", curr)
+				}
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.Mkdir(curr, 0755); err != nil && !os.IsExist(err) {
+				return err
+			}
+		} else {
+			return err
+		}
+	}
+	return nil
+}
+
+func isSubDir(base, target string) bool {
+	baseAbs, err1 := filepath.Abs(base)
+	targetAbs, err2 := filepath.Abs(target)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // writeRegular creates or truncates target and copies the tar entry into it.

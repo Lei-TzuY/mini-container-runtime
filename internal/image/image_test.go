@@ -157,3 +157,47 @@ func assertFile(t *testing.T, path string, want string) {
 		t.Fatalf("%s = %q, want %q", path, string(got), want)
 	}
 }
+
+func TestUnpackSymlinkDirectoryEscapeDefense(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks on Windows may require elevated privileges")
+	}
+
+	destDir := t.TempDir()
+	outsideDir := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "symlink_escape.tar")
+
+	// Create an archive where "lib" is a symlink to an outside directory,
+	// and "lib/pwned.txt" is written subsequently.
+	writeTar(t, archive, []tarEntry{
+		{header: &tar.Header{Name: "lib", Typeflag: tar.TypeSymlink, Linkname: outsideDir, Mode: 0777}},
+		{header: &tar.Header{Name: "lib/pwned.txt", Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len("pwned\n"))}, body: "pwned\n"},
+	})
+
+	err := Unpack(archive, destDir)
+	if err == nil {
+		t.Fatalf("Unpack expected error for escaping symlink directory component, got nil")
+	}
+
+	// Verify outside file was NOT created
+	if _, err := os.Stat(filepath.Join(outsideDir, "pwned.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside file was created despite symlink defense!")
+	}
+}
+
+func TestLoadDockerSaveInvalidLayerPath(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "bad_manifest.tar")
+	dest := filepath.Join(t.TempDir(), "dest")
+
+	// Archive containing manifest.json with a layer path escaping tmpDir
+	manifestJSON := `[{"Config":"config.json","RepoTags":["test:latest"],"Layers":["../../../../etc/passwd"]}]`
+	writeTar(t, archive, []tarEntry{
+		{header: &tar.Header{Name: "manifest.json", Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(manifestJSON))}, body: manifestJSON},
+		{header: &tar.Header{Name: "config.json", Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len("{}"))}, body: "{}"},
+	})
+
+	err := LoadDockerSave(archive, dest)
+	if err == nil {
+		t.Fatalf("LoadDockerSave expected error for escaping layer path in manifest.json, got nil")
+	}
+}
