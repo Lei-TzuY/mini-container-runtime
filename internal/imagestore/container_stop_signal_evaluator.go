@@ -1,6 +1,6 @@
 // Package imagestore provides OCI image configuration inspection utilities.
 // This file implements a StopSignal auditor that resolves OCI Image Config StopSignal
-// definitions into canonical POSIX signal names and numeric codes.
+// definitions into canonical Linux signal names and numeric codes.
 
 package imagestore
 
@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // StopSignalSummary represents evaluated stop signal and graceful timeout parameters.
@@ -17,19 +16,39 @@ type StopSignalSummary struct {
 	DeclaredSignal    string
 	CanonicalSignal   string
 	SignalNumber      int
-	IsGraceful        bool // true for SIGTERM/SIGINT/SIGQUIT; false for SIGKILL
+	IsGraceful        bool // false for uncatchable stop/kill signals
 	DefaultTimeoutSec int
 }
 
-var knownSignals = map[string]int{
-	"SIGTERM": 15,
-	"SIGINT":  2,
-	"SIGQUIT": 3,
-	"SIGKILL": 9,
-	"SIGHUP":  1,
-	"SIGUSR1": 10,
-	"SIGUSR2": 12,
-	"SIGWINCH": 28,
+const (
+	maxLinuxSignalNumber = 64
+	linuxSIGRTMIN         = 34
+	linuxSIGRTMAX         = 64
+)
+
+// Linux signal numbering used by the runtime. Aliases are accepted on input,
+// while canonicalSignalByNumber keeps numeric declarations deterministic.
+var signalNumberByName = map[string]int{
+	"SIGHUP": 1, "SIGINT": 2, "SIGQUIT": 3, "SIGILL": 4,
+	"SIGTRAP": 5, "SIGABRT": 6, "SIGIOT": 6, "SIGBUS": 7,
+	"SIGFPE": 8, "SIGKILL": 9, "SIGUSR1": 10, "SIGSEGV": 11,
+	"SIGUSR2": 12, "SIGPIPE": 13, "SIGALRM": 14, "SIGTERM": 15,
+	"SIGSTKFLT": 16, "SIGCHLD": 17, "SIGCLD": 17, "SIGCONT": 18,
+	"SIGSTOP": 19, "SIGTSTP": 20, "SIGTTIN": 21, "SIGTTOU": 22,
+	"SIGURG": 23, "SIGXCPU": 24, "SIGXFSZ": 25, "SIGVTALRM": 26,
+	"SIGPROF": 27, "SIGWINCH": 28, "SIGIO": 29, "SIGPOLL": 29,
+	"SIGPWR": 30, "SIGSYS": 31, "SIGUNUSED": 31,
+}
+
+var canonicalSignalByNumber = map[int]string{
+	1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
+	5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE",
+	9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2",
+	13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM", 16: "SIGSTKFLT",
+	17: "SIGCHLD", 18: "SIGCONT", 19: "SIGSTOP", 20: "SIGTSTP",
+	21: "SIGTTIN", 22: "SIGTTOU", 23: "SIGURG", 24: "SIGXCPU",
+	25: "SIGXFSZ", 26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH",
+	29: "SIGIO", 30: "SIGPWR", 31: "SIGSYS",
 }
 
 // EvaluateStopSignal parses image config StopSignal and returns structured signal data.
@@ -44,55 +63,89 @@ func EvaluateStopSignal(configJSON []byte) (StopSignalSummary, error) {
 	}
 
 	raw := strings.TrimSpace(cfg.Config.StopSignal)
-	summary := StopSignalSummary{
-		DeclaredSignal:    raw,
-		CanonicalSignal:   "SIGTERM",
-		SignalNumber:      15,
-		IsGraceful:        true,
-		DefaultTimeoutSec: 10,
-	}
-
 	if raw == "" {
-		return summary, nil
+		return stopSignalSummary(raw, "SIGTERM", 15), nil
 	}
 
 	upper := strings.ToUpper(raw)
-	// Check if numeric
 	if num, err := strconv.Atoi(upper); err == nil {
-		summary.SignalNumber = num
-		if num == 9 {
-			summary.CanonicalSignal = "SIGKILL"
-			summary.IsGraceful = false
-			summary.DefaultTimeoutSec = 0
-		} else {
-			summary.CanonicalSignal = fmt.Sprintf("SIG_%d", num)
-			for name, code := range knownSignals {
-				if code == num {
-					summary.CanonicalSignal = name
-					break
-				}
-			}
+		if num <= 0 || num > maxLinuxSignalNumber {
+			return StopSignalSummary{}, fmt.Errorf("invalid stop signal number %d: expected 1-%d", num, maxLinuxSignalNumber)
 		}
-		return summary, nil
+		canonical := canonicalSignalByNumber[num]
+		if canonical == "" {
+			canonical = fmt.Sprintf("SIG_%d", num)
+		}
+		return stopSignalSummary(raw, canonical, num), nil
 	}
 
-	// Format with SIG prefix if missing
 	if !strings.HasPrefix(upper, "SIG") {
 		upper = "SIG" + upper
 	}
 
-	if code, ok := knownSignals[upper]; ok {
-		summary.CanonicalSignal = upper
-		summary.SignalNumber = code
-		if code == int(syscall.SIGKILL) {
-			summary.IsGraceful = false
-			summary.DefaultTimeoutSec = 0
+	if canonical, num, matched, err := parseRealtimeSignal(upper); matched {
+		if err != nil {
+			return StopSignalSummary{}, err
 		}
-	} else {
-		summary.CanonicalSignal = upper
+		return stopSignalSummary(raw, canonical, num), nil
 	}
 
-	return summary, nil
+	if num, ok := signalNumberByName[upper]; ok {
+		canonical := canonicalSignalByNumber[num]
+		if canonical == "" {
+			canonical = upper
+		}
+		return stopSignalSummary(raw, canonical, num), nil
+	}
+
+	return StopSignalSummary{}, fmt.Errorf("unknown or unsupported stop signal %q", raw)
+}
+
+func stopSignalSummary(declared, canonical string, num int) StopSignalSummary {
+	graceful := num != signalNumberByName["SIGKILL"] && num != signalNumberByName["SIGSTOP"]
+	timeout := 10
+	if !graceful {
+		timeout = 0
+	}
+	return StopSignalSummary{
+		DeclaredSignal:    declared,
+		CanonicalSignal:   canonical,
+		SignalNumber:      num,
+		IsGraceful:        graceful,
+		DefaultTimeoutSec: timeout,
+	}
+}
+
+// parseRealtimeSignal accepts OCI-style SIGRTMIN+N and the symmetric
+// SIGRTMAX-N form. It also accepts the existing no-SIG-prefix convenience
+// after EvaluateStopSignal normalizes the prefix.
+func parseRealtimeSignal(signal string) (canonical string, num int, matched bool, err error) {
+	switch signal {
+	case "SIGRTMIN":
+		return "SIGRTMIN", linuxSIGRTMIN, true, nil
+	case "SIGRTMAX":
+		return "SIGRTMAX", linuxSIGRTMAX, true, nil
+	}
+
+	if strings.HasPrefix(signal, "SIGRTMIN+") {
+		offsetText := strings.TrimPrefix(signal, "SIGRTMIN+")
+		offset, parseErr := strconv.Atoi(offsetText)
+		if parseErr != nil || offset < 0 || linuxSIGRTMIN+offset > linuxSIGRTMAX {
+			return "", 0, true, fmt.Errorf("invalid realtime stop signal %q", signal)
+		}
+		return fmt.Sprintf("SIGRTMIN+%d", offset), linuxSIGRTMIN + offset, true, nil
+	}
+
+	if strings.HasPrefix(signal, "SIGRTMAX-") {
+		offsetText := strings.TrimPrefix(signal, "SIGRTMAX-")
+		offset, parseErr := strconv.Atoi(offsetText)
+		if parseErr != nil || offset < 0 || linuxSIGRTMAX-offset < linuxSIGRTMIN {
+			return "", 0, true, fmt.Errorf("invalid realtime stop signal %q", signal)
+		}
+		return fmt.Sprintf("SIGRTMAX-%d", offset), linuxSIGRTMAX - offset, true, nil
+	}
+
+	return "", 0, false, nil
 }
 
 // FormatStopSignal returns a human-readable stop signal summary.
