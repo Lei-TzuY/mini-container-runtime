@@ -6,6 +6,7 @@ package logs
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -21,19 +22,19 @@ type LogStreamDiff struct {
 
 // CompareLogStreams computes line set differences and execution similarity between two log runs.
 func CompareLogStreams(linesA, linesB []string) LogStreamDiff {
-	setA := make(map[string]int)
+	setA := make(map[string]struct{})
 	for _, l := range linesA {
 		cleaned := strings.TrimSpace(l)
 		if cleaned != "" {
-			setA[cleaned]++
+			setA[cleaned] = struct{}{}
 		}
 	}
 
-	setB := make(map[string]int)
+	setB := make(map[string]struct{})
 	for _, l := range linesB {
 		cleaned := strings.TrimSpace(l)
 		if cleaned != "" {
-			setB[cleaned]++
+			setB[cleaned] = struct{}{}
 		}
 	}
 
@@ -55,6 +56,11 @@ func CompareLogStreams(linesA, linesB []string) LogStreamDiff {
 			diff.OnlyInB = append(diff.OnlyInB, line)
 		}
 	}
+
+	// Map iteration order is intentionally randomized by Go. Sort divergent
+	// lines so CLI/report output is stable across runs and testable byte-for-byte.
+	sort.Strings(diff.OnlyInA)
+	sort.Strings(diff.OnlyInB)
 
 	unionSize := len(setA) + len(diff.OnlyInB)
 	if unionSize > 0 {

@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,36 @@ func TestCompareLogStreams_Divergent(t *testing.T) {
 	}
 	if len(diff.OnlyInB) != 2 {
 		t.Errorf("OnlyInB = %d, want 2", len(diff.OnlyInB))
+	}
+}
+
+func TestCompareLogStreams_DivergentLinesAreDeterministic(t *testing.T) {
+	linesA := []string{"zeta", "common", "alpha", "gamma"}
+	linesB := []string{"theta", "beta", "common", "delta"}
+
+	diff := CompareLogStreams(linesA, linesB)
+
+	wantA := []string{"alpha", "gamma", "zeta"}
+	wantB := []string{"beta", "delta", "theta"}
+	if !reflect.DeepEqual(diff.OnlyInA, wantA) {
+		t.Fatalf("OnlyInA = %#v, want %#v", diff.OnlyInA, wantA)
+	}
+	if !reflect.DeepEqual(diff.OnlyInB, wantB) {
+		t.Fatalf("OnlyInB = %#v, want %#v", diff.OnlyInB, wantB)
+	}
+}
+
+func TestCompareLogStreams_UsesSetSemantics(t *testing.T) {
+	linesA := []string{"ready", "ready", "  error  ", ""}
+	linesB := []string{"ready", "error", "error"}
+
+	diff := CompareLogStreams(linesA, linesB)
+
+	if diff.CommonLines != 2 {
+		t.Errorf("CommonLines = %d, want 2 unique normalized lines", diff.CommonLines)
+	}
+	if diff.SimilarityRatio != 1.0 {
+		t.Errorf("SimilarityRatio = %f, want 1.0 for equal normalized line sets", diff.SimilarityRatio)
 	}
 }
 
