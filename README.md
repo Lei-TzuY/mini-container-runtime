@@ -54,7 +54,7 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
 | **Log Run-to-Run Diff Comparator**| Execution Divergence Analyzer| Compares log streams across container runs/replicas with similarity ratio (`minictl logs --diff`). |
 | **StopSignal Graceful Auditor**| Graceful Shutdown Auditor| Resolves `config.StopSignal` (SIGTERM/SIGINT/SIGQUIT/SIGKILL) and recommends shutdown timeouts. |
-| **PIDs Peak Concurrent Tracker**| Cgroup v2 `pids.peak`  | Reads and resets highest recorded concurrent process/thread count since container launch (Linux 6.3+). |
+| **PIDs Peak Concurrent Tracker** | Cgroup v2 `pids.peak` | Reads the highest recorded concurrent process/thread count when the kernel exposes this read-only telemetry. |
 | **DNS UseVC Attempts+Timeout+Ndots**| `/etc/resolv.conf` Driver| Quad-option decorator: `use-vc`, `attempts:N`, `timeout:M`, and `ndots:K` in one formatted line. |
 | **Log Time-Window Grouper**| Fixed-Window Metrics Bucketer| Aggregates logs into time slices with error/warn counters and ASCII histogram (`minictl logs --window 1m`). |
 | **User Namespace UID/GID Validator**| Rootless ID Mapper| Evaluates image User settings and validates compatibility with host subuid/subgid ranges. |
