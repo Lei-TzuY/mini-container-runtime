@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log JSON-to-Logfmt Converter**| Structured Log Flattener| Converts JSON container logs to flat `key=value` logfmt format for grep and shell pipelines. |
+| **Dockerfile Reconstructor**| History Reverse-Engineer| Reconstructs best-effort Dockerfile from OCI Image Config `history[]` layer commands. |
+| **CPU Weight Nice Controller**| Cgroup v2 `cpu.weight.nice`| Reads and writes traditional Unix nice values (-20 to 19) for container CPU scheduling priority. |
+| **DNS IP6Bytestring Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `ip6-bytestring`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Syslog RFC 5424 Formatter**| Syslog Protocol Encoder| Formats logs into standard RFC 5424 Syslog records for centralized log daemon forwarding. |
 | **Env Variable Interpolator**| Runtime POSIX Expander | Expands nested `${VAR}`, `${VAR:-default}`, and `$VAR` substitutions in OCI Image Config. |
 | **Misc Events Max Counter**| Cgroup v2 `misc.events`| Reads hardware security extension capacity failure counters (SEV, TDX limits). |
