@@ -2,12 +2,12 @@
 
 package cgroups
 
-// ReadCPUMaxBurst is a non-Linux stub.
+// ReadCPUMaxBurst reports unsupported telemetry on non-Linux platforms.
 func ReadCPUMaxBurst(cgroupPath string) (uint64, error) {
-	return 0, nil
+	return 0, ErrCPUBurstUnavailable
 }
 
-// WriteCPUMaxBurst is a non-Linux stub.
+// WriteCPUMaxBurst reports unsupported controller on non-Linux platforms.
 func WriteCPUMaxBurst(cgroupPath string, burstUsec uint64) error {
-	return nil
+	return ErrCPUBurstUnavailable
 }
