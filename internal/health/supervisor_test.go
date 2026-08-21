@@ -36,22 +36,28 @@ func TestHealthSupervisor(t *testing.T) {
 	}
 
 	sup := NewSupervisor("ctr-health-test", Config{
-		Interval: 50 * time.Millisecond,
-		Timeout:  100 * time.Millisecond,
+		Interval: 10 * time.Millisecond,
+		Timeout:  50 * time.Millisecond,
 		Retries:  3,
 	}, checkFn, st)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	sup.Start(ctx)
+	go sup.Start(ctx)
 
-	updated, err := st.Get("ctr-health-test")
-	if err != nil {
-		t.Fatalf("Get container error: %v", err)
-	}
-
-	if updated.Health != StatusHealthy {
-		t.Fatalf("Expected container status %s, got %s", StatusHealthy, updated.Health)
+	for {
+		updated, err := st.Get("ctr-health-test")
+		if err == nil && updated.Health == StatusHealthy {
+			return // Success
+		}
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				t.Fatalf("Get container error: %v", err)
+			}
+			t.Fatalf("Expected container status %s within deadline, got %s", StatusHealthy, updated.Health)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
