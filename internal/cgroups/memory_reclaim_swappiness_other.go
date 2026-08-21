@@ -9,7 +9,7 @@ type MemoryReclaimOptions struct {
 	NumaNode       int
 }
 
-// ReclaimMemoryWithOptions is a non-Linux stub.
+// ReclaimMemoryWithOptions reports unsupported interface on non-Linux platforms.
 func ReclaimMemoryWithOptions(cgroupPath string, opts MemoryReclaimOptions) error {
-	return nil
+	return ErrMemoryReclaimUnavailable
 }
