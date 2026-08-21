@@ -140,6 +140,40 @@ func validateID(id string) error {
 	return nil
 }
 
+func atomicWriteFile(dir, target string, data []byte) error {
+	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create state tmp file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmpFile.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("write state tmp file: %w", err)
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("sync state tmp file: %w", err)
+	}
+
+	closed = true
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close state tmp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("atomic rename state file: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) Save(c *Container) error {
 	if err := validateID(c.ID); err != nil {
 		return err
@@ -154,18 +188,7 @@ func (s *Store) Save(c *Container) error {
 	}
 
 	target := filepath.Join(s.ctrDir, c.ID+".json")
-	tmp := target + ".tmp"
-
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("write container state tmp: %w", err)
-	}
-
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("atomic rename container state: %w", err)
-	}
-
-	return nil
+	return atomicWriteFile(s.ctrDir, target, data)
 }
 
 func (s *Store) Get(id string) (*Container, error) {
@@ -292,18 +315,7 @@ func (s *Store) SaveImage(img *Image) error {
 	}
 	filename := sanitizeImageFilename(key)
 	target := filepath.Join(s.imgDir, filename+".json")
-	tmp := target + ".tmp"
-
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return fmt.Errorf("write image state tmp: %w", err)
-	}
-
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("atomic rename image state: %w", err)
-	}
-
-	return nil
+	return atomicWriteFile(s.imgDir, target, data)
 }
 
 func (s *Store) GetImage(nameOrID string) (*Image, error) {
