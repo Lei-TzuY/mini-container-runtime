@@ -4,7 +4,6 @@ package cgroups
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
