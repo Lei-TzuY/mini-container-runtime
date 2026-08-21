@@ -44,20 +44,37 @@ func TestHealthSupervisor(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go sup.Start(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sup.Start(ctx)
+	}()
 
+	var finalErr string
 	for {
 		updated, err := st.Get("ctr-health-test")
 		if err == nil && updated.Health == StatusHealthy {
-			return // Success
+			break // Success, cancel and wait for exit
 		}
 		select {
 		case <-ctx.Done():
 			if err != nil {
-				t.Fatalf("Get container error: %v", err)
+				finalErr = "Get container error: " + err.Error()
+			} else {
+				finalErr = "Expected container status healthy within deadline, got " + updated.Health
 			}
-			t.Fatalf("Expected container status %s within deadline, got %s", StatusHealthy, updated.Health)
+			break
 		case <-time.After(10 * time.Millisecond):
 		}
+		if finalErr != "" {
+			break
+		}
+	}
+
+	cancel() // Trigger supervisor exit
+	<-done   // Ensure supervisor has completely returned before test ends
+
+	if finalErr != "" {
+		t.Fatal(finalErr)
 	}
 }

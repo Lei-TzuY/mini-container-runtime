@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"minicontainer/internal/state"
@@ -17,6 +18,7 @@ type Supervisor struct {
 	config      Config
 	checkFn     CheckFunc
 	store       *state.Store
+	mu          sync.Mutex
 	failures    int
 }
 
@@ -49,12 +51,18 @@ func (s *Supervisor) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
 			s.runOnce(ctx)
 		}
 	}
 }
 
 func (s *Supervisor) runOnce(parentCtx context.Context) {
+	if parentCtx.Err() != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(parentCtx, s.config.Timeout)
 	defer cancel()
 
@@ -66,14 +74,21 @@ func (s *Supervisor) runOnce(parentCtx context.Context) {
 		}
 	}
 
+	if parentCtx.Err() != nil {
+		return
+	}
+
+	s.mu.Lock()
 	if exitCode == 0 {
 		s.failures = 0
 	} else {
 		s.failures++
 	}
+	failures := s.failures
+	s.mu.Unlock()
 
-	status := Evaluate(s.failures, s.config.Retries)
-	if s.store != nil {
+	status := Evaluate(failures, s.config.Retries)
+	if s.store != nil && parentCtx.Err() == nil {
 		if c, err := s.store.Get(s.containerID); err == nil {
 			c.Health = status
 			_ = s.store.Save(c)
