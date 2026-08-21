@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"minicontainer/internal/imagestore"
 	"minicontainer/internal/state"
 )
+
+var validVolumeNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // Volume holds persistent volume metadata.
 type Volume struct {
@@ -23,10 +27,35 @@ func DefaultVolumeDir() string {
 	return filepath.Join(state.DefaultDir(), "volumes")
 }
 
+// ValidateVolumeName checks that the volume name adheres to alphanumeric naming
+// conventions and does not escape the default volumes storage root.
+func ValidateVolumeName(name string) error {
+	if name == "" {
+		return fmt.Errorf("volume name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid volume name %q: relative path components not allowed", name)
+	}
+	if strings.ContainsAny(name, "/\\:") {
+		return fmt.Errorf("invalid volume name %q: path separators not allowed", name)
+	}
+	if !validVolumeNameRegex.MatchString(name) {
+		return fmt.Errorf("invalid volume name %q: must start with alphanumeric character and contain only [a-zA-Z0-9_.-]", name)
+	}
+
+	volDir := filepath.Clean(filepath.Join(DefaultVolumeDir(), name))
+	parentDir := filepath.Clean(DefaultVolumeDir())
+	rel, err := filepath.Rel(parentDir, volDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("invalid volume name %q: path escapes volume directory", name)
+	}
+	return nil
+}
+
 // CreateVolume creates a new named persistent volume.
 func CreateVolume(name string) (*Volume, error) {
-	if name == "" {
-		return nil, fmt.Errorf("volume name cannot be empty")
+	if err := ValidateVolumeName(name); err != nil {
+		return nil, err
 	}
 
 	volDir := filepath.Join(DefaultVolumeDir(), name)
@@ -57,6 +86,10 @@ func CreateVolume(name string) (*Volume, error) {
 
 // GetVolume retrieves volume details by name.
 func GetVolume(name string) (*Volume, error) {
+	if err := ValidateVolumeName(name); err != nil {
+		return nil, err
+	}
+
 	volDir := filepath.Join(DefaultVolumeDir(), name)
 	metaPath := filepath.Join(volDir, "volume.json")
 
@@ -103,6 +136,10 @@ func ListVolumes() ([]*Volume, error) {
 
 // RemoveVolume deletes a named volume.
 func RemoveVolume(name string) error {
+	if err := ValidateVolumeName(name); err != nil {
+		return err
+	}
+
 	volDir := filepath.Join(DefaultVolumeDir(), name)
 	if _, err := os.Stat(volDir); os.IsNotExist(err) {
 		return fmt.Errorf("volume %q not found", name)
@@ -127,9 +164,11 @@ func PruneVolumes() (int, error) {
 
 // ResolveVolumePath returns the host directory path for a volume name or host path.
 func ResolveVolumePath(spec string) string {
-	vol, err := GetVolume(spec)
-	if err == nil && vol.MountPath != "" {
-		return vol.MountPath
+	if err := ValidateVolumeName(spec); err == nil {
+		vol, err := GetVolume(spec)
+		if err == nil && vol.MountPath != "" {
+			return vol.MountPath
+		}
 	}
 	return spec
 }
