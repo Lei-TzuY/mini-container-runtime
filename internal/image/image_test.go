@@ -201,3 +201,29 @@ func TestLoadDockerSaveInvalidLayerPath(t *testing.T) {
 		t.Fatalf("LoadDockerSave expected error for escaping layer path in manifest.json, got nil")
 	}
 }
+
+func TestWhiteoutPathTraversalDefense(t *testing.T) {
+	destDir := t.TempDir()
+	outsideDir := t.TempDir()
+	sentinelFile := filepath.Join(outsideDir, "victim.txt")
+	if err := os.WriteFile(sentinelFile, []byte("important host data"), 0644); err != nil {
+		t.Fatalf("Write sentinel: %v", err)
+	}
+
+	layerTar := filepath.Join(t.TempDir(), "layer.tar")
+	// Malicious layer containing a whiteout targeting outside the rootfs
+	writeTar(t, layerTar, []tarEntry{
+		{header: &tar.Header{Name: "../../../../" + filepath.Base(outsideDir) + "/.wh.victim.txt", Typeflag: tar.TypeReg, Mode: 0644, Size: 0}},
+	})
+
+	err := applyLayer(layerTar, destDir)
+	if err == nil {
+		t.Fatalf("applyLayer expected error for escaping whiteout path, got nil")
+	}
+
+	// Verify sentinel file was NOT deleted
+	data, err := os.ReadFile(sentinelFile)
+	if err != nil || string(data) != "important host data" {
+		t.Fatalf("outside sentinel file was modified or deleted!")
+	}
+}

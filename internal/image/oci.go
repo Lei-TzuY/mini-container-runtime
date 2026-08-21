@@ -143,10 +143,10 @@ func applyLayer(layerPath, destDir string) error {
 		if base == whiteoutOpaque {
 			targetDir, err := safePath(destDir, dir)
 			if err != nil {
-				continue
+				return fmt.Errorf("opaque whiteout invalid path %q: %w", dir, err)
 			}
 			if err := ensureSafeParentDirs(targetDir, destDir); err != nil {
-				continue
+				return fmt.Errorf("opaque whiteout unsafe parent %q: %w", targetDir, err)
 			}
 			if entries, err := os.ReadDir(targetDir); err == nil {
 				for _, e := range entries {
@@ -162,10 +162,10 @@ func applyLayer(layerPath, destDir string) error {
 			deleted := strings.TrimPrefix(base, whiteoutPrefix)
 			target, err := safePath(destDir, filepath.Join(dir, deleted))
 			if err != nil {
-				continue
+				return fmt.Errorf("whiteout invalid path %q: %w", filepath.Join(dir, deleted), err)
 			}
 			if err := ensureSafeParentDirs(target, destDir); err != nil {
-				continue
+				return fmt.Errorf("whiteout unsafe parent %q: %w", target, err)
 			}
 			_ = os.RemoveAll(target)
 			continue
