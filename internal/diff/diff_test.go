@@ -138,3 +138,28 @@ func TestDiffDirectories_DeterministicSorting(t *testing.T) {
 		}
 	}
 }
+
+func TestDiffUpper_ErrorIntegrity(t *testing.T) {
+	// Calling DiffUpper on non-existent directory must return error
+	if _, err := DiffUpper(filepath.Join(t.TempDir(), "nonexistent")); err == nil {
+		t.Errorf("DiffUpper on nonexistent directory expected error, got nil")
+	}
+}
+
+func TestDiffDirectories_ErrorIntegrity(t *testing.T) {
+	tmpDir := t.TempDir()
+	validDir := filepath.Join(tmpDir, "valid")
+	_ = os.MkdirAll(validDir, 0755)
+
+	nonexistent := filepath.Join(tmpDir, "nonexistent")
+
+	// Calling DiffDirectories on non-existent base directory must return error
+	if _, err := DiffDirectories(nonexistent, validDir); err == nil {
+		t.Errorf("DiffDirectories on nonexistent base expected error, got nil")
+	}
+
+	// Calling DiffDirectories on non-existent target directory must return error
+	if _, err := DiffDirectories(validDir, nonexistent); err == nil {
+		t.Errorf("DiffDirectories on nonexistent target expected error, got nil")
+	}
+}
