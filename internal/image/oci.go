@@ -100,8 +100,11 @@ func LoadDockerSave(tarPath, destDir string) error {
 	}
 
 	for i, rel := range m.Layers {
-		// Layer paths in manifest.json always use forward slashes.
-		layerPath := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		// Layer paths in manifest.json must not escape tmpDir.
+		layerPath, err := safePath(tmpDir, rel)
+		if err != nil {
+			return fmt.Errorf("layer %d has invalid path %q: %w", i+1, rel, err)
+		}
 		fmt.Printf("  [%d/%d] applying layer\n", i+1, len(m.Layers))
 		if err := applyLayer(layerPath, destDir); err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
@@ -142,6 +145,9 @@ func applyLayer(layerPath, destDir string) error {
 			if err != nil {
 				continue
 			}
+			if err := ensureSafeParentDirs(targetDir, destDir); err != nil {
+				continue
+			}
 			if entries, err := os.ReadDir(targetDir); err == nil {
 				for _, e := range entries {
 					_ = os.RemoveAll(filepath.Join(targetDir, e.Name()))
@@ -156,6 +162,9 @@ func applyLayer(layerPath, destDir string) error {
 			deleted := strings.TrimPrefix(base, whiteoutPrefix)
 			target, err := safePath(destDir, filepath.Join(dir, deleted))
 			if err != nil {
+				continue
+			}
+			if err := ensureSafeParentDirs(target, destDir); err != nil {
 				continue
 			}
 			_ = os.RemoveAll(target)
@@ -205,7 +214,7 @@ func openMaybeGzip(path string) (io.ReadCloser, error) {
 
 // plainFile wraps a bufio.Reader (with peeked bytes) + the underlying *os.File.
 type plainFile struct {
-	io.Reader        // bufio.Reader — preserves peeked bytes
+	io.Reader // bufio.Reader — preserves peeked bytes
 	f         *os.File
 }
 
