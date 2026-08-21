@@ -11,14 +11,17 @@ func TestValidateUserNamespaceMapping(t *testing.T) {
 	tests := []struct {
 		name         string
 		json         string
-		wantUID      int
-		wantGID      int
+		subRange     SubIDRange
+		wantUID      int64
+		wantGID      int64
 		wantRoot     bool
 		wantRootless bool
+		wantErr      bool
 	}{
 		{
 			name:         "numeric non-root user 1000:1000",
 			json:         `{"config":{"User":"1000:1000"}}`,
+			subRange:     subRange,
 			wantUID:      1000,
 			wantGID:      1000,
 			wantRoot:     false,
@@ -27,6 +30,7 @@ func TestValidateUserNamespaceMapping(t *testing.T) {
 		{
 			name:         "root user default",
 			json:         `{"config":{"User":"root"}}`,
+			subRange:     subRange,
 			wantUID:      0,
 			wantGID:      0,
 			wantRoot:     true,
@@ -35,16 +39,56 @@ func TestValidateUserNamespaceMapping(t *testing.T) {
 		{
 			name:         "symbolic user nobody",
 			json:         `{"config":{"User":"nobody"}}`,
+			subRange:     subRange,
 			wantUID:      65534,
 			wantGID:      65534,
 			wantRoot:     false,
 			wantRootless: true,
 		},
+		{
+			name:         "zero length subuid range rejects non-rootless",
+			json:         `{"config":{"User":"1000"}}`,
+			subRange:     SubIDRange{StartID: 0, Length: 0},
+			wantUID:      1000,
+			wantGID:      0,
+			wantRoot:     false,
+			wantRootless: false,
+		},
+		{
+			name:     "negative UID is rejected",
+			json:     `{"config":{"User":"-1:1000"}}`,
+			subRange: subRange,
+			wantErr:  true,
+		},
+		{
+			name:     "negative GID is rejected",
+			json:     `{"config":{"User":"1000:-5"}}`,
+			subRange: subRange,
+			wantErr:  true,
+		},
+		{
+			name:     "UID exceeding POSIX max is rejected",
+			json:     `{"config":{"User":"5000000000"}}`,
+			subRange: subRange,
+			wantErr:  true,
+		},
+		{
+			name:     "too many colons is rejected",
+			json:     `{"config":{"User":"1000:1000:extra"}}`,
+			subRange: subRange,
+			wantErr:  true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := ValidateUserNamespaceMapping([]byte(tc.json), subRange)
+			res, err := ValidateUserNamespaceMapping([]byte(tc.json), tc.subRange)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", res)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -72,5 +116,12 @@ func TestFormatUserNamespaceMapping(t *testing.T) {
 	}
 	if !strings.Contains(got, "Parsed UID:GID: 1000:1000") {
 		t.Errorf("expected parsed UID:GID in %q", got)
+	}
+}
+
+func TestFormatUserNamespaceMapping_InvalidJSON(t *testing.T) {
+	got := FormatUserNamespaceMapping([]byte("invalid json"), SubIDRange{})
+	if !strings.Contains(got, "error: parse image config for user mapping") {
+		t.Errorf("expected error in %q", got)
 	}
 }
