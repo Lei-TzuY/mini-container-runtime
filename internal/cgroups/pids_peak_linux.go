@@ -33,3 +33,9 @@ func ReadPIDSPeak(cgroupPath string) (uint64, error) {
 	}
 	return peak, nil
 }
+
+// ResetPIDSPeak is retained for source compatibility. The Linux cgroup v2 ABI
+// defines pids.peak as read-only, so resetting it is not supported.
+func ResetPIDSPeak(cgroupPath string) error {
+	return ErrPIDSPeakReadOnly
+}
