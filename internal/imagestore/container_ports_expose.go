@@ -66,7 +66,7 @@ func ExtractExposedPorts(configJSON []byte) (ExposedPortsSummary, error) {
 
 		if proto == "udp" {
 			udpPorts = append(udpPorts, portNum)
-		} else {
+		} else if proto == "tcp" {
 			tcpPorts = append(tcpPorts, portNum)
 		}
 	}

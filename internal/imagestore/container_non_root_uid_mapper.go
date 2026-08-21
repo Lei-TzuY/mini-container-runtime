@@ -54,33 +54,22 @@ func ValidateUserNamespaceMapping(configJSON []byte, hostSubUIDRange SubIDRange)
 		res.IsRootlessAllowed = false
 	}
 
-	if raw == "" || raw == "root" || raw == "0" || raw == "0:0" {
-		res.IsRoot = true
-		res.IsNumeric = true
-		// Root in container maps to host rootless mapped subuid
-		res.IsRootlessAllowed = hostSubUIDRange.Length > 0
-		return res, nil
-	}
-
 	// Validate colon count (at most one colon for user:group)
 	if strings.Count(raw, ":") > 1 {
 		return UserNamespaceConfig{}, fmt.Errorf("invalid user specification %q: too many colons", raw)
 	}
 
 	parts := strings.Split(raw, ":")
-	userPart := parts[0]
+	userPart := strings.TrimSpace(parts[0])
 	groupPart := ""
 	if len(parts) == 2 {
-		groupPart = parts[1]
+		groupPart = strings.TrimSpace(parts[1])
 	}
 
-	uidParsed, errU := strconv.ParseInt(userPart, 10, 64)
-	if errU == nil {
-		if uidParsed < 0 || uidParsed > MaxValidPOSIXID {
-			return UserNamespaceConfig{}, fmt.Errorf("invalid UID %d: out of valid range (0-%d)", uidParsed, MaxValidPOSIXID)
-		}
-		res.UID = uidParsed
-		res.IsNumeric = true
+	if userPart == "" || userPart == "root" || userPart == "0" {
+		res.IsRoot = true
+		res.IsNumeric = (userPart == "0" || userPart == "")
+		res.UID = 0
 
 		if groupPart != "" {
 			gidParsed, errG := strconv.ParseInt(groupPart, 10, 64)
@@ -89,17 +78,57 @@ func ValidateUserNamespaceMapping(configJSON []byte, hostSubUIDRange SubIDRange)
 					return UserNamespaceConfig{}, fmt.Errorf("invalid GID %d: out of valid range (0-%d)", gidParsed, MaxValidPOSIXID)
 				}
 				res.GID = gidParsed
+			} else if groupPart == "root" || groupPart == "0" {
+				res.GID = 0
+			} else {
+				res.GID = 65534
 			}
+		} else {
+			res.GID = 0
 		}
 	} else {
-		// Non-numeric user (e.g. "nobody", "www-data", "appuser")
-		res.IsNumeric = false
-		res.UID = 65534 // fallback nobody (0xFFFE)
-		res.GID = 65534
-	}
+		uidParsed, errU := strconv.ParseInt(userPart, 10, 64)
+		if errU == nil {
+			if uidParsed < 0 || uidParsed > MaxValidPOSIXID {
+				return UserNamespaceConfig{}, fmt.Errorf("invalid UID %d: out of valid range (0-%d)", uidParsed, MaxValidPOSIXID)
+			}
+			res.UID = uidParsed
+			res.IsNumeric = true
+			if res.UID == 0 {
+				res.IsRoot = true
+			}
 
-	if res.UID == 0 {
-		res.IsRoot = true
+			if groupPart != "" {
+				gidParsed, errG := strconv.ParseInt(groupPart, 10, 64)
+				if errG == nil {
+					if gidParsed < 0 || gidParsed > MaxValidPOSIXID {
+						return UserNamespaceConfig{}, fmt.Errorf("invalid GID %d: out of valid range (0-%d)", gidParsed, MaxValidPOSIXID)
+					}
+					res.GID = gidParsed
+				} else if groupPart == "root" || groupPart == "0" {
+					res.GID = 0
+				} else {
+					res.GID = 65534
+				}
+			}
+		} else {
+			// Non-numeric user (e.g. "nobody", "www-data", "appuser")
+			res.IsNumeric = false
+			res.UID = 65534 // fallback nobody (0xFFFE)
+			res.GID = 65534
+
+			if groupPart != "" {
+				gidParsed, errG := strconv.ParseInt(groupPart, 10, 64)
+				if errG == nil {
+					if gidParsed < 0 || gidParsed > MaxValidPOSIXID {
+						return UserNamespaceConfig{}, fmt.Errorf("invalid GID %d: out of valid range (0-%d)", gidParsed, MaxValidPOSIXID)
+					}
+					res.GID = gidParsed
+				} else if groupPart == "root" || groupPart == "0" {
+					res.GID = 0
+				}
+			}
+		}
 	}
 
 	if hostSubUIDRange.Length > 0 {
