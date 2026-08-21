@@ -167,3 +167,58 @@ func TestOpenCreatesDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestStateStoreTraversalDefense(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	traversalIDs := []string{
+		"",
+		".",
+		"..",
+		"../escape",
+		"../../etc/passwd",
+		"foo/bar",
+		"foo\\bar",
+		"colon:id",
+	}
+
+	for _, id := range traversalIDs {
+		if err := store.Save(&Container{ID: id}); err == nil {
+			t.Errorf("Save(%q) expected error, got nil", id)
+		}
+		if _, err := store.Get(id); err == nil {
+			t.Errorf("Get(%q) expected error, got nil", id)
+		}
+		if err := store.Delete(id); err == nil {
+			t.Errorf("Delete(%q) expected error, got nil", id)
+		}
+		if _, err := store.Resolve(id); err == nil {
+			t.Errorf("Resolve(%q) expected error, got nil", id)
+		}
+	}
+}
+
+func TestSanitizeImageFilename(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"alpine:3.19", "alpine_3.19"},
+		{"registry.example.com/user/app:v1", "registry.example.com_user_app_v1"},
+		{"../../evil", "evil"},
+		{"", "default"},
+		{"...", "default"},
+		{".", "default"},
+	}
+
+	for _, tt := range tests {
+		got := sanitizeImageFilename(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeImageFilename(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
