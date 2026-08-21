@@ -28,13 +28,16 @@ func DiffUpper(upperDir string) ([]Change, error) {
 	var changes []Change
 
 	err := filepath.WalkDir(upperDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == upperDir {
+		if err != nil {
+			return err
+		}
+		if path == upperDir {
 			return nil
 		}
 
 		rel, err := filepath.Rel(upperDir, path)
 		if err != nil {
-			return nil
+			return fmt.Errorf("diff rel path %s: %w", path, err)
 		}
 
 		relPath := "/" + filepath.ToSlash(rel)
@@ -59,7 +62,7 @@ func DiffUpper(upperDir string) ([]Change, error) {
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("diff upper dir: %w", err)
 	}
 
 	sortChanges(changes)
@@ -78,52 +81,60 @@ func DiffDirectories(baseDir, targetDir string) ([]Change, error) {
 	targetFiles := make(map[string]fileMeta)
 
 	err := filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == targetDir {
+		if err != nil {
+			return err
+		}
+		if path == targetDir {
 			return nil
 		}
 		rel, err := filepath.Rel(targetDir, path)
 		if err != nil {
-			return nil
+			return fmt.Errorf("diff rel target path %s: %w", path, err)
 		}
 		relPath := "/" + filepath.ToSlash(rel)
 		info, err := d.Info()
-		if err == nil {
-			targetFiles[relPath] = fileMeta{
-				isDir: d.IsDir(),
-				mode:  info.Mode(),
-				size:  info.Size(),
-				full:  path,
-			}
+		if err != nil {
+			return fmt.Errorf("inspect file info %s: %w", path, err)
+		}
+		targetFiles[relPath] = fileMeta{
+			isDir: d.IsDir(),
+			mode:  info.Mode(),
+			size:  info.Size(),
+			full:  path,
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walk target dir: %w", err)
 	}
 
 	baseFiles := make(map[string]fileMeta)
 	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == baseDir {
+		if err != nil {
+			return err
+		}
+		if path == baseDir {
 			return nil
 		}
 		rel, err := filepath.Rel(baseDir, path)
 		if err != nil {
-			return nil
+			return fmt.Errorf("diff rel base path %s: %w", path, err)
 		}
 		relPath := "/" + filepath.ToSlash(rel)
 		info, err := d.Info()
-		if err == nil {
-			baseFiles[relPath] = fileMeta{
-				isDir: d.IsDir(),
-				mode:  info.Mode(),
-				size:  info.Size(),
-				full:  path,
-			}
+		if err != nil {
+			return fmt.Errorf("inspect file info %s: %w", path, err)
+		}
+		baseFiles[relPath] = fileMeta{
+			isDir: d.IsDir(),
+			mode:  info.Mode(),
+			size:  info.Size(),
+			full:  path,
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walk base dir: %w", err)
 	}
 
 	var changes []Change
