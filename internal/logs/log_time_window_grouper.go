@@ -35,25 +35,33 @@ func NewLogTimeWindowGrouper(windowDuration time.Duration) *LogTimeWindowGrouper
 	}
 }
 
-// GroupLines aggregates log lines into sorted time buckets.
+// GroupLines aggregates log lines into sorted time buckets with nanosecond precision.
 func (g *LogTimeWindowGrouper) GroupLines(lines []string, fallbackTime time.Time) []LogWindowBucket {
+	if fallbackTime.IsZero() {
+		fallbackTime = time.Now().UTC()
+	} else {
+		fallbackTime = fallbackTime.UTC()
+	}
+
 	buckets := make(map[int64]*LogWindowBucket)
 
 	for _, line := range lines {
 		t, ok := ExtractTimestamp(line)
 		if !ok {
 			t = fallbackTime
+		} else {
+			t = t.UTC()
 		}
 
-		windowStartUnix := t.Truncate(g.WindowDuration).Unix()
-		b, exists := buckets[windowStartUnix]
+		windowStart := t.Truncate(g.WindowDuration)
+		windowStartNano := windowStart.UnixNano()
+		b, exists := buckets[windowStartNano]
 		if !exists {
-			startTime := time.Unix(windowStartUnix, 0).UTC()
 			b = &LogWindowBucket{
-				StartTime: startTime,
-				EndTime:   startTime.Add(g.WindowDuration),
+				StartTime: windowStart,
+				EndTime:   windowStart.Add(g.WindowDuration),
 			}
-			buckets[windowStartUnix] = b
+			buckets[windowStartNano] = b
 		}
 
 		b.TotalLines++
@@ -83,6 +91,15 @@ func FormatWindowBuckets(buckets []LogWindowBucket) string {
 		return "Log Windows: (no data)"
 	}
 
+	timeFormat := "15:04:05"
+	// Use millisecond precision if any bucket has sub-second start time
+	for _, b := range buckets {
+		if b.StartTime.Nanosecond() != 0 {
+			timeFormat = "15:04:05.000"
+			break
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Log Window Distribution (%d windows):\n", len(buckets)))
 	for _, b := range buckets {
@@ -92,7 +109,7 @@ func FormatWindowBuckets(buckets []LogWindowBucket) string {
 		}
 		bar := strings.Repeat("█", barLen)
 		sb.WriteString(fmt.Sprintf("  [%s] %4d lines (errors: %d, warns: %d) %s\n",
-			b.StartTime.Format("15:04:05"), b.TotalLines, b.ErrorCount, b.WarnCount, bar))
+			b.StartTime.Format(timeFormat), b.TotalLines, b.ErrorCount, b.WarnCount, bar))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
