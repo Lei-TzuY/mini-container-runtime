@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Time-Window Grouper**| Fixed-Window Metrics Bucketer| Aggregates logs into time slices with error/warn counters and ASCII histogram (`minictl logs --window 1m`). |
+| **User Namespace UID/GID Validator**| Rootless ID Mapper| Evaluates image User settings and validates compatibility with host subuid/subgid ranges. |
+| **CPU Max Burst Quota Budget**| Cgroup v2 `cpu.max.burst`| Configures accumulated CFS burst quota in microseconds for peak processing (Linux 5.14+). |
+| **DNS TrustAD Attempts+Timeout+Ndots**| `/etc/resolv.conf` Driver| Quad-option decorator: `trust-ad`, `attempts:N`, `timeout:M`, and `ndots:K` in one formatted line. |
 | **Log Batch & Reservoir Sampler**| Stream Statistical Reducer| Samples 1-in-N, fractional rates, or fixed-k reservoirs to reduce logging telemetry volume (`minictl logs --sample`). |
 | **Manifest Layer Size Diff**| Image Upgrade Diff Engine| Compares two manifest versions, measuring shared layer reuse, additions, deletions, and net byte delta. |
 | **Proactive Memory Reclaim Options**| Cgroup v2 `memory.reclaim`| Compacts pagecache/swap with configurable swappiness and NUMA target node parameters (Linux 6.8+). |
