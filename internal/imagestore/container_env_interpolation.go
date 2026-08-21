@@ -1,45 +1,84 @@
 // Package imagestore provides OCI image configuration inspection utilities.
 // This file implements an environment variable expansion engine for OCI image configs
-// resolving nested variable interpolations ($VAR, ${VAR}, ${VAR:-default}) in sequential order.
+// resolving nested variable interpolations ($VAR, ${VAR}, ${VAR:-default}, ${VAR:+alt}) in sequential order.
 
 package imagestore
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 )
 
 var (
-	envVarBracedRegex = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]+))?\}`)
+	// envVarBracedRegex matches ${VAR}, ${VAR:-def}, ${VAR-def}, ${VAR:+alt}, ${VAR+alt}
+	envVarBracedRegex = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::?([-+]))?([^}]*)\}`)
 	envVarSimpleRegex = regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_]*)`)
 )
 
+const escapeSentinel = "\x00ESCAPED_DOLLAR\x00"
+
 // ExpandEnvString expands variable references in a value string using an environment map.
+// Evaluation is strictly isolated to envMap and does not leak host process environment.
 func ExpandEnvString(val string, envMap map[string]string) string {
-	// First expand ${VAR:-default} and ${VAR}
-	res := envVarBracedRegex.ReplaceAllStringFunc(val, func(m string) string {
+	if !strings.Contains(val, "$") {
+		return val
+	}
+
+	// 1. Handle $$ escape sequence (literal $)
+	res := strings.ReplaceAll(val, "$$", escapeSentinel)
+
+	// 2. Expand braced variables: ${VAR}, ${VAR:-def}, ${VAR-def}, ${VAR:+alt}, ${VAR+alt}
+	res = envVarBracedRegex.ReplaceAllStringFunc(res, func(m string) string {
 		sub := envVarBracedRegex.FindStringSubmatch(m)
 		if len(sub) < 2 {
 			return m
 		}
 		varName := sub[1]
-		defVal := ""
-		if len(sub) >= 3 {
-			defVal = sub[2]
+		op := sub[2]       // "-" or "+" (with or without colon prefix captured via regex)
+		arg := sub[3]      // default or alternate value
+		colon := strings.HasPrefix(m[len(varName)+2:], ":")
+
+		val, exists := envMap[varName]
+
+		switch op {
+		case "-":
+			if colon {
+				// ${VAR:-def}: use def if unset or empty
+				if !exists || val == "" {
+					return arg
+				}
+				return val
+			}
+			// ${VAR-def}: use def if unset
+			if !exists {
+				return arg
+			}
+			return val
+		case "+":
+			if colon {
+				// ${VAR:+alt}: use alt if set and non-empty
+				if exists && val != "" {
+					return arg
+				}
+				return ""
+			}
+			// ${VAR+alt}: use alt if set
+			if exists {
+				return arg
+			}
+			return ""
+		default:
+			// Plain ${VAR}
+			if exists {
+				return val
+			}
+			return ""
 		}
-		if v, exists := envMap[varName]; exists && v != "" {
-			return v
-		}
-		if v := os.Getenv(varName); v != "" {
-			return v
-		}
-		return defVal
 	})
 
-	// Then expand simple $VAR
+	// 3. Expand simple $VAR
 	res = envVarSimpleRegex.ReplaceAllStringFunc(res, func(m string) string {
 		sub := envVarSimpleRegex.FindStringSubmatch(m)
 		if len(sub) < 2 {
@@ -49,11 +88,11 @@ func ExpandEnvString(val string, envMap map[string]string) string {
 		if v, exists := envMap[varName]; exists {
 			return v
 		}
-		if v := os.Getenv(varName); v != "" {
-			return v
-		}
 		return ""
 	})
+
+	// 4. Restore escaped dollars
+	res = strings.ReplaceAll(res, escapeSentinel, "$")
 
 	return res
 }
