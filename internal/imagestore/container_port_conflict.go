@@ -7,6 +7,7 @@ package imagestore
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,9 +27,19 @@ func DetectPortConflicts(configs map[string][]byte) ([]PortConflict, error) {
 		if err != nil {
 			return nil, fmt.Errorf("image %q: %w", name, err)
 		}
+
+		// Deduplicate per image so an image declaring the same port twice internally does not self-conflict
+		seenForImage := make(map[string]struct{})
 		for _, entry := range summary.Ports {
-			key := fmt.Sprintf("%d/%s", entry.Port, entry.Protocol)
-			portOwners[key] = append(portOwners[key], name)
+			proto := strings.ToLower(entry.Protocol)
+			if proto == "" {
+				proto = "tcp"
+			}
+			key := fmt.Sprintf("%d/%s", entry.Port, proto)
+			if _, exists := seenForImage[key]; !exists {
+				seenForImage[key] = struct{}{}
+				portOwners[key] = append(portOwners[key], name)
+			}
 		}
 	}
 
@@ -39,10 +50,28 @@ func DetectPortConflicts(configs map[string][]byte) ([]PortConflict, error) {
 			conflicts = append(conflicts, PortConflict{Port: port, Images: owners})
 		}
 	}
+
+	// Sort conflicts numerically by port number, then by protocol
 	sort.Slice(conflicts, func(i, j int) bool {
-		return conflicts[i].Port < conflicts[j].Port
+		pi, protoI := parsePortKey(conflicts[i].Port)
+		pj, protoJ := parsePortKey(conflicts[j].Port)
+		if pi != pj {
+			return pi < pj
+		}
+		return protoI < protoJ
 	})
+
 	return conflicts, nil
+}
+
+func parsePortKey(portKey string) (int, string) {
+	parts := strings.SplitN(portKey, "/", 2)
+	num, _ := strconv.Atoi(parts[0])
+	proto := ""
+	if len(parts) == 2 {
+		proto = parts[1]
+	}
+	return num, proto
 }
 
 // FormatPortConflicts returns a human-readable conflict report.
