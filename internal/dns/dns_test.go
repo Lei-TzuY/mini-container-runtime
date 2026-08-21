@@ -121,3 +121,89 @@ func TestDNSConcurrency(t *testing.T) {
 		<-done
 	}
 }
+
+func TestInjectHostsInvalidRootFS(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	netName := "test-net"
+	_ = RegisterHost(netName, "c1", "host1", "10.0.0.2")
+
+	// Empty rootfs path
+	if err := InjectHostsIntoRootFS("", netName); err == nil {
+		t.Errorf("InjectHostsIntoRootFS on empty rootfs expected error, got nil")
+	}
+
+	// File instead of directory
+	filePath := filepath.Join(tmpHome, "file.txt")
+	_ = os.WriteFile(filePath, []byte("regular file"), 0644)
+	if err := InjectHostsIntoRootFS(filePath, netName); err == nil {
+		t.Errorf("InjectHostsIntoRootFS on regular file expected error, got nil")
+	}
+
+	// Invalid network name
+	if err := InjectHostsIntoRootFS(tmpHome, "../bad-net"); err == nil {
+		t.Errorf("InjectHostsIntoRootFS with traversal network name expected error, got nil")
+	}
+}
+
+func TestInjectHostsRootFSSymlinkDefense(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" && os.Getenv("CI") == "" {
+		// Verify symlink creation is allowed or skip if Windows unprivileged
+		testSym := filepath.Join(t.TempDir(), "test_sym")
+		if err := os.Symlink(t.TempDir(), testSym); err != nil {
+			t.Skip("skipping symlink test due to local OS permissions")
+		}
+		_ = os.Remove(testSym)
+	}
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	netName := "sec-net"
+	_ = RegisterHost(netName, "c1", "web", "10.0.0.5")
+
+	rootfs := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideSentinel := filepath.Join(outsideDir, "hosts")
+	if err := os.WriteFile(outsideSentinel, []byte("HOST SENTINEL DATA"), 0644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	// Scenario 1: rootfs/etc is a symlink pointing to outsideDir
+	etcLink := filepath.Join(rootfs, "etc")
+	if err := os.Symlink(outsideDir, etcLink); err == nil {
+		err := InjectHostsIntoRootFS(rootfs, netName)
+		if err == nil {
+			t.Fatalf("InjectHostsIntoRootFS expected error for escaping /etc symlink, got nil")
+		}
+		// Verify outside sentinel was untouched
+		data, _ := os.ReadFile(outsideSentinel)
+		if string(data) != "HOST SENTINEL DATA" {
+			t.Fatalf("outside sentinel file was overwritten via /etc symlink escape!")
+		}
+		_ = os.Remove(etcLink)
+	}
+
+	// Scenario 2: rootfs/etc is a real dir, but rootfs/etc/hosts is a symlink to outsideSentinel
+	_ = os.MkdirAll(etcLink, 0755)
+	hostsLink := filepath.Join(etcLink, "hosts")
+	if err := os.Symlink(outsideSentinel, hostsLink); err == nil {
+		err := InjectHostsIntoRootFS(rootfs, netName)
+		if err != nil {
+			t.Fatalf("InjectHostsIntoRootFS failed on valid rootfs: %v", err)
+		}
+		// Verify outside sentinel was untouched (the symlink was removed before write)
+		data, _ := os.ReadFile(outsideSentinel)
+		if string(data) != "HOST SENTINEL DATA" {
+			t.Fatalf("outside sentinel file was overwritten via /etc/hosts symlink!")
+		}
+		// Verify new hosts file was written inside rootfs/etc/hosts
+		rootfsHosts, err := os.ReadFile(hostsLink)
+		if err != nil || !strings.Contains(string(rootfsHosts), "10.0.0.5\tweb") {
+			t.Fatalf("rootfs hosts missing expected entry: %s", string(rootfsHosts))
+		}
+	}
+}
