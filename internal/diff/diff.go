@@ -1,9 +1,12 @@
 package diff
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -55,46 +58,81 @@ func DiffUpper(upperDir string) ([]Change, error) {
 		return nil
 	})
 
-	return changes, err
+	if err != nil {
+		return nil, err
+	}
+
+	sortChanges(changes)
+	return changes, nil
 }
 
-// DiffDirectories compares targetDir against baseDir file by file.
-func DiffDirectories(baseDir, targetDir string) ([]Change, error) {
-	var changes []Change
-	targetFiles := make(map[string]int64)
+type fileMeta struct {
+	isDir bool
+	mode  fs.FileMode
+	size  int64
+	full  string
+}
 
-	_ = filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
+// DiffDirectories compares targetDir against baseDir file by file with content awareness.
+func DiffDirectories(baseDir, targetDir string) ([]Change, error) {
+	targetFiles := make(map[string]fileMeta)
+
+	err := filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || path == targetDir {
 			return nil
 		}
-		rel, _ := filepath.Rel(targetDir, path)
+		rel, err := filepath.Rel(targetDir, path)
+		if err != nil {
+			return nil
+		}
 		relPath := "/" + filepath.ToSlash(rel)
 		info, err := d.Info()
 		if err == nil {
-			targetFiles[relPath] = info.Size()
+			targetFiles[relPath] = fileMeta{
+				isDir: d.IsDir(),
+				mode:  info.Mode(),
+				size:  info.Size(),
+				full:  path,
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	baseFiles := make(map[string]int64)
-	_ = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+	baseFiles := make(map[string]fileMeta)
+	err = filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || path == baseDir {
 			return nil
 		}
-		rel, _ := filepath.Rel(baseDir, path)
+		rel, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return nil
+		}
 		relPath := "/" + filepath.ToSlash(rel)
 		info, err := d.Info()
 		if err == nil {
-			baseFiles[relPath] = info.Size()
+			baseFiles[relPath] = fileMeta{
+				isDir: d.IsDir(),
+				mode:  info.Mode(),
+				size:  info.Size(),
+				full:  path,
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	for relPath, sz := range targetFiles {
-		baseSz, exists := baseFiles[relPath]
+	var changes []Change
+
+	for relPath, tMeta := range targetFiles {
+		bMeta, exists := baseFiles[relPath]
 		if !exists {
 			changes = append(changes, Change{Type: Added, Path: relPath})
-		} else if baseSz != sz {
+		} else if !filesEqual(bMeta, tMeta) {
 			changes = append(changes, Change{Type: Changed, Path: relPath})
 		}
 	}
@@ -105,7 +143,38 @@ func DiffDirectories(baseDir, targetDir string) ([]Change, error) {
 		}
 	}
 
+	sortChanges(changes)
 	return changes, nil
+}
+
+func filesEqual(bMeta, tMeta fileMeta) bool {
+	if bMeta.isDir && tMeta.isDir {
+		return true
+	}
+	if bMeta.isDir != tMeta.isDir {
+		return false
+	}
+	if bMeta.size != tMeta.size {
+		return false
+	}
+	if bMeta.mode != tMeta.mode {
+		return false
+	}
+	baseData, err1 := os.ReadFile(bMeta.full)
+	targetData, err2 := os.ReadFile(tMeta.full)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return bytes.Equal(baseData, targetData)
+}
+
+func sortChanges(changes []Change) {
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Path == changes[j].Path {
+			return changes[i].Type < changes[j].Type
+		}
+		return changes[i].Path < changes[j].Path
+	})
 }
 
 func FormatDiff(changes []Change) string {
