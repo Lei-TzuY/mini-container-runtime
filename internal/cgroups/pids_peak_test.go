@@ -19,13 +19,20 @@ func TestReadPIDSPeak_Missing(t *testing.T) {
 	}
 }
 
+func TestResetPIDSPeak_IsReadOnly(t *testing.T) {
+	if err := ResetPIDSPeak(t.TempDir()); !errors.Is(err, ErrPIDSPeakReadOnly) {
+		t.Fatalf("error = %v, want ErrPIDSPeakReadOnly", err)
+	}
+}
+
 func TestReadPIDSPeak_Linux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("pids.peak parsing is Linux-specific")
 	}
 
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "pids.peak"), []byte("256\n"), 0o444); err != nil {
+	peakPath := filepath.Join(tmpDir, "pids.peak")
+	if err := os.WriteFile(peakPath, []byte("256\n"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,6 +42,17 @@ func TestReadPIDSPeak_Linux(t *testing.T) {
 	}
 	if val != 256 {
 		t.Errorf("val = %d, want 256", val)
+	}
+
+	if err := ResetPIDSPeak(tmpDir); !errors.Is(err, ErrPIDSPeakReadOnly) {
+		t.Fatalf("reset error = %v, want ErrPIDSPeakReadOnly", err)
+	}
+	data, err := os.ReadFile(peakPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "256\n" {
+		t.Fatalf("read-only reset mutated pids.peak to %q", string(data))
 	}
 }
 
