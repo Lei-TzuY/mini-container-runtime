@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log ANSI Colorizer & Stripper**| Severity Terminal Highlighter| Colorizes container logs by severity and strips ANSI escape sequences (`minictl logs --color`). |
+| **Exposed Port Conflict Detector**| Multi-Image Port Auditor| Detects overlapping port bindings across multiple images before container scheduling. |
+| **Swap Usage & High Limit**| Cgroup v2 `memory.swap.high`| Reads swap usage and configures throttle watermark limits to prevent host disk thrashing. |
+| **DNS Rotate Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `rotate`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log Head/Tail Line Selector**| Stream Head & Tail Slicer| Extracts first N, last N, or combined head+tail lines with skip separator (`minictl logs --head --tail`). |
 | **Label Policy Compliance Checker**| OCI Label Auditor| Validates required OCI recommended labels (title, version, vendor, source, licenses) with 0-100 score. |
 | **CPU Stat Throttle Metrics**| Cgroup v2 `cpu.stat` Periods| Reads `nr_periods`, `nr_throttled`, `throttled_usec` counters and computes throttle percentage. |
