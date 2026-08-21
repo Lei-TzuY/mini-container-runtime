@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Batch & Reservoir Sampler**| Stream Statistical Reducer| Samples 1-in-N, fractional rates, or fixed-k reservoirs to reduce logging telemetry volume (`minictl logs --sample`). |
+| **Manifest Layer Size Diff**| Image Upgrade Diff Engine| Compares two manifest versions, measuring shared layer reuse, additions, deletions, and net byte delta. |
+| **Proactive Memory Reclaim Options**| Cgroup v2 `memory.reclaim`| Compacts pagecache/swap with configurable swappiness and NUMA target node parameters (Linux 6.8+). |
+| **DNS EDNS0 Attempts+Timeout+Ndots**| `/etc/resolv.conf` Driver| Quad-option decorator: `edns0`, `attempts:N`, `timeout:M`, and `ndots:K` in one formatted line. |
 | **Log ANSI Colorizer & Stripper**| Severity Terminal Highlighter| Colorizes container logs by severity and strips ANSI escape sequences (`minictl logs --color`). |
 | **Exposed Port Conflict Detector**| Multi-Image Port Auditor| Detects overlapping port bindings across multiple images before container scheduling. |
 | **Swap Usage & High Limit**| Cgroup v2 `memory.swap.high`| Reads swap usage and configures throttle watermark limits to prevent host disk thrashing. |
