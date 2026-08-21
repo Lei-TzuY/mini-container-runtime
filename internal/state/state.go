@@ -167,11 +167,16 @@ func atomicWriteFile(dir, target string, data []byte) error {
 		return fmt.Errorf("close state tmp file: %w", err)
 	}
 
-	if err := os.Rename(tmpName, target); err != nil {
-		return fmt.Errorf("atomic rename state file: %w", err)
+	var renameErr error
+	for attempts := 0; attempts < 10; attempts++ {
+		renameErr = os.Rename(tmpName, target)
+		if renameErr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempts+1) * 2 * time.Millisecond)
 	}
 
-	return nil
+	return fmt.Errorf("atomic rename state file: %w", renameErr)
 }
 
 func (s *Store) Save(c *Container) error {
