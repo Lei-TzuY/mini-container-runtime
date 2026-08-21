@@ -52,6 +52,10 @@ A minimal, educational Linux container runtime written in Go from scratch. `mini
 | **Custom Networks** | `ip link add type bridge` | Creates and manages custom Layer 2 Linux bridge networks. |
 | **Port Mapping** | `iptables` DNAT | Forwards host ports to container private IP (172.20.0.2). |
 | **Seccomp Security** | `prctl(PR_SET_SECCOMP)` + cBPF | Restricts dangerous syscalls (`ptrace`, `kexec_load`, `init_module`, etc.). |
+| **Log Head/Tail Line Selector**| Stream Head & Tail Slicer| Extracts first N, last N, or combined head+tail lines with skip separator (`minictl logs --head --tail`). |
+| **Label Policy Compliance Checker**| OCI Label Auditor| Validates required OCI recommended labels (title, version, vendor, source, licenses) with 0-100 score. |
+| **CPU Stat Throttle Metrics**| Cgroup v2 `cpu.stat` Periods| Reads `nr_periods`, `nr_throttled`, `throttled_usec` counters and computes throttle percentage. |
+| **DNS IP6Dotint Attempts+Timeout**| `/etc/resolv.conf` Driver| Triple-option decorator: `ip6-dotint`, `attempts:N`, and `timeout:M` in one formatted line. |
 | **Log JSON-to-Logfmt Converter**| Structured Log Flattener| Converts JSON container logs to flat `key=value` logfmt format for grep and shell pipelines. |
 | **Dockerfile Reconstructor**| History Reverse-Engineer| Reconstructs best-effort Dockerfile from OCI Image Config `history[]` layer commands. |
 | **CPU Weight Nice Controller**| Cgroup v2 `cpu.weight.nice`| Reads and writes traditional Unix nice values (-20 to 19) for container CPU scheduling priority. |
