@@ -19,18 +19,18 @@ type LayerDescriptor struct {
 
 // ManifestLayerDiff contains comparison metrics between two image manifests.
 type ManifestLayerDiff struct {
-	BaseLayersCount   int
-	TargetLayersCount int
-	SharedLayersCount int
-	AddedLayersCount  int
+	BaseLayersCount    int
+	TargetLayersCount  int
+	SharedLayersCount  int
+	AddedLayersCount   int
 	DeletedLayersCount int
-	BaseTotalBytes    int64
-	TargetTotalBytes  int64
-	NetDeltaBytes     int64 // TargetTotalBytes - BaseTotalBytes
-	AddedBytes        int64
-	DeletedBytes      int64
-	SharedBytes       int64
-	ReuseRatioPercent float64
+	BaseTotalBytes     int64
+	TargetTotalBytes   int64
+	NetDeltaBytes      int64 // TargetTotalBytes - BaseTotalBytes
+	AddedBytes         int64
+	DeletedBytes       int64
+	SharedBytes        int64
+	ReuseRatioPercent  float64
 }
 
 // DiffImageManifestLayers computes the difference in layers and size between base and target manifests.
@@ -46,17 +46,28 @@ func DiffImageManifestLayers(baseManifestJSON, targetManifestJSON []byte) (Manif
 		return ManifestLayerDiff{}, fmt.Errorf("parse target manifest: %w", err)
 	}
 
-	baseMap := make(map[string]int64)
+	// Validate layer sizes
+	baseDigestSet := make(map[string]struct{})
 	var baseTotal int64
-	for _, l := range baseManifest.Layers {
-		baseMap[l.Digest] = l.Size
+	for i, l := range baseManifest.Layers {
+		if l.Size < 0 {
+			return ManifestLayerDiff{}, fmt.Errorf("base manifest layer %d has negative size %d", i, l.Size)
+		}
+		if l.Digest != "" {
+			baseDigestSet[l.Digest] = struct{}{}
+		}
 		baseTotal += l.Size
 	}
 
-	targetMap := make(map[string]int64)
+	targetDigestSet := make(map[string]struct{})
 	var targetTotal int64
-	for _, l := range targetManifest.Layers {
-		targetMap[l.Digest] = l.Size
+	for i, l := range targetManifest.Layers {
+		if l.Size < 0 {
+			return ManifestLayerDiff{}, fmt.Errorf("target manifest layer %d has negative size %d", i, l.Size)
+		}
+		if l.Digest != "" {
+			targetDigestSet[l.Digest] = struct{}{}
+		}
 		targetTotal += l.Size
 	}
 
@@ -68,26 +79,30 @@ func DiffImageManifestLayers(baseManifestJSON, targetManifestJSON []byte) (Manif
 		NetDeltaBytes:     targetTotal - baseTotal,
 	}
 
-	// Calculate shared, added, deleted
-	for digest, size := range targetMap {
-		if _, exists := baseMap[digest]; exists {
+	// Process target layers in sequential order
+	for _, l := range targetManifest.Layers {
+		if _, exists := baseDigestSet[l.Digest]; exists && l.Digest != "" {
 			diff.SharedLayersCount++
-			diff.SharedBytes += size
+			diff.SharedBytes += l.Size
 		} else {
 			diff.AddedLayersCount++
-			diff.AddedBytes += size
+			diff.AddedBytes += l.Size
 		}
 	}
 
-	for digest, size := range baseMap {
-		if _, exists := targetMap[digest]; !exists {
+	// Process base layers in sequential order
+	for _, l := range baseManifest.Layers {
+		if _, exists := targetDigestSet[l.Digest]; !exists || l.Digest == "" {
 			diff.DeletedLayersCount++
-			diff.DeletedBytes += size
+			diff.DeletedBytes += l.Size
 		}
 	}
 
 	if targetTotal > 0 {
 		diff.ReuseRatioPercent = (float64(diff.SharedBytes) / float64(targetTotal)) * 100.0
+		if diff.ReuseRatioPercent > 100.0 {
+			diff.ReuseRatioPercent = 100.0
+		}
 	}
 
 	return diff, nil
