@@ -15,18 +15,19 @@ func TestExtractExposedPorts(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name: "mixed tcp and udp ports",
+			name: "mixed tcp and udp and sctp ports",
 			json: `{
 				"config": {
 					"ExposedPorts": {
 						"80/tcp": {},
 						"443/tcp": {},
 						"53/udp": {},
+						"9000/sctp": {},
 						"8080": {}
 					}
 				}
 			}`,
-			wantTotal:    4,
+			wantTotal:    5,
 			wantTCPPorts: []int{80, 443, 8080},
 			wantUDPPorts: []int{53},
 			wantErr:      false,

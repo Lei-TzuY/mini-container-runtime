@@ -7,6 +7,7 @@ package imagestore
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -38,9 +39,13 @@ func AuditSecurityCapabilities(configJSON []byte) (SecurityAuditReport, error) {
 		User: cfg.Config.User,
 	}
 
-	// 1. Check User (empty or "root" or "0" runs as root)
+	// 1. Check User (empty or "root" or "0" or compound root like "root:*" / "0:*" runs as root)
 	u := strings.TrimSpace(cfg.Config.User)
-	if u == "" || u == "root" || u == "0" || strings.HasPrefix(u, "0:") {
+	userPart := u
+	if idx := strings.Index(u, ":"); idx != -1 {
+		userPart = strings.TrimSpace(u[:idx])
+	}
+	if userPart == "" || userPart == "root" || userPart == "0" {
 		report.RunsAsRoot = true
 		report.RiskScore += 40
 	}
@@ -54,6 +59,16 @@ func AuditSecurityCapabilities(configJSON []byte) (SecurityAuditReport, error) {
 				report.PrivilegedPorts = append(report.PrivilegedPorts, portNum)
 			}
 		}
+	}
+	if len(report.PrivilegedPorts) > 1 {
+		sort.Ints(report.PrivilegedPorts)
+		unique := make([]int, 0, len(report.PrivilegedPorts))
+		for i, p := range report.PrivilegedPorts {
+			if i == 0 || p != report.PrivilegedPorts[i-1] {
+				unique = append(unique, p)
+			}
+		}
+		report.PrivilegedPorts = unique
 	}
 	if report.HasPrivilegedPorts {
 		report.RiskScore += 30
