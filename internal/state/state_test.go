@@ -3,6 +3,7 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -219,6 +220,114 @@ func TestSanitizeImageFilename(t *testing.T) {
 		got := sanitizeImageFilename(tt.input)
 		if got != tt.want {
 			t.Errorf("sanitizeImageFilename(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestConcurrentAtomicSaves(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	const goroutines = 20
+	const iterations = 20
+	errCh := make(chan error, goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(gid int) {
+			// Each goroutine creates its own store instance pointing to the same dir
+			// to simulate independent concurrent processes writing state.
+			localStore, err := Open(dir)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			ctrID := fmt.Sprintf("ctr-concurrent-%d", gid)
+			for i := 0; i < iterations; i++ {
+				c := &Container{
+					ID:     ctrID,
+					PID:    gid*1000 + i,
+					Status: StatusRunning,
+				}
+				if err := localStore.Save(c); err != nil {
+					errCh <- fmt.Errorf("Save error on gid %d iter %d: %w", gid, i, err)
+					return
+				}
+				loaded, err := localStore.Get(ctrID)
+				if err != nil {
+					errCh <- fmt.Errorf("Get error on gid %d iter %d: %w", gid, i, err)
+					return
+				}
+				if loaded.ID != ctrID {
+					errCh <- fmt.Errorf("loaded ID %q != want %q", loaded.ID, ctrID)
+					return
+				}
+			}
+			errCh <- nil
+		}(g)
+	}
+
+	for g := 0; g < goroutines; g++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("Concurrent save failed: %v", err)
+		}
+	}
+
+	all, err := store.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if len(all) != goroutines {
+		t.Fatalf("List returned %d containers, want %d", len(all), goroutines)
+	}
+}
+
+func TestConcurrentSaveImage(t *testing.T) {
+	dir := t.TempDir()
+	const goroutines = 15
+	const iterations = 10
+	errCh := make(chan error, goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(gid int) {
+			localStore, err := Open(dir)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			imgName := fmt.Sprintf("image-%d:v1", gid)
+			for i := 0; i < iterations; i++ {
+				img := &Image{
+					ID:       fmt.Sprintf("img-id-%d", gid),
+					Name:     imgName,
+					RootFS:   fmt.Sprintf("/rootfs/%d-%d", gid, i),
+					LoadedAt: time.Now(),
+				}
+				if err := localStore.SaveImage(img); err != nil {
+					errCh <- fmt.Errorf("SaveImage gid %d iter %d: %w", gid, i, err)
+					return
+				}
+				loaded, err := localStore.GetImage(imgName)
+				if err != nil {
+					errCh <- fmt.Errorf("GetImage gid %d iter %d: %w", gid, i, err)
+					return
+				}
+				if loaded.Name != imgName {
+					errCh <- fmt.Errorf("loaded Name %q != want %q", loaded.Name, imgName)
+					return
+				}
+			}
+			errCh <- nil
+		}(g)
+	}
+
+	for g := 0; g < goroutines; g++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("Concurrent SaveImage failed: %v", err)
 		}
 	}
 }
