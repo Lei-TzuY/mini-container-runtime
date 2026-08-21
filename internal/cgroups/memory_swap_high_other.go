@@ -2,17 +2,17 @@
 
 package cgroups
 
-// ReadMemorySwapCurrent is a non-Linux stub.
+// ReadMemorySwapCurrent reports unsupported telemetry on non-Linux platforms.
 func ReadMemorySwapCurrent(cgroupPath string) (uint64, error) {
-	return 0, nil
+	return 0, ErrMemorySwapUnavailable
 }
 
-// ReadMemorySwapHigh is a non-Linux stub. Returns isMax=true.
+// ReadMemorySwapHigh reports unsupported telemetry on non-Linux platforms.
 func ReadMemorySwapHigh(cgroupPath string) (uint64, bool, error) {
-	return 0, true, nil
+	return 0, false, ErrMemorySwapUnavailable
 }
 
-// WriteMemorySwapHigh is a non-Linux stub.
+// WriteMemorySwapHigh reports unsupported controller on non-Linux platforms.
 func WriteMemorySwapHigh(cgroupPath string, limitBytes int64) error {
-	return nil
+	return ErrMemorySwapUnavailable
 }
