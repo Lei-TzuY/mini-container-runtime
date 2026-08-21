@@ -104,20 +104,26 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
-			_ = os.Remove(target)
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing symlink before mkdir %s: %w", target, err)
+			}
 		}
 		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
 
 	case tar.TypeReg, tar.TypeRegA:
 		if fi, err := os.Lstat(target); err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 || fi.IsDir() {
-				_ = os.RemoveAll(target)
+				if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("remove existing node before write %s: %w", target, err)
+				}
 			}
 		}
 		return writeRegular(target, hdr, r)
 
 	case tar.TypeSymlink:
-		_ = os.RemoveAll(target)
+		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing node before symlink %s: %w", target, err)
+		}
 		if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
 			return fmt.Errorf("symlink %s → %s: %w", target, hdr.Linkname, err)
 		}
@@ -130,13 +136,17 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		if err := ensureSafeParentDirs(linkTarget, destDir); err != nil {
 			return err
 		}
-		_ = os.RemoveAll(target)
+		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing node before link %s: %w", target, err)
+		}
 		if err := os.Link(linkTarget, target); err != nil {
 			return fmt.Errorf("hardlink %s → %s: %w", target, linkTarget, err)
 		}
 
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-		_ = os.RemoveAll(target)
+		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing node before mknod %s: %w", target, err)
+		}
 		if err := makeSpecial(target, hdr); err != nil {
 			if !strings.Contains(err.Error(), "not supported") {
 				fmt.Fprintf(os.Stderr, "warning: mknod %s: %v\n", target, err)
@@ -204,6 +214,9 @@ func isSubDir(base, target string) bool {
 
 // writeRegular creates or truncates target and copies the tar entry into it.
 func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
+	if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+		return fmt.Errorf("refusing to write regular file to symlink target %s", target)
+	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
 	if err != nil {
 		return fmt.Errorf("create %s: %w", target, err)
