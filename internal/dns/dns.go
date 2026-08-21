@@ -151,20 +151,74 @@ func GenerateHostsContent(networkName string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// InjectHostsIntoRootFS writes updated /etc/hosts file inside container rootfs.
+// InjectHostsIntoRootFS writes updated /etc/hosts file inside container rootfs,
+// enforcing strict boundary verification to prevent following symlinks outside the rootfs.
 func InjectHostsIntoRootFS(rootfsPath, networkName string) error {
+	if rootfsPath == "" {
+		return fmt.Errorf("rootfs path cannot be empty")
+	}
 	if err := validateNetworkName(networkName); err != nil {
 		return err
 	}
 
-	content := GenerateHostsContent(networkName)
-	etcDir := filepath.Join(rootfsPath, "etc")
-	if err := os.MkdirAll(etcDir, 0755); err != nil {
-		return err
+	rootfsAbs, err := filepath.Abs(rootfsPath)
+	if err != nil {
+		return fmt.Errorf("resolve rootfs path %q: %w", rootfsPath, err)
+	}
+
+	st, err := os.Stat(rootfsAbs)
+	if err == nil {
+		if !st.IsDir() {
+			return fmt.Errorf("rootfs %q is not a directory", rootfsPath)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(rootfsAbs, 0755); err != nil {
+			return fmt.Errorf("create rootfs directory %q: %w", rootfsPath, err)
+		}
+	} else {
+		return fmt.Errorf("stat rootfs %q: %w", rootfsPath, err)
+	}
+
+	etcDir := filepath.Join(rootfsAbs, "etc")
+	if fi, err := os.Lstat(etcDir); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			eval, err := filepath.EvalSymlinks(etcDir)
+			if err != nil || !isSubDir(rootfsAbs, eval) {
+				return fmt.Errorf("symlink path traversal detected: /etc resolves outside rootfs (%q)", eval)
+			}
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.Mkdir(etcDir, 0755); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create /etc in rootfs: %w", err)
+		}
+	} else {
+		return fmt.Errorf("stat /etc in rootfs: %w", err)
 	}
 
 	hostsFile := filepath.Join(etcDir, "hosts")
+	if fi, err := os.Lstat(hostsFile); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(hostsFile); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing hosts symlink: %w", err)
+			}
+		}
+	}
+
+	content := GenerateHostsContent(networkName)
 	return os.WriteFile(hostsFile, []byte(content), 0644)
+}
+
+func isSubDir(base, target string) bool {
+	baseAbs, err1 := filepath.Abs(base)
+	targetAbs, err2 := filepath.Abs(target)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(baseAbs, targetAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 func loadEntries(path string) []HostEntry {
