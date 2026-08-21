@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // StopSignalSummary represents evaluated stop signal and graceful timeout parameters.
@@ -17,20 +16,22 @@ type StopSignalSummary struct {
 	DeclaredSignal    string
 	CanonicalSignal   string
 	SignalNumber      int
-	IsGraceful        bool // true for SIGTERM/SIGINT/SIGQUIT; false for SIGKILL
+	IsGraceful        bool // false only for signals that cannot be handled gracefully, such as SIGKILL
 	DefaultTimeoutSec int
 }
 
 var knownSignals = map[string]int{
-	"SIGTERM": 15,
-	"SIGINT":  2,
-	"SIGQUIT": 3,
-	"SIGKILL": 9,
-	"SIGHUP":  1,
-	"SIGUSR1": 10,
-	"SIGUSR2": 12,
+	"SIGHUP":   1,
+	"SIGINT":   2,
+	"SIGQUIT":  3,
+	"SIGKILL":  9,
+	"SIGUSR1":  10,
+	"SIGUSR2":  12,
+	"SIGTERM":  15,
 	"SIGWINCH": 28,
 }
+
+const maxLinuxSignalNumber = 64
 
 // EvaluateStopSignal parses image config StopSignal and returns structured signal data.
 func EvaluateStopSignal(configJSON []byte) (StopSignalSummary, error) {
@@ -57,39 +58,40 @@ func EvaluateStopSignal(configJSON []byte) (StopSignalSummary, error) {
 	}
 
 	upper := strings.ToUpper(raw)
-	// Check if numeric
 	if num, err := strconv.Atoi(upper); err == nil {
+		if num <= 0 || num > maxLinuxSignalNumber {
+			return StopSignalSummary{}, fmt.Errorf("invalid stop signal number %d: expected 1-%d", num, maxLinuxSignalNumber)
+		}
+
 		summary.SignalNumber = num
-		if num == 9 {
-			summary.CanonicalSignal = "SIGKILL"
+		summary.CanonicalSignal = fmt.Sprintf("SIG_%d", num)
+		for name, code := range knownSignals {
+			if code == num {
+				summary.CanonicalSignal = name
+				break
+			}
+		}
+		if num == knownSignals["SIGKILL"] {
 			summary.IsGraceful = false
 			summary.DefaultTimeoutSec = 0
-		} else {
-			summary.CanonicalSignal = fmt.Sprintf("SIG_%d", num)
-			for name, code := range knownSignals {
-				if code == num {
-					summary.CanonicalSignal = name
-					break
-				}
-			}
 		}
 		return summary, nil
 	}
 
-	// Format with SIG prefix if missing
 	if !strings.HasPrefix(upper, "SIG") {
 		upper = "SIG" + upper
 	}
 
-	if code, ok := knownSignals[upper]; ok {
-		summary.CanonicalSignal = upper
-		summary.SignalNumber = code
-		if code == int(syscall.SIGKILL) {
-			summary.IsGraceful = false
-			summary.DefaultTimeoutSec = 0
-		}
-	} else {
-		summary.CanonicalSignal = upper
+	code, ok := knownSignals[upper]
+	if !ok {
+		return StopSignalSummary{}, fmt.Errorf("unknown stop signal %q", raw)
+	}
+
+	summary.CanonicalSignal = upper
+	summary.SignalNumber = code
+	if code == knownSignals["SIGKILL"] {
+		summary.IsGraceful = false
+		summary.DefaultTimeoutSec = 0
 	}
 
 	return summary, nil
