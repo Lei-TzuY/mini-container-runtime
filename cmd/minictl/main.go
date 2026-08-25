@@ -50,7 +50,7 @@ Usage:
   minictl commit  <id> <image-name>                           Create a new image from a container
   minictl update  [flags] <id>                                Dynamically update container resource limits
   minictl cp      <src> <dst>                                 Copy files between container and host
-  minictl pull    <image> [dest-dir]                          Pull an image from Docker Hub
+  minictl pull    <image> [dest-dir]                          Pull image from Docker Hub
   minictl compose up [-f file.json]                           Orchestrate multi-container app
   minictl events  [-f]                                        Stream real-time container events
   minictl ps      [--all]                                     List containers
@@ -358,15 +358,15 @@ func cmdExec(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	rec, err = container.ReconcileContainerState(store, rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: reconcile container: %v\n", err)
+		os.Exit(1)
+	}
 
 	if rec.Status != state.StatusRunning {
 		fmt.Fprintf(os.Stderr, "error: container %s is %s (must be running)\n",
 			rec.ID[:8], rec.Status)
-		os.Exit(1)
-	}
-
-	if !container.IsRunning(rec.PID) {
-		fmt.Fprintf(os.Stderr, "error: container PID %d is not alive\n", rec.PID)
 		os.Exit(1)
 	}
 
@@ -706,10 +706,20 @@ func cmdPs(args []string) {
 		os.Exit(1)
 	}
 
-	for _, c := range containers {
-		if c.Status == state.StatusRunning && !container.IsRunning(c.PID) {
-			c.Status = state.StatusStopped
-			_ = store.Save(c)
+	for i, c := range containers {
+		if c.Status != state.StatusRunning {
+			continue
+		}
+		reconciled, reconcileErr := container.ReconcileContainerState(store, c)
+		if reconciled != nil {
+			containers[i] = reconciled
+		}
+		if reconcileErr != nil {
+			shortID := c.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			fmt.Fprintf(os.Stderr, "warning: reconcile container %s: %v\n", shortID, reconcileErr)
 		}
 	}
 
@@ -758,13 +768,18 @@ func cmdRm(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	rec, err = container.ReconcileContainerState(store, rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rm %s: reconcile: %v\n", rec.ID[:8], err)
+		os.Exit(1)
+	}
 
-	if rec.Status == state.StatusRunning && container.IsRunning(rec.PID) {
+	if rec.Status == state.StatusRunning {
 		fmt.Fprintf(os.Stderr, "container %s is running — stop it first with 'minictl kill %s'\n", rec.ID[:8], rec.ID[:8])
 		os.Exit(1)
 	}
 
-	if err := store.Delete(rec.ID); err != nil {
+	if err := store.DeleteIfNotRunning(rec.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "rm %s: %v\n", rec.ID[:8], err)
 		os.Exit(1)
 	}
@@ -787,11 +802,27 @@ func cmdPrune() {
 
 	var removed int
 	for _, c := range all {
-		if c.Status != state.StatusRunning || !container.IsRunning(c.PID) {
-			if err := store.Delete(c.ID); err == nil {
-				removed++
+		current, reconcileErr := container.ReconcileContainerState(store, c)
+		if reconcileErr != nil {
+			shortID := c.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
 			}
+			fmt.Fprintf(os.Stderr, "warning: prune %s: reconcile: %v\n", shortID, reconcileErr)
+			continue
 		}
+		if current.Status == state.StatusRunning {
+			continue
+		}
+		if err := store.DeleteIfNotRunning(current.ID); err != nil {
+			shortID := current.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			fmt.Fprintf(os.Stderr, "warning: prune %s: %v\n", shortID, err)
+			continue
+		}
+		removed++
 	}
 	fmt.Printf("Pruned %d stopped container(s)\n", removed)
 }
