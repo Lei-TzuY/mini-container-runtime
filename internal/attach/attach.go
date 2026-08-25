@@ -3,7 +3,6 @@ package attach
 import (
 	"fmt"
 	"io"
-	"os"
 
 	"minicontainer/internal/logs"
 	"minicontainer/internal/state"
@@ -20,17 +19,11 @@ func AttachContainer(st *state.Store, containerID string, in io.Reader, out io.W
 		return fmt.Errorf("container %s is not running (status: %s)", c.ID, c.Status)
 	}
 
-	logPath := logs.LogFilePath(c.ID)
-	logFile, err := os.Open(logPath)
-	if err != nil {
+	fmt.Fprintf(out, "You are attached to container %s. Press Ctrl+C to detach.\n", c.ID[:min(8, len(c.ID))])
+	if err := logs.PrintLogs(c.ID, 0, false, out); err != nil {
 		return fmt.Errorf("open container log stream: %w", err)
 	}
-	defer logFile.Close()
-
-	fmt.Fprintf(out, "You are attached to container %s. Press Ctrl+C to detach.\n", c.ID[:min(8, len(c.ID))])
-
-	_, err = io.Copy(out, logFile)
-	return err
+	return nil
 }
 
 func min(a, b int) int {
