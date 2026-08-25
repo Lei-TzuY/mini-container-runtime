@@ -42,10 +42,6 @@ func TestIPAMRejectsSemanticallyInvalidAllocations(t *testing.T) {
 		},
 	}
 
-	for i := range tests {
-		tests[i].json = strings.ReplaceAll(tests[i].json, `\"`, `"`)
-	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -53,7 +49,8 @@ func TestIPAMRejectsSemanticallyInvalidAllocations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(tt.json), 0600); err != nil {
+			fixture := strings.ReplaceAll(tt.json, `\"`, `"`)
+			if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(fixture), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := ipam.AllocateIP("bad", "10.80.0.0/29", "ctr-new"); err == nil || !strings.Contains(err.Error(), tt.want) {
