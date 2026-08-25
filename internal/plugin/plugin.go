@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"minicontainer/internal/state"
 )
@@ -35,7 +34,7 @@ func PluginsDir() string {
 }
 
 func validatePluginName(name string) error {
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\:\x00`) || !validPluginName.MatchString(name) {
+	if name == "" || name == "." || name == ".." || !validPluginName.MatchString(name) {
 		return fmt.Errorf("invalid plugin name %q", name)
 	}
 	return nil
