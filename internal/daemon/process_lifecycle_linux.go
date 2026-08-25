@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"minicontainer/internal/container"
 	"minicontainer/internal/state"
@@ -21,15 +20,6 @@ const (
 	postKillWaitTimeout         = 2 * time.Second
 )
 
-type managedProcessStatus int
-
-const (
-	managedProcessDead managedProcessStatus = iota
-	managedProcessMatching
-	managedProcessIdentityMismatch
-	managedProcessMissingIdentity
-)
-
 func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 	c, err := s.store.Resolve(id)
 	if err != nil {
@@ -38,27 +28,25 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 	}
 
 	if c.Status == state.StatusRunning {
-		fd, status, err := openVerifiedPidfd(c)
-		if fd >= 0 {
-			defer unix.Close(fd)
-		}
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		switch status {
-		case managedProcessMatching:
+		handle, err := container.OpenProcessHandle(c.PID, c.PIDStartTime)
+		if err == nil {
+			defer handle.Close()
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "container is still running; stop it before deletion"})
 			return
-		case managedProcessIdentityMismatch:
+		}
+		switch {
+		case errors.Is(err, container.ErrProcessNotFound):
+			// No process currently owns the persisted identity. Deleting stale
+			// state cannot orphan or signal a live process.
+		case errors.Is(err, container.ErrProcessIdentityMismatch):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID now belongs to a different process; refusing deletion until state is reconciled"})
 			return
-		case managedProcessMissingIdentity:
+		case errors.Is(err, container.ErrProcessIdentityUnavailable):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks a verified process identity; refusing deletion"})
 			return
-		case managedProcessDead:
-			// No process currently owns the stored PID. Deleting stale state cannot
-			// orphan or signal a live process, so it is safe to proceed.
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
 		}
 	}
 
@@ -86,38 +74,35 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	fd, status, err := openVerifiedPidfd(c)
+	handle, err := container.OpenProcessHandle(c.PID, c.PIDStartTime)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if fd >= 0 {
-		defer unix.Close(fd)
-	}
-
-	switch status {
-	case managedProcessMissingIdentity:
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks PID starttime identity; refusing to signal by PID alone"})
-		return
-	case managedProcessIdentityMismatch:
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID has been reused by another process; refusing to signal it"})
-		return
-	case managedProcessDead:
-		if _, err := s.store.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil {
+		switch {
+		case errors.Is(err, container.ErrProcessIdentityUnavailable):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks PID starttime identity; refusing to signal by PID alone"})
+			return
+		case errors.Is(err, container.ErrProcessIdentityMismatch):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID has been reused by another process; refusing to signal it"})
+			return
+		case errors.Is(err, container.ErrProcessNotFound):
+			if _, stateErr := s.store.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); stateErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": stateErr.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "id": c.ID, "already_exited": true})
+			return
+		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "id": c.ID, "already_exited": true})
-		return
-	case managedProcessMatching:
 	}
+	defer handle.Close()
 
-	if err := unix.PidfdSendSignal(fd, unix.SIGTERM, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
+	if err := handle.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, container.ErrProcessNotFound) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("send SIGTERM: %v", err)})
 		return
 	}
 
-	exited, err := waitPidfdExit(fd, timeout)
+	exited, err := handle.WaitExit(timeout)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -125,11 +110,11 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 	escalated := false
 	if !exited {
 		escalated = true
-		if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
+		if err := handle.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, container.ErrProcessNotFound) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("send SIGKILL: %v", err)})
 			return
 		}
-		exited, err = waitPidfdExit(fd, postKillWaitTimeout)
+		exited, err = handle.WaitExit(postKillWaitTimeout)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -179,64 +164,6 @@ func parseContainerStopTimeout(r *http.Request) (time.Duration, error) {
 		return 0, fmt.Errorf("stop timeout must be between 0 and %s", maxContainerStopTimeout)
 	}
 	return d, nil
-}
-
-func openVerifiedPidfd(c *state.Container) (fd int, status managedProcessStatus, err error) {
-	if c == nil || c.PID <= 0 || c.PIDStartTime == 0 {
-		return -1, managedProcessMissingIdentity, nil
-	}
-
-	fd, err = unix.PidfdOpen(c.PID, 0)
-	if err != nil {
-		if errors.Is(err, unix.ESRCH) {
-			return -1, managedProcessDead, nil
-		}
-		return -1, managedProcessDead, fmt.Errorf("open pidfd for PID %d: %w", c.PID, err)
-	}
-
-	start, err := container.ProcessStartTime(c.PID)
-	if err != nil {
-		unix.Close(fd)
-		if errors.Is(err, unix.ENOENT) {
-			return -1, managedProcessDead, nil
-		}
-		return -1, managedProcessDead, fmt.Errorf("verify process identity for PID %d: %w", c.PID, err)
-	}
-	if start != c.PIDStartTime {
-		return fd, managedProcessIdentityMismatch, nil
-	}
-	return fd, managedProcessMatching, nil
-}
-
-func waitPidfdExit(fd int, timeout time.Duration) (bool, error) {
-	if fd < 0 {
-		return true, nil
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		remaining := time.Until(deadline)
-		if timeout == 0 {
-			remaining = 0
-		}
-		if remaining < 0 {
-			return false, nil
-		}
-		ms := int((remaining + time.Millisecond - 1) / time.Millisecond)
-		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		n, err := unix.Poll(fds, ms)
-		if err != nil {
-			if errors.Is(err, unix.EINTR) {
-				continue
-			}
-			return false, fmt.Errorf("poll pidfd: %w", err)
-		}
-		if n == 0 {
-			return false, nil
-		}
-		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
-			return true, nil
-		}
-	}
 }
 
 func waitForParentStoppedState(st *state.Store, id string, timeout time.Duration) error {
