@@ -26,9 +26,23 @@ type UpdateConfig struct {
 
 // UpdateLimits dynamically modifies cgroup limits for a running container.
 func UpdateLimits(cgroupName string, cfg UpdateConfig, debug bool) error {
-	cgPath := filepath.Join("/sys/fs/cgroup", cgroupName)
-	if _, err := os.Stat(cgPath); os.IsNotExist(err) {
-		return fmt.Errorf("cgroup %s does not exist", cgroupName)
+	if err := validateCgroupName(cgroupName); err != nil {
+		return err
+	}
+	if err := validateResourceValues(cfg.MemoryMax, cfg.CPUWeight, cfg.CPUs, cfg.PidsMax); err != nil {
+		return err
+	}
+
+	cgPath := filepath.Join(cgroupV2Root, cgroupName)
+	info, err := os.Stat(cgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cgroup %s does not exist", cgroupName)
+		}
+		return fmt.Errorf("stat cgroup %s: %w", cgroupName, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cgroup path %s is not a directory", cgPath)
 	}
 
 	if cfg.MemoryMax > 0 {
