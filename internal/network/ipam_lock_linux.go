@@ -18,11 +18,19 @@ func withIPAMNetworkLock(dir, networkName string, fn func() error) error {
 		return fmt.Errorf("IPAM lock callback is nil")
 	}
 	lockPath := filepath.Join(dir, networkName+".lock")
-	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
 	if err != nil {
 		return fmt.Errorf("open IPAM lock %q: %w", networkName, err)
 	}
 	defer unix.Close(fd)
+
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("inspect IPAM lock %q: %w", networkName, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("IPAM lock %q must be a regular file", networkName)
+	}
 	if err := unix.Fchmod(fd, 0600); err != nil {
 		return fmt.Errorf("chmod IPAM lock %q: %w", networkName, err)
 	}
