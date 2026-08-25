@@ -52,14 +52,14 @@ func TestCollectStatsSampledReturnsImmediatelyWithoutRunningContainers(t *testin
 	}
 
 	start := time.Now()
-	got, err := CollectStatsSampled(st, 250*time.Millisecond)
+	got, err := CollectStatsSampled(st, 2*time.Second)
 	if err != nil {
 		t.Fatalf("CollectStatsSampled: %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected no stats, got %d", len(got))
 	}
-	if elapsed := time.Since(start); elapsed >= 200*time.Millisecond {
+	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("empty collection unnecessarily slept for %s", elapsed)
 	}
 }
