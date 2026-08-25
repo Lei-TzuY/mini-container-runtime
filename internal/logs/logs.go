@@ -5,7 +5,7 @@
 // When a container is launched in background or attached mode, its stdout and
 // stderr streams can be tee'd or written to a log file under:
 //
-//   ~/.minicontainer/containers/<id>/console.log
+//   ~/.minicontainer/containers/<id>.log
 //
 // This file implements log writing, tailing, and log following (`minictl logs -f`).
 
@@ -13,10 +13,12 @@ package logs
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"minicontainer/internal/state"
@@ -27,24 +29,43 @@ func LogFilePath(containerID string) string {
 	return filepath.Join(state.DefaultDir(), "containers", containerID+".log")
 }
 
+func validateContainerID(containerID string) error {
+	if strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("container ID cannot be empty")
+	}
+	if containerID == "." || containerID == ".." || strings.ContainsAny(containerID, "/\\:\x00") {
+		return fmt.Errorf("invalid container ID %q", containerID)
+	}
+	return nil
+}
+
+func shortContainerID(containerID string) string {
+	if len(containerID) > 8 {
+		return containerID[:8]
+	}
+	return containerID
+}
+
 // CreateLogFile creates or opens the container's log file for writing.
 func CreateLogFile(containerID string) (*os.File, error) {
-	path := LogFilePath(containerID)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := validateContainerID(containerID); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	return openContainerLogForAppend(LogFilePath(containerID))
 }
 
 // PrintLogs prints the contents of the container's log file.
 // If tail > 0, only the last `tail` lines are printed.
 // If follow is true, it continuously streams new lines until interrupted.
 func PrintLogs(containerID string, tail int, follow bool, out io.Writer) error {
+	if err := validateContainerID(containerID); err != nil {
+		return err
+	}
 	path := LogFilePath(containerID)
-	f, err := os.Open(path)
+	f, err := openContainerLogForRead(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("no logs found for container %s", containerID[:8])
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no logs found for container %s", shortContainerID(containerID))
 		}
 		return fmt.Errorf("open log file: %w", err)
 	}
@@ -68,7 +89,7 @@ func PrintLogs(containerID string, tail int, follow bool, out io.Writer) error {
 		return nil
 	}
 
-	// Follow mode: poll file for new content
+	// Follow mode: poll file for new content.
 	reader := bufio.NewReader(f)
 	for {
 		line, err := reader.ReadString('\n')
