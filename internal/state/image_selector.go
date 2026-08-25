@@ -6,8 +6,9 @@ import (
 )
 
 type imageSelectorMatches struct {
-	named []*Image
-	byID  map[string][]*Image
+	named   []*Image
+	exactID []*Image
+	byID    map[string][]*Image
 }
 
 func collectImageSelectorMatches(images []*Image, selector string) imageSelectorMatches {
@@ -20,7 +21,11 @@ func collectImageSelectorMatches(images []*Image, selector string) imageSelector
 			matches.named = append(matches.named, img)
 			continue
 		}
-		if img.ID != "" && len(img.ID) >= len(selector) && img.ID[:len(selector)] == selector {
+		if img.ID == selector {
+			matches.exactID = append(matches.exactID, img)
+			continue
+		}
+		if img.ID != "" && len(img.ID) > len(selector) && img.ID[:len(selector)] == selector {
 			matches.byID[img.ID] = append(matches.byID[img.ID], img)
 		}
 	}
@@ -39,6 +44,33 @@ func sortImageAliases(images []*Image) {
 	})
 }
 
+func resolveAliasSetForRead(aliases []*Image) (*Image, error) {
+	if len(aliases) == 0 {
+		return nil, fmt.Errorf("image not found")
+	}
+	sortImageAliases(aliases)
+	return aliases[0], nil
+}
+
+func resolveAliasSetForDelete(id string, aliases []*Image) (*Image, error) {
+	if len(aliases) == 0 {
+		return nil, fmt.Errorf("image %q not found", id)
+	}
+	if len(aliases) > 1 {
+		names := make([]string, 0, len(aliases))
+		for _, img := range aliases {
+			name := img.Name
+			if name == "" {
+				name = "<unnamed>"
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("image ID %s has multiple tags (%v); specify an image name or tag", id, names)
+	}
+	return aliases[0], nil
+}
+
 func resolveImageForRead(images []*Image, selector string) (*Image, error) {
 	matches := collectImageSelectorMatches(images, selector)
 	if len(matches.named) > 1 {
@@ -46,6 +78,9 @@ func resolveImageForRead(images []*Image, selector string) (*Image, error) {
 	}
 	if len(matches.named) == 1 {
 		return matches.named[0], nil
+	}
+	if len(matches.exactID) > 0 {
+		return resolveAliasSetForRead(matches.exactID)
 	}
 	if len(matches.byID) == 0 {
 		return nil, fmt.Errorf("image %q not found", selector)
@@ -59,8 +94,7 @@ func resolveImageForRead(images []*Image, selector string) (*Image, error) {
 		return nil, fmt.Errorf("ambiguous image ID prefix %q matched multiple IDs (%v)", selector, ids)
 	}
 	for _, aliases := range matches.byID {
-		sortImageAliases(aliases)
-		return aliases[0], nil
+		return resolveAliasSetForRead(aliases)
 	}
 	return nil, fmt.Errorf("image %q not found", selector)
 }
@@ -72,6 +106,9 @@ func resolveImageForDelete(images []*Image, selector string) (*Image, error) {
 	}
 	if len(matches.named) == 1 {
 		return matches.named[0], nil
+	}
+	if len(matches.exactID) > 0 {
+		return resolveAliasSetForDelete(selector, matches.exactID)
 	}
 	if len(matches.byID) == 0 {
 		return nil, fmt.Errorf("image %q not found", selector)
@@ -85,19 +122,7 @@ func resolveImageForDelete(images []*Image, selector string) (*Image, error) {
 		return nil, fmt.Errorf("ambiguous image ID prefix %q matched multiple IDs (%v)", selector, ids)
 	}
 	for id, aliases := range matches.byID {
-		if len(aliases) > 1 {
-			names := make([]string, 0, len(aliases))
-			for _, img := range aliases {
-				name := img.Name
-				if name == "" {
-					name = "<unnamed>"
-				}
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			return nil, fmt.Errorf("image ID %s has multiple tags (%v); specify an image name or tag", id, names)
-		}
-		return aliases[0], nil
+		return resolveAliasSetForDelete(id, aliases)
 	}
 	return nil, fmt.Errorf("image %q not found", selector)
 }
