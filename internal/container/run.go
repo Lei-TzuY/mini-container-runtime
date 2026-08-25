@@ -273,11 +273,13 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 			PID:          childPID,
 			PIDStartTime: childStartTime,
 		}
-		_, finalizationErr = FinalizeStoppedGeneration(
+		finalizationErr = finalizeManagedParentExit(
 			lifecycleStore,
 			snapshot,
 			exitCodeFromWaitError(waitErr),
 			time.Now(),
+			cgroupApplied,
+			FinalizeStoppedGeneration,
 		)
 	} else if cgroupApplied {
 		if err := cgroups.RemoveChecked(cgCfg.Name, cfg.Debug); err != nil {

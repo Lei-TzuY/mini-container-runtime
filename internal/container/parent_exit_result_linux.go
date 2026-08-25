@@ -6,7 +6,52 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"time"
+
+	"minicontainer/internal/state"
 )
+
+type managedGenerationFinalizer func(*state.Store, *state.Container, int, time.Time) (bool, error)
+
+// finalizeManagedParentExit reconciles the authoritative parent-side lifecycle
+// state after the child has exited. A successful cgroup Apply is the ownership
+// proof required before deleting a generation cgroup: deriving the same name is
+// not sufficient because Apply may have failed on a pre-existing cgroup.
+func finalizeManagedParentExit(
+	st *state.Store,
+	snapshot *state.Container,
+	exitCode int,
+	finishedAt time.Time,
+	cgroupApplied bool,
+	finalizeGeneration managedGenerationFinalizer,
+) error {
+	if st == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	if snapshot == nil {
+		return fmt.Errorf("container snapshot is nil")
+	}
+
+	if cgroupApplied {
+		if finalizeGeneration == nil {
+			return fmt.Errorf("generation finalizer is nil")
+		}
+		_, err := finalizeGeneration(st, snapshot, exitCode, finishedAt)
+		return err
+	}
+
+	_, err := st.MarkStoppedIfIdentity(
+		snapshot.ID,
+		snapshot.PID,
+		snapshot.PIDStartTime,
+		exitCode,
+		finishedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("persist stopped state for container %s: %w", snapshot.ID, err)
+	}
+	return nil
+}
 
 // parentExitResult combines the payload result with authoritative parent-side
 // teardown failures. Teardown failures are runtime-control failures: restart
