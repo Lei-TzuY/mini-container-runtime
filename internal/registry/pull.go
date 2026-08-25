@@ -18,7 +18,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -168,6 +167,9 @@ func validateManifestLayers(manifest *ManifestV2) error {
 	if manifest.SchemaVersion != 2 {
 		return fmt.Errorf("unsupported schema version %d", manifest.SchemaVersion)
 	}
+	if len(manifest.Layers) > maxManifestLayers {
+		return fmt.Errorf("manifest contains %d layers; limit is %d", len(manifest.Layers), maxManifestLayers)
+	}
 	for i, layer := range manifest.Layers {
 		if err := validateLayerDescriptor(layer); err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
@@ -187,8 +189,11 @@ func shortDigest(value string) (string, error) {
 func getAuthToken(imageName string) (string, error) {
 	url := fmt.Sprintf("https://%s/token?service=registry.docker.io&scope=repository:%s:pull",
 		defaultAuthHost, imageName)
-
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := registryMetadataClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -199,28 +204,23 @@ func getAuthToken(imageName string) (string, error) {
 	}
 
 	var auth authResponse
-	if err := json.NewDecoder(resp.Body).Decode(&auth); err != nil {
+	if err := decodeJSONLimited(resp.Body, maxAuthResponseBytes, &auth); err != nil {
 		return "", err
 	}
-
-	if auth.Token != "" {
-		return auth.Token, nil
-	}
-	return auth.AccessToken, nil
+	return authTokenFromResponse(auth)
 }
 
 func getManifest(imageName, tag, token string) (*ManifestV2, error) {
 	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", defaultRegistryHost, imageName, tag)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", manifestV2Header)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := registryMetadataClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +231,7 @@ func getManifest(imageName, tag, token string) (*ManifestV2, error) {
 	}
 
 	var manifest ManifestV2
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := decodeJSONLimited(resp.Body, maxManifestResponseBytes, &manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -287,7 +287,7 @@ func downloadBlob(client *http.Client, imageName, digest, token, destPath string
 	}
 	url := fmt.Sprintf("https://%s/v2/%s/blobs/%s", defaultRegistryHost, imageName, digest)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
