@@ -15,10 +15,13 @@
 package network
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+type bridgeCommandRunner func(args ...string) ([]byte, error)
 
 // NetworkInfo describes a custom container network.
 type NetworkInfo struct {
@@ -30,6 +33,18 @@ type NetworkInfo struct {
 
 // CreateBridge creates a custom Linux bridge interface with the given name and CIDR gateway.
 func CreateBridge(netName, cidr string, debug bool) error {
+	return createBridgeWith(netName, cidr, debug, runBridgeIPCommand)
+}
+
+func runBridgeIPCommand(args ...string) ([]byte, error) {
+	return exec.Command("ip", args...).CombinedOutput()
+}
+
+func createBridgeWith(netName, cidr string, debug bool, run bridgeCommandRunner) error {
+	if run == nil {
+		return fmt.Errorf("bridge command runner is nil")
+	}
+
 	bridgeName := "br-" + netName
 	if len(bridgeName) > 15 {
 		bridgeName = bridgeName[:15] // Linux IFNAMSIZ = 16 (15 chars + NUL)
@@ -40,26 +55,37 @@ func CreateBridge(netName, cidr string, debug bool) error {
 	}
 
 	// 1. Create bridge interface
-	if out, err := exec.Command("ip", "link", "add", bridgeName, "type", "bridge").CombinedOutput(); err != nil {
+	if out, err := run("link", "add", bridgeName, "type", "bridge"); err != nil {
 		return fmt.Errorf("create bridge %s: %w\n%s", bridgeName, err, out)
 	}
 
 	// 2. Assign IP address
-	if out, err := exec.Command("ip", "addr", "add", cidr, "dev", bridgeName).CombinedOutput(); err != nil {
-		_ = exec.Command("ip", "link", "delete", bridgeName).Run()
-		return fmt.Errorf("assign IP %s to %s: %w\n%s", cidr, bridgeName, err, out)
+	if out, err := run("addr", "add", cidr, "dev", bridgeName); err != nil {
+		setupErr := fmt.Errorf("assign IP %s to %s: %w\n%s", cidr, bridgeName, err, out)
+		return rollbackCreatedBridge(run, bridgeName, setupErr)
 	}
 
 	// 3. Bring bridge UP
-	if out, err := exec.Command("ip", "link", "set", bridgeName, "up").CombinedOutput(); err != nil {
-		_ = exec.Command("ip", "link", "delete", bridgeName).Run()
-		return fmt.Errorf("set %s up: %w\n%s", bridgeName, err, out)
+	if out, err := run("link", "set", bridgeName, "up"); err != nil {
+		setupErr := fmt.Errorf("set %s up: %w\n%s", bridgeName, err, out)
+		return rollbackCreatedBridge(run, bridgeName, setupErr)
 	}
 
 	if debug {
 		fmt.Printf("[net] created custom bridge network %q (%s, %s)\n", netName, bridgeName, cidr)
 	}
 	return nil
+}
+
+func rollbackCreatedBridge(run bridgeCommandRunner, bridgeName string, setupErr error) error {
+	out, err := run("link", "delete", bridgeName)
+	if err == nil {
+		return setupErr
+	}
+	return errors.Join(
+		setupErr,
+		fmt.Errorf("rollback bridge %s after setup failure: %w\n%s", bridgeName, err, out),
+	)
 }
 
 // ListBridges lists all minictl custom bridge networks.
