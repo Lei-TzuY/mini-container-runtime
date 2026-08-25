@@ -11,12 +11,14 @@ import (
 )
 
 type ownedPortCleanupFunc func(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error
+type ownedVethCleanupFunc func(name, owner string, debug bool) error
 
 func networkOwnershipForGeneration(owner string, pid int, pidStartTime uint64, containerIP string, mappings []PortMapping) state.NetworkOwnership {
 	owned := state.NetworkOwnership{
 		Owner:        owner,
 		PID:          pid,
 		PIDStartTime: pidStartTime,
+		VethHost:     network.VethHostIfaceOwned(owner),
 		Mappings:     make([]state.PortForwardingOwnership, 0, len(mappings)),
 	}
 	for _, mapping := range mappings {
@@ -36,19 +38,20 @@ func cleanupNetworkOwnershipWith(
 	containerID string,
 	ownership state.NetworkOwnership,
 	debug bool,
-	remove ownedPortCleanupFunc,
+	removePort ownedPortCleanupFunc,
+	removeVeth ownedVethCleanupFunc,
 ) error {
 	if st == nil {
 		return fmt.Errorf("state store is nil")
 	}
-	if remove == nil {
-		return fmt.Errorf("owned port cleanup function is nil")
+	if removePort == nil || removeVeth == nil {
+		return fmt.Errorf("owned network cleanup function is nil")
 	}
 
 	var cleanupErrs []error
 	for i := len(ownership.Mappings) - 1; i >= 0; i-- {
 		mapping := ownership.Mappings[i]
-		if err := remove(
+		if err := removePort(
 			ownership.Owner,
 			mapping.HostPort,
 			mapping.ContainerPort,
@@ -63,6 +66,11 @@ func cleanupNetworkOwnershipWith(
 				mapping.Protocol,
 				err,
 			))
+		}
+	}
+	if ownership.VethHost != "" {
+		if err := removeVeth(ownership.VethHost, ownership.Owner, debug); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove persisted host veth %s: %w", ownership.VethHost, err))
 		}
 	}
 	if err := errors.Join(cleanupErrs...); err != nil {
@@ -86,12 +94,20 @@ func cleanupNetworkOwnershipWith(
 }
 
 func cleanupNetworkOwnership(st *state.Store, containerID string, ownership state.NetworkOwnership, debug bool) error {
-	return cleanupNetworkOwnershipWith(st, containerID, ownership, debug, network.RemovePortForwardingOwned)
+	return cleanupNetworkOwnershipWith(
+		st,
+		containerID,
+		ownership,
+		debug,
+		network.RemovePortForwardingOwned,
+		network.RemoveVethHostOwned,
+	)
 }
 
-// CleanupStoppedNetwork retries generation-owned iptables cleanup after a
-// parent crash or an earlier teardown failure. Legacy containers and bridge
-// containers without published ports have no network sidecar and are no-ops.
+// CleanupStoppedNetwork retries generation-owned host-network cleanup after a
+// parent crash or an earlier teardown failure. Legacy containers without a
+// network sidecar are no-ops; rules-only sidecars from older runtimes remain
+// supported.
 func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 	if st == nil {
 		return fmt.Errorf("state store is nil")
@@ -114,7 +130,7 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 		return nil
 	}
 	if err := cleanupNetworkOwnership(st, c.ID, ownership, false); err != nil {
-		return fmt.Errorf("cleanup persisted network rules for stopped container %s: %w", c.ID, err)
+		return fmt.Errorf("cleanup persisted network resources for stopped container %s: %w", c.ID, err)
 	}
 	return nil
 }

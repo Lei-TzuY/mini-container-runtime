@@ -9,12 +9,19 @@ import (
 	"minicontainer/internal/state"
 )
 
-func TestPublishedPortsRequireDurableLifecycleStore(t *testing.T) {
-	cfg := Config{
-		BridgeNetwork: true,
-		PortMappings: []PortMapping{{HostPort: 8080, ContainerPort: 80}},
+func TestBridgeNetworkingRequiresDurableLifecycleStore(t *testing.T) {
+	err := requireDurableNetworkOwnership(Config{BridgeNetwork: true}, nil)
+	if err == nil || !strings.Contains(err.Error(), "bridge networking requires managed lifecycle state") {
+		t.Fatalf("unmanaged bridge error=%v", err)
 	}
-	err := requireDurablePublishedPortOwnership(cfg, nil)
+	if !isRuntimeControlError(err) {
+		t.Fatalf("unmanaged bridge was not classified as runtime-control: %v", err)
+	}
+}
+
+func TestPublishedPortsRequireDurableLifecycleStore(t *testing.T) {
+	cfg := Config{PortMappings: []PortMapping{{HostPort: 8080, ContainerPort: 80}}}
+	err := requireDurableNetworkOwnership(cfg, nil)
 	if err == nil || !strings.Contains(err.Error(), "published ports require managed lifecycle state") {
 		t.Fatalf("unmanaged published ports error=%v", err)
 	}
@@ -23,22 +30,21 @@ func TestPublishedPortsRequireDurableLifecycleStore(t *testing.T) {
 	}
 }
 
-func TestPublishedPortPreflightAllowsManagedAndNonPublishingRuns(t *testing.T) {
+func TestNetworkPreflightAllowsManagedAndNonNetworkingRuns(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := Config{
-		BridgeNetwork: true,
-		PortMappings: []PortMapping{{HostPort: 8080, ContainerPort: 80}},
+	for _, cfg := range []Config{
+		{BridgeNetwork: true},
+		{BridgeNetwork: true, PortMappings: []PortMapping{{HostPort: 8080, ContainerPort: 80}}},
+		{PortMappings: []PortMapping{{HostPort: 8080, ContainerPort: 80}}},
+	} {
+		if err := requireDurableNetworkOwnership(cfg, st); err != nil {
+			t.Fatalf("managed network config %+v rejected: %v", cfg, err)
+		}
 	}
-	if err := requireDurablePublishedPortOwnership(published, st); err != nil {
-		t.Fatalf("managed published ports rejected: %v", err)
-	}
-	if err := requireDurablePublishedPortOwnership(Config{BridgeNetwork: true}, nil); err != nil {
-		t.Fatalf("pure unmanaged bridge rejected: %v", err)
-	}
-	if err := requireDurablePublishedPortOwnership(Config{}, nil); err != nil {
+	if err := requireDurableNetworkOwnership(Config{}, nil); err != nil {
 		t.Fatalf("ordinary unmanaged run rejected: %v", err)
 	}
 }

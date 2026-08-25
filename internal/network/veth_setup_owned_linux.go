@@ -25,21 +25,52 @@ func defaultVethHostSetupOps() vethHostSetupOps {
 	}
 }
 
-// SetupVethHostOwned configures the host side of a veth pair transactionally.
-// A failed create does not establish ownership and therefore never triggers a
-// delete. Once create succeeds, every later setup failure rolls back the exact
-// veth this call created and preserves any rollback failure alongside the setup
-// error.
+func defaultVethHostSetupOpsForOwner(owner, hostName string) vethHostSetupOps {
+	return vethHostSetupOps{
+		createPair: func(name, peer string) error {
+			return createVethPairOwned(name, peer, owner)
+		},
+		addAddr:   addAddr,
+		setLinkUp: setLinkUp,
+		movePeer:  moveToNetns,
+		removeHost: func(_ int, debug bool) error {
+			return RemoveVethHostOwned(hostName, owner, debug)
+		},
+	}
+}
+
+// SetupVethHostOwned configures the legacy PID-named host side of a veth pair
+// transactionally. Managed runtime paths should use SetupVethHostGenerationOwned
+// so crash recovery can verify the exact generation before deleting the link.
 func SetupVethHostOwned(containerPID int, hostCIDR string, debug bool) error {
 	return setupVethHostOwnedWithOps(containerPID, hostCIDR, debug, defaultVethHostSetupOps())
 }
 
+// SetupVethHostGenerationOwned creates a generation-named veth carrying owner in
+// its kernel ifalias. The durable owner/name pair can therefore be persisted
+// before creation without making a failed name collision unsafe to reconcile.
+func SetupVethHostGenerationOwned(owner, hostName string, containerPID int, hostCIDR string, debug bool) error {
+	if err := validateGenerationNetworkOwner(owner); err != nil {
+		return fmt.Errorf("validate veth owner: %w", err)
+	}
+	if err := validateOwnedVethName(hostName); err != nil {
+		return err
+	}
+	if expected := VethHostIfaceOwned(owner); hostName != expected {
+		return fmt.Errorf("owned veth name %q does not match generation owner (want %q)", hostName, expected)
+	}
+	return setupVethHostNamedWithOps(hostName, containerPID, hostCIDR, debug, defaultVethHostSetupOpsForOwner(owner, hostName))
+}
+
 func setupVethHostOwnedWithOps(containerPID int, hostCIDR string, debug bool, ops vethHostSetupOps) error {
+	return setupVethHostNamedWithOps(VethHostIface(containerPID), containerPID, hostCIDR, debug, ops)
+}
+
+func setupVethHostNamedWithOps(host string, containerPID int, hostCIDR string, debug bool, ops vethHostSetupOps) error {
 	if ops.createPair == nil || ops.addAddr == nil || ops.setLinkUp == nil || ops.movePeer == nil || ops.removeHost == nil {
 		return fmt.Errorf("veth host setup operation is nil")
 	}
 
-	host := VethHostIface(containerPID)
 	if debug {
 		fmt.Printf("[parent] veth: creating pair %s ↔ %s\n", host, vethPeerName)
 	}
