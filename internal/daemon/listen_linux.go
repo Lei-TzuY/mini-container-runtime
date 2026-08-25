@@ -21,9 +21,8 @@ func listen(network, address string) (net.Listener, error) {
 	}
 
 	umaskMu.Lock()
+	defer umaskMu.Unlock()
 	oldMask := syscall.Umask(0o177)
-	listener, err := net.Listen(network, address)
-	syscall.Umask(oldMask)
-	umaskMu.Unlock()
-	return listener, err
+	defer syscall.Umask(oldMask)
+	return net.Listen(network, address)
 }
