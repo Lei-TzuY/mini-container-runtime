@@ -462,11 +462,16 @@ func ContainerInit(cfg Config) error {
 }
 
 func mountVolume(v Volume, rootfs string, debug bool) error {
-	target := filepath.Join(rootfs, v.ContainerPath)
-
-	if err := os.MkdirAll(target, 0755); err != nil {
-		return fmt.Errorf("create mount point: %w", err)
+	if v.HostPath == "" || !filepath.IsAbs(v.HostPath) {
+		return fmt.Errorf("host path %q must be absolute", v.HostPath)
 	}
+
+	targetFD, err := openVolumeTarget(rootfs, v.ContainerPath)
+	if err != nil {
+		return fmt.Errorf("secure mount target: %w", err)
+	}
+	defer syscall.Close(targetFD)
+	target := volumeTargetFDPath(targetFD)
 
 	if err := syscall.Mount(v.HostPath, target, "",
 		syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
