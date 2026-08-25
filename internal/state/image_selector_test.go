@@ -70,6 +70,26 @@ func TestGetImageExactNameWinsOverIDPrefix(t *testing.T) {
 	}
 }
 
+func TestGetImageExactIDWinsOverLongerPrefixMatch(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const exactID = "abc123"
+	saveSelectorImages(t, store,
+		&Image{ID: exactID, Name: "exact:latest", RootFS: "/exact"},
+		&Image{ID: "abc123456789", Name: "longer:latest", RootFS: "/longer"},
+	)
+
+	got, err := store.GetImage(exactID)
+	if err != nil {
+		t.Fatalf("GetImage exact ID: %v", err)
+	}
+	if got.ID != exactID || got.RootFS != "/exact" {
+		t.Fatalf("exact ID resolved to %+v", got)
+	}
+}
+
 func TestDeleteImageRejectsAmbiguousPrefixWithoutDeleting(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -110,6 +130,29 @@ func TestDeleteImageByIDRejectsMultipleAliases(t *testing.T) {
 		if _, err := store.GetImage(name); err != nil {
 			t.Fatalf("alias %q disappeared after rejected ID delete: %v", name, err)
 		}
+	}
+}
+
+func TestDeleteImageExactIDWinsOverLongerPrefixMatch(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const exactID = "abc123"
+	saveSelectorImages(t, store,
+		&Image{ID: exactID, Name: "exact:latest", RootFS: "/exact"},
+		&Image{ID: "abc123456789", Name: "longer:latest", RootFS: "/longer"},
+	)
+
+	removed, err := store.DeleteImage(exactID)
+	if err != nil {
+		t.Fatalf("DeleteImage exact ID: %v", err)
+	}
+	if removed.ID != exactID {
+		t.Fatalf("removed=%+v", removed)
+	}
+	if _, err := store.GetImage("longer:latest"); err != nil {
+		t.Fatalf("longer-prefix image disappeared: %v", err)
 	}
 }
 
