@@ -44,9 +44,29 @@ func sortImageAliases(images []*Image) {
 	})
 }
 
+func validateAliasRootFS(aliases []*Image) error {
+	if len(aliases) < 2 {
+		return nil
+	}
+	id := aliases[0].ID
+	rootFS := aliases[0].RootFS
+	for _, img := range aliases[1:] {
+		if img.ID != id {
+			return fmt.Errorf("inconsistent image aliases: expected ID %s, got %s", id, img.ID)
+		}
+		if img.RootFS != rootFS {
+			return fmt.Errorf("inconsistent aliases for image ID %s reference different rootfs paths", id)
+		}
+	}
+	return nil
+}
+
 func resolveAliasSetForRead(aliases []*Image) (*Image, error) {
 	if len(aliases) == 0 {
 		return nil, fmt.Errorf("image not found")
+	}
+	if err := validateAliasRootFS(aliases); err != nil {
+		return nil, err
 	}
 	sortImageAliases(aliases)
 	return aliases[0], nil
