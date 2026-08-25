@@ -197,9 +197,10 @@ func TestParseContainerStopTimeout(t *testing.T) {
 		{"", false},
 		{"0s", false},
 		{"25ms", false},
-		{"10s", false},
+		{"7s", false},
 		{"-1s", true},
-		{"11s", true},
+		{"8s", true},
+		{"10s", true},
 		{"nope", true},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/stop?timeout="+tc.raw, nil)
