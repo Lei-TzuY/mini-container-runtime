@@ -6,6 +6,9 @@ import (
 	"errors"
 	"os/exec"
 	"testing"
+	"time"
+
+	"minicontainer/internal/state"
 )
 
 func payloadExitError(t *testing.T, code string) *exec.ExitError {
@@ -16,6 +19,82 @@ func payloadExitError(t *testing.T, code string) *exec.ExitError {
 		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
 	}
 	return exitErr
+}
+
+func TestFinalizeManagedParentExitSkipsCleanupWithoutOwnership(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &state.Container{
+		ID:           "ctr-unowned-cgroup",
+		Status:       state.StatusRunning,
+		PID:          4242,
+		PIDStartTime: 99,
+		CreatedAt:    time.Now(),
+	}
+	if err := st.Save(snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	finalizerCalled := false
+	if err := finalizeManagedParentExit(
+		st,
+		snapshot,
+		7,
+		time.Now(),
+		false,
+		func(*state.Store, *state.Container, int, time.Time) (bool, error) {
+			finalizerCalled = true
+			return false, errors.New("must not clean an unowned cgroup")
+		},
+	); err != nil {
+		t.Fatalf("finalize unowned managed exit: %v", err)
+	}
+	if finalizerCalled {
+		t.Fatal("generation cleanup ran despite failed cgroup Apply")
+	}
+
+	current, err := st.Get(snapshot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != state.StatusStopped || current.PID != 0 || current.PIDStartTime != 0 {
+		t.Fatalf("state not reconciled without cgroup ownership: %+v", current)
+	}
+	if current.ExitCode != 7 || current.FinishedAt == nil {
+		t.Fatalf("exit metadata lost without cgroup ownership: exit=%d finished=%v", current.ExitCode, current.FinishedAt)
+	}
+}
+
+func TestFinalizeManagedParentExitUsesGenerationFinalizerWhenOwned(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := &state.Container{ID: "ctr-owned", PID: 1234, PIDStartTime: 55}
+	finishedAt := time.Now()
+	calls := 0
+
+	if err := finalizeManagedParentExit(
+		st,
+		snapshot,
+		9,
+		finishedAt,
+		true,
+		func(gotStore *state.Store, got *state.Container, exitCode int, finished time.Time) (bool, error) {
+			calls++
+			if gotStore != st || got != snapshot || exitCode != 9 || !finished.Equal(finishedAt) {
+				t.Fatalf("wrong generation finalizer arguments: store=%p snapshot=%+v exit=%d finished=%v", gotStore, got, exitCode, finished)
+			}
+			return false, nil
+		},
+	); err != nil {
+		t.Fatalf("finalize owned managed exit: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("generation finalizer calls=%d, want 1", calls)
+	}
 }
 
 func TestParentExitResultPreservesPayloadExitAndMarksCleanupFailureRuntimeControl(t *testing.T) {
