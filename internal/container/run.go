@@ -49,10 +49,9 @@ func Run(cfg Config) error {
 		attempt++
 		err := runOnce(cfg, lifecycleStore)
 
-		var stateErr *runtimeStateError
-		if errors.As(err, &stateErr) {
-			// State persistence/identity failures are runtime-control failures, not
-			// payload failures. Restarting would create more unmanaged processes.
+		if isRuntimeControlError(err) {
+			// Runtime state/setup failures are not payload failures. Retrying cannot
+			// repair missing controls and may create repeated unmanaged processes.
 			return err
 		}
 
@@ -213,6 +212,17 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 	}
 	cgroupApplied := false
 	if err := cgroups.Apply(childPID, cgCfg, cfg.Debug); err != nil {
+		if resourceLimitsRequested(cfg) {
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				fmt.Errorf("apply required cgroup resource limits: %w", err),
+			)
+		}
 		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", err)
 	} else {
 		cgroupApplied = true
