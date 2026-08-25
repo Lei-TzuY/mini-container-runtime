@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestBridgeHostVethFailureRollsBackPartialVeth(t *testing.T) {
+func TestBridgeHostVethFailureDoesNotInferCleanupOwnership(t *testing.T) {
 	cause := errors.New("veth setup failed")
 	removeCalls := 0
 	portCalls := 0
@@ -17,9 +17,6 @@ func TestBridgeHostVethFailureRollsBackPartialVeth(t *testing.T) {
 		setupVeth: func(int, string, bool) error { return cause },
 		removeVeth: func(pid int, debug bool) error {
 			removeCalls++
-			if pid != 42 {
-				t.Fatalf("remove veth pid=%d", pid)
-			}
 			return nil
 		},
 		setupPort: func(int, int, string, string, bool) error { portCalls++; return nil },
@@ -31,8 +28,8 @@ func TestBridgeHostVethFailureRollsBackPartialVeth(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("setup cause not preserved: %v", err)
 	}
-	if removeCalls != 1 || portCalls != 0 {
-		t.Fatalf("unexpected rollback calls: removeVeth=%d setupPort=%d", removeCalls, portCalls)
+	if removeCalls != 0 || portCalls != 0 {
+		t.Fatalf("failed veth setup triggered unowned cleanup/setup: removeVeth=%d setupPort=%d", removeCalls, portCalls)
 	}
 }
 
