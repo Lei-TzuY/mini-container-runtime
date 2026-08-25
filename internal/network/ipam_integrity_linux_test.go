@@ -42,6 +42,10 @@ func TestIPAMRejectsSemanticallyInvalidAllocations(t *testing.T) {
 		},
 	}
 
+	for i := range tests {
+		tests[i].json = strings.ReplaceAll(tests[i].json, `\"`, `"`)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
