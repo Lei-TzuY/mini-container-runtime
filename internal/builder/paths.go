@@ -141,6 +141,23 @@ func resolveRootFSPath(root, logical string) (string, error) {
 	return result, nil
 }
 
+// resolveRootFSLeaf resolves only the parent of logical and leaves the final
+// component untouched. Use this when creating/replacing a symlink itself.
+func resolveRootFSLeaf(root, logical string) (string, error) {
+	logical, err := normalizeContainerPath("/", logical)
+	if err != nil {
+		return "", err
+	}
+	if logical == "/" {
+		return "", fmt.Errorf("cannot replace build root")
+	}
+	parent, err := resolveRootFSPath(root, path.Dir(logical))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.FromSlash(path.Base(logical))), nil
+}
+
 func mkdirRootFSPath(root, logical string, mode os.FileMode) error {
 	target, err := resolveRootFSPath(root, logical)
 	if err != nil {
