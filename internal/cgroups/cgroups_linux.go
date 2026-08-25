@@ -35,6 +35,16 @@ type Config struct {
 
 // Apply creates a cgroup for pid and enforces the limits in cfg.
 func Apply(pid int, cfg Config, debug bool) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid cgroup target PID %d", pid)
+	}
+	if err := validateCgroupName(cfg.Name); err != nil {
+		return err
+	}
+	if err := validateResourceValues(cfg.MemoryMax, cfg.CPUWeight, cfg.CPUs, cfg.PidsMax); err != nil {
+		return err
+	}
+
 	if isV2() {
 		if debug {
 			fmt.Println("[cgroup] using cgroup v2 (unified hierarchy)")
@@ -48,7 +58,10 @@ func Apply(pid int, cfg Config, debug bool) error {
 }
 
 func Remove(name string, debug bool) {
-	if name == "" {
+	if err := validateCgroupName(name); err != nil {
+		if debug {
+			fmt.Printf("[cgroup] refusing cleanup for invalid name %q: %v\n", name, err)
+		}
 		return
 	}
 
