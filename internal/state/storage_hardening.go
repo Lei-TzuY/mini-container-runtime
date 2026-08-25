@@ -42,6 +42,11 @@ func removeStateFileDurable(dir, path, label string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s: %w", label, err)
 	}
+	if label == "container state" {
+		if err := removeExitedIdentityForContainerState(path); err != nil {
+			return err
+		}
+	}
 	// Sync even when the file is already absent. This lets a retry repair the
 	// durability of a previous unlink whose directory fsync reported an error.
 	return syncStateDirectory(dir, label)
