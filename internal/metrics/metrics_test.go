@@ -1,31 +1,49 @@
 package metrics
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"minicontainer/internal/cgroups"
+	"minicontainer/internal/container"
 	"minicontainer/internal/state"
 	runtimestats "minicontainer/internal/stats"
 )
 
-func TestPrometheusMetrics(t *testing.T) {
-	tmpDir := t.TempDir()
-	st, err := state.Open(tmpDir)
+func TestPrometheusMetricsDistinguishesVerifiedAndStaleRunningState(t *testing.T) {
+	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open state store error: %v", err)
 	}
-
-	c := &state.Container{
-		ID:        "ctr-metric-1",
-		Hostname:  "metric-host",
-		Status:    state.StatusRunning,
-		Health:    "healthy",
-		CreatedAt: time.Now(),
+	start, err := container.ProcessStartTime(os.Getpid())
+	if err != nil {
+		t.Fatalf("ProcessStartTime: %v", err)
 	}
-	if err := st.Save(c); err != nil {
-		t.Fatalf("Save container error: %v", err)
+
+	for _, c := range []*state.Container{
+		{
+			ID:           "ctr-live",
+			PID:          os.Getpid(),
+			PIDStartTime: start,
+			Hostname:     "live-host",
+			Status:       state.StatusRunning,
+			Health:       "healthy",
+			CreatedAt:    time.Now(),
+		},
+		{
+			ID:           "ctr-stale",
+			PID:          os.Getpid(),
+			PIDStartTime: start + 1,
+			Hostname:     "stale-host",
+			Status:       state.StatusRunning,
+			CreatedAt:    time.Now(),
+		},
+	} {
+		if err := st.Save(c); err != nil {
+			t.Fatalf("Save container error: %v", err)
+		}
 	}
 
 	out, err := GeneratePrometheusMetrics(st)
@@ -33,14 +51,18 @@ func TestPrometheusMetrics(t *testing.T) {
 		t.Fatalf("GeneratePrometheusMetrics error: %v", err)
 	}
 
-	if !strings.Contains(out, `minictl_container_status{id="ctr-metric-1"} 1`) {
-		t.Fatalf("Metrics missing container status line:\n%s", out)
+	checks := []string{
+		`minictl_container_status{id="ctr-live"} 1`,
+		`minictl_container_state_stale{id="ctr-live"} 0`,
+		`minictl_container_status{id="ctr-stale"} 0`,
+		`minictl_container_state_stale{id="ctr-stale"} 1`,
+		"minictl_images_total 0",
+		"# TYPE minictl_container_pressure_stall_seconds_total counter",
 	}
-	if !strings.Contains(out, "minictl_images_total 0") {
-		t.Fatalf("Metrics missing images total line:\n%s", out)
-	}
-	if !strings.Contains(out, "# TYPE minictl_container_pressure_stall_seconds_total counter") {
-		t.Fatalf("Metrics missing PSI counter metadata:\n%s", out)
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -49,6 +71,7 @@ func TestAppendResourceMetrics(t *testing.T) {
 	containerStats := []runtimestats.ContainerStat{
 		{
 			ContainerID:   "ctr-live",
+			ProcessLive:   true,
 			Available:     true,
 			CPUUsageUsec:  1250000,
 			MemBytes:      64 * 1024 * 1024,
@@ -64,7 +87,15 @@ func TestAppendResourceMetrics(t *testing.T) {
 		},
 		{
 			ContainerID:  "ctr-unavailable",
+			ProcessLive:  true,
 			Available:    false,
+			CPUUsageUsec: 9999999,
+			MemBytes:     999,
+		},
+		{
+			ContainerID:  "ctr-stale",
+			ProcessLive:  false,
+			Available:    true,
 			CPUUsageUsec: 9999999,
 			MemBytes:     999,
 		},
@@ -89,7 +120,7 @@ func TestAppendResourceMetrics(t *testing.T) {
 			t.Fatalf("resource metrics missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "ctr-unavailable") {
-		t.Fatalf("unavailable cgroup snapshot should not emit resource samples:\n%s", out)
+	if strings.Contains(out, "ctr-unavailable") || strings.Contains(out, "ctr-stale") {
+		t.Fatalf("unavailable or stale identity must not emit resource samples:\n%s", out)
 	}
 }
