@@ -267,7 +267,24 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 		}
 	}
 
-	_ = writePipe.Close()
+	if err := releaseBlockedChild(writePipe); err != nil {
+		var setupErr error = fmt.Errorf("release container initialization: %w", err)
+		if bridgeCleanup != nil {
+			if cleanupErr := bridgeCleanup(); cleanupErr != nil {
+				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup bridge network after release failure: %w", cleanupErr))
+			}
+			bridgeCleanup = nil
+		}
+		return abortRuntimeSetupFailure(
+			cmd,
+			writePipe,
+			lifecycleStore,
+			cfg.ContainerID,
+			childPID,
+			childStartTime,
+			setupErr,
+		)
+	}
 
 	waitErr := cmd.Wait()
 
@@ -339,12 +356,12 @@ func ContainerInit(cfg Config) error {
 	}
 
 	syncPipe := os.NewFile(3, "sync-pipe")
-	buf := make([]byte, 1)
-	_, _ = syncPipe.Read(buf)
-	_ = syncPipe.Close()
+	if err := awaitParentReady(syncPipe); err != nil {
+		return fmt.Errorf("runtime parent readiness: %w", err)
+	}
 
 	if cfg.Debug {
-		fmt.Println("[init] received sync signal from parent")
+		fmt.Println("[init] received runtime ready signal from parent")
 	}
 
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
