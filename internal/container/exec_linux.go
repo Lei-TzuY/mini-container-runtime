@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Lei-TzuY/mini-container-runtime/internal/state"
 	"golang.org/x/sys/unix"
 )
 
@@ -33,8 +34,9 @@ type ExecConfig struct {
 }
 
 const (
-	execSentinelKey = "MINICONTAINER_EXEC"
-	execSentinelEnv = execSentinelKey + "=1"
+	execSentinelKey       = "MINICONTAINER_EXEC"
+	execSentinelEnv       = execSentinelKey + "=1"
+	execStartTimeKey      = "MINICONTAINER_EXEC_START_TIME"
 )
 
 type execNamespaceTarget struct {
@@ -72,6 +74,10 @@ func Exec(cfg ExecConfig) error {
 	if len(cfg.Command) == 0 || cfg.Command[0] == "" {
 		return fmt.Errorf("exec command is empty")
 	}
+	expectedStartTime, err := persistedExecStartTime(cfg.ContainerPID, cfg.RootFS)
+	if err != nil {
+		return err
+	}
 	if cfg.Debug {
 		fmt.Printf("[exec] entering namespaces of PID %d\n", cfg.ContainerPID)
 	}
@@ -84,7 +90,7 @@ func Exec(cfg ExecConfig) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), execSentinelEnv)
+	cmd.Env = append(os.Environ(), execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime))
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
@@ -94,13 +100,54 @@ func Exec(cfg ExecConfig) error {
 	return nil
 }
 
-func openExecTargets(containerPID int) (*execTargets, error) {
+func persistedExecStartTime(containerPID int, rootFS string) (uint64, error) {
+	store, err := state.Open(state.DefaultDir())
+	if err != nil {
+		return 0, fmt.Errorf("open container state for exec identity: %w", err)
+	}
+	records, err := store.List()
+	if err != nil {
+		return 0, fmt.Errorf("list container state for exec identity: %w", err)
+	}
+	var match *state.Container
+	for _, rec := range records {
+		if rec.PID != containerPID || rec.RootFS != rootFS || rec.Status != state.StatusRunning {
+			continue
+		}
+		if match != nil {
+			return 0, fmt.Errorf("ambiguous persisted exec identity for PID %d", containerPID)
+		}
+		match = rec
+	}
+	if match == nil {
+		return 0, fmt.Errorf("no running container state matches exec PID %d and rootfs %q", containerPID, rootFS)
+	}
+	if match.PIDStartTime == 0 {
+		return 0, fmt.Errorf("container %s has no persisted PID start time; refusing unsafe exec", match.ID)
+	}
+	actual, err := ProcessStartTime(containerPID)
+	if err != nil {
+		return 0, fmt.Errorf("verify persisted exec target PID %d: %w", containerPID, err)
+	}
+	if actual != match.PIDStartTime {
+		return 0, fmt.Errorf("container %s PID %d was reused: persisted start time %d, current %d", match.ID, containerPID, match.PIDStartTime, actual)
+	}
+	return match.PIDStartTime, nil
+}
+
+func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, error) {
 	if containerPID <= 0 {
 		return nil, fmt.Errorf("invalid container PID %d", containerPID)
+	}
+	if expectedStartTime == 0 {
+		return nil, fmt.Errorf("missing persisted PID start time for exec target %d", containerPID)
 	}
 	startTime, err := ProcessStartTime(containerPID)
 	if err != nil {
 		return nil, fmt.Errorf("capture exec target identity for PID %d: %w", containerPID, err)
+	}
+	if startTime != expectedStartTime {
+		return nil, fmt.Errorf("exec target PID %d does not match persisted identity: expected start time %d, current %d", containerPID, expectedStartTime, startTime)
 	}
 	targets := &execTargets{rootFD: -1, startTime: startTime}
 	fail := func(err error) (*execTargets, error) {
@@ -138,7 +185,7 @@ func openExecTargets(containerPID int) (*execTargets, error) {
 	if err != nil {
 		return fail(fmt.Errorf("recheck exec target identity for PID %d: %w", containerPID, err))
 	}
-	if endStartTime != startTime {
+	if endStartTime != expectedStartTime {
 		return fail(fmt.Errorf("exec target PID %d changed identity during namespace capture", containerPID))
 	}
 	return targets, nil
@@ -148,6 +195,11 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if len(command) == 0 || command[0] == "" {
 		return fmt.Errorf("exec command is empty")
 	}
+	expectedRaw := os.Getenv(execStartTimeKey)
+	expectedStartTime, err := strconv.ParseUint(expectedRaw, 10, 64)
+	if err != nil || expectedStartTime == 0 {
+		return fmt.Errorf("invalid internal exec target identity %q", expectedRaw)
+	}
 	runtime.LockOSThread()
 	if err := prepareExecThread(); err != nil {
 		return err
@@ -155,7 +207,7 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if debug {
 		fmt.Printf("[exec-init] attaching to namespaces of host PID %d\n", containerPID)
 	}
-	targets, err := openExecTargets(containerPID)
+	targets, err := openExecTargets(containerPID, expectedStartTime)
 	if err != nil {
 		return err
 	}
@@ -205,7 +257,7 @@ func runExecPayload(command, env []string, stdin io.Reader, stdout, stderr io.Wr
 func payloadEnvironment(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, entry := range env {
-		if strings.HasPrefix(entry, execSentinelKey+"=") || strings.HasPrefix(entry, "MINICONTAINER_INIT=") {
+		if strings.HasPrefix(entry, execSentinelKey+"=") || strings.HasPrefix(entry, execStartTimeKey+"=") || strings.HasPrefix(entry, "MINICONTAINER_INIT=") {
 			continue
 		}
 		out = append(out, entry)
