@@ -23,6 +23,10 @@ func openContainerLogForRotate(path string) (*os.File, error) {
 }
 
 func openContainerLog(path string, flags int, mode uint32, createDir bool) (*os.File, error) {
+	if isManagedLogPath(path) {
+		return openManagedContainerLog(path, flags, mode, createDir)
+	}
+
 	dir := filepath.Dir(path)
 	if createDir {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -38,8 +42,45 @@ func openContainerLog(path string, flags int, mode uint32, createDir bool) (*os.
 	if err := unix.Fchmod(dfd, 0o700); err != nil {
 		return nil, fmt.Errorf("secure container log directory: %w", err)
 	}
+	return openLogAt(dfd, filepath.Base(path), path, flags, mode)
+}
 
-	fd, err := unix.Openat(dfd, filepath.Base(path), flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, mode)
+func openManagedContainerLog(path string, flags int, mode uint32, createDir bool) (*os.File, error) {
+	base := managedLogStateDir()
+	if createDir {
+		if err := unix.Mkdir(base, 0o700); err != nil && err != unix.EEXIST {
+			return nil, fmt.Errorf("create log state directory: %w", err)
+		}
+	}
+
+	baseFD, err := unix.Open(base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open log state directory: %w", err)
+	}
+	defer unix.Close(baseFD)
+	if err := unix.Fchmod(baseFD, 0o700); err != nil {
+		return nil, fmt.Errorf("secure log state directory: %w", err)
+	}
+
+	if createDir {
+		if err := unix.Mkdirat(baseFD, "containers", 0o700); err != nil && err != unix.EEXIST {
+			return nil, fmt.Errorf("create container log directory: %w", err)
+		}
+	}
+	logDirFD, err := unix.Openat(baseFD, "containers", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open container log directory: %w", err)
+	}
+	defer unix.Close(logDirFD)
+	if err := unix.Fchmod(logDirFD, 0o700); err != nil {
+		return nil, fmt.Errorf("secure container log directory: %w", err)
+	}
+
+	return openLogAt(logDirFD, filepath.Base(path), path, flags, mode)
+}
+
+func openLogAt(dirFD int, name, displayPath string, flags int, mode uint32) (*os.File, error) {
+	fd, err := unix.Openat(dirFD, name, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, mode)
 	if err != nil {
 		return nil, fmt.Errorf("open container log: %w", err)
 	}
@@ -58,7 +99,7 @@ func openContainerLog(path string, flags int, mode uint32, createDir bool) (*os.
 		return nil, fmt.Errorf("secure container log permissions: %w", err)
 	}
 
-	file := os.NewFile(uintptr(fd), path)
+	file := os.NewFile(uintptr(fd), displayPath)
 	if file == nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("wrap container log fd")
