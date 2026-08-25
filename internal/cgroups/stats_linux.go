@@ -11,8 +11,12 @@
 //   • Memory Limit : /sys/fs/cgroup/<name>/memory.max ("max" = no limit)
 //   • Process Count: /sys/fs/cgroup/<name>/pids.current
 //   • CPU Usage    : /sys/fs/cgroup/<name>/cpu.stat (usage_usec field)
+//   • CPU PSI      : /sys/fs/cgroup/<name>/cpu.pressure
+//   • Memory PSI   : /sys/fs/cgroup/<name>/memory.pressure
+//   • I/O PSI      : /sys/fs/cgroup/<name>/io.pressure
 //
-// This is how `docker stats` obtains per-container CPU%, Memory, and PID figures.
+// This is how `docker stats`-style tooling can obtain per-container resource
+// usage while PSI adds direct visibility into resource contention and stalls.
 
 package cgroups
 
@@ -27,10 +31,13 @@ import (
 
 // Stats holds a snapshot of container resource metrics.
 type Stats struct {
-	MemoryUsage int64 // bytes currently used
-	MemoryLimit int64 // max allowed bytes (0 = unlimited / host limit)
-	PidsCurrent int64 // number of active processes/threads
-	CPUUsageUsec uint64 // total CPU time consumed in microseconds
+	MemoryUsage   int64  // bytes currently used
+	MemoryLimit   int64  // max allowed bytes (0 = unlimited / host limit)
+	PidsCurrent   int64  // number of active processes/threads
+	CPUUsageUsec  uint64 // total CPU time consumed in microseconds
+	CPUPressure   *PSIStats
+	MemoryPressure *PSIStats
+	IOPressure    *PSIStats
 }
 
 // ReadStats reads live cgroup metrics for the given cgroup name (e.g., "minicontainer-1234").
@@ -71,6 +78,19 @@ func ReadStats(name string) (*Stats, error) {
 				break
 			}
 		}
+	}
+
+	// PSI is optional on kernels/configurations where pressure accounting is
+	// unavailable or disabled. Preserve a nil pointer in that case so callers
+	// can distinguish "not available" from a legitimate all-zero sample.
+	if psi, err := ReadPSIStats(cgPath, "cpu"); err == nil {
+		stats.CPUPressure = psi
+	}
+	if psi, err := ReadPSIStats(cgPath, "memory"); err == nil {
+		stats.MemoryPressure = psi
+	}
+	if psi, err := ReadPSIStats(cgPath, "io"); err == nil {
+		stats.IOPressure = psi
 	}
 
 	return stats, nil

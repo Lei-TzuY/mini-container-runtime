@@ -2,13 +2,16 @@
 
 package cgroups
 
-type PSIValues struct {
-	Avg10  float64 `json:"avg10"`
-	Avg60  float64 `json:"avg60"`
-	Avg300 float64 `json:"avg300"`
-	Total  uint64  `json:"total"`
+func ReadPSIStats(cgroupPath, resource string) (*PSIStats, error) {
+	if err := validatePSIResource(resource); err != nil {
+		return nil, err
+	}
+	return &PSIStats{}, nil
 }
 
-func ReadPSI(cgroupPath string, resource string) (*PSIValues, error) {
+func ReadPSI(cgroupPath, resource string) (*PSIValues, error) {
+	if err := validatePSIResource(resource); err != nil {
+		return nil, err
+	}
 	return &PSIValues{}, nil
 }

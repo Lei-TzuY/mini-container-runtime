@@ -16,10 +16,13 @@ type Config struct {
 }
 
 type Stats struct {
-	MemoryUsage int64
-	MemoryLimit int64
-	PidsCurrent int64
-	CPUUsageUsec uint64
+	MemoryUsage    int64
+	MemoryLimit    int64
+	PidsCurrent    int64
+	CPUUsageUsec   uint64
+	CPUPressure    *PSIStats
+	MemoryPressure *PSIStats
+	IOPressure     *PSIStats
 }
 
 func Apply(pid int, cfg Config, debug bool) error {
