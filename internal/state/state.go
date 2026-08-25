@@ -437,7 +437,7 @@ func (s *Store) listImagesUnlocked() ([]*Image, error) {
 	}
 
 	var out []*Image
-	seen := make(map[string]*Image)
+	seen := make(map[string]seenImageMetadata)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -447,7 +447,7 @@ func (s *Store) listImagesUnlocked() ([]*Image, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read image state %q: %w", entry.Name(), err)
 		}
-		out, err = appendUniqueImageMetadata(out, seen, img)
+		out, err = appendUniqueImageMetadata(out, seen, img, path)
 		if err != nil {
 			return nil, fmt.Errorf("image state %q: %w", entry.Name(), err)
 		}
