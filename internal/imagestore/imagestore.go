@@ -70,13 +70,29 @@ func TagImage(st *state.Store, source, target string) (*state.Image, error) {
 
 // RemoveImage removes image metadata and optionally cleans up the rootfs folder if no other tags reference it.
 func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (*state.Image, error) {
+	if st == nil {
+		return nil, fmt.Errorf("state store is nil")
+	}
+
+	// Rootfs removal is destructive. Before mutating metadata, prove that the
+	// image index is fully readable; unknown/corrupt metadata must never be
+	// treated as evidence that a rootfs is unreferenced.
+	if removeRootFS {
+		if _, err := st.ListImages(); err != nil {
+			return nil, fmt.Errorf("preflight image metadata before removal: %w", err)
+		}
+	}
+
 	img, err := st.DeleteImage(nameOrID)
 	if err != nil {
 		return nil, err
 	}
 
 	if removeRootFS && img.RootFS != "" {
-		all, _ := st.ListImages()
+		all, err := st.ListImages()
+		if err != nil {
+			return img, fmt.Errorf("verify image rootfs references after metadata removal: %w", err)
+		}
 		inUse := false
 		for _, other := range all {
 			if other.RootFS == img.RootFS {
@@ -85,7 +101,9 @@ func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (*state.Im
 			}
 		}
 		if !inUse {
-			_ = os.RemoveAll(img.RootFS)
+			if err := os.RemoveAll(img.RootFS); err != nil {
+				return img, fmt.Errorf("remove image rootfs %q: %w", img.RootFS, err)
+			}
 		}
 	}
 	return img, nil
