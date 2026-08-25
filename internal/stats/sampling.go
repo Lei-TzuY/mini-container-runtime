@@ -20,7 +20,15 @@ func CollectStatsSampled(st *state.Store, interval time.Duration) ([]ContainerSt
 	if err != nil {
 		return nil, err
 	}
-	if len(before) == 0 {
+
+	hasCandidate := false
+	for _, stat := range before {
+		if stat.ProcessLive && stat.Available {
+			hasCandidate = true
+			break
+		}
+	}
+	if !hasCandidate {
 		return before, nil
 	}
 
@@ -34,22 +42,23 @@ func CollectStatsSampled(st *state.Store, interval time.Duration) ([]ContainerSt
 	}
 
 	type sampleKey struct {
-		id  string
-		pid int
+		id        string
+		pid       int
+		startTime uint64
 	}
 	previous := make(map[sampleKey]ContainerStat, len(before))
 	for _, stat := range before {
-		if stat.Available {
-			previous[sampleKey{id: stat.ContainerID, pid: stat.PID}] = stat
+		if stat.ProcessLive && stat.Available {
+			previous[sampleKey{id: stat.ContainerID, pid: stat.PID, startTime: stat.PIDStartTime}] = stat
 		}
 	}
 
 	for i := range after {
 		current := &after[i]
-		if !current.Available {
+		if !current.ProcessLive || !current.Available {
 			continue
 		}
-		prev, ok := previous[sampleKey{id: current.ContainerID, pid: current.PID}]
+		prev, ok := previous[sampleKey{id: current.ContainerID, pid: current.PID, startTime: current.PIDStartTime}]
 		if !ok {
 			continue
 		}
