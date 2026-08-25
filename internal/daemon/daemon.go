@@ -14,6 +14,7 @@ import (
 	"minicontainer/internal/imagestore"
 	"minicontainer/internal/metrics"
 	"minicontainer/internal/state"
+	runtimestats "minicontainer/internal/stats"
 )
 
 // Server represents the minictl REST API Daemon.
@@ -77,6 +78,7 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/v1/containers/json", srv.handleListContainers)
 	mux.HandleFunc("/v1/containers/", srv.handleContainerRoute)
 	mux.HandleFunc("/v1/images/json", srv.handleListImages)
+	mux.HandleFunc("/v1/stats", srv.handleStats)
 	mux.HandleFunc("/v1/metrics", srv.handleMetrics)
 
 	srv.httpServer = &http.Server{
@@ -91,7 +93,7 @@ func (s *Server) Start() error {
 	return s.httpServer.Serve(s.listener)
 }
 
-// Stop gracefully shuts down daemon.
+// Stop gracefully shuts down daemon server.
 func (s *Server) Stop(ctx context.Context) error {
 	err := s.httpServer.Shutdown(ctx)
 	if s.network == "unix" {
@@ -180,6 +182,38 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, imgs)
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	interval := 200 * time.Millisecond
+	if raw := r.URL.Query().Get("interval"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid interval: " + err.Error()})
+			return
+		}
+		interval = parsed
+	}
+	if interval < 10*time.Millisecond || interval > 5*time.Second {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "interval must be between 10ms and 5s"})
+		return
+	}
+
+	values, err := runtimestats.CollectStatsSampled(s.store, interval)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if values == nil {
+		values = []runtimestats.ContainerStat{}
+	}
+	writeJSON(w, http.StatusOK, values)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
