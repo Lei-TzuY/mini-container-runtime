@@ -42,6 +42,17 @@ func writeCurrentImageMetadata(t *testing.T, store *Store, img *Image) string {
 	return path
 }
 
+func writeImageMetadataAt(t *testing.T, path string, img *Image) {
+	t.Helper()
+	data, err := json.MarshalIndent(img, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImageMetadataFilenamesAvoidLegacySanitizerCollisions(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -167,15 +178,33 @@ func TestListImagesDeduplicatesIdenticalMigrationCopies(t *testing.T) {
 	}
 }
 
-func TestListImagesRejectsConflictingMigrationCopies(t *testing.T) {
+func TestListImagesPrefersCurrentMetadataDuringMigration(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := &Image{Name: "conflict:test", ID: "same", RootFS: "/old"}
+	legacy := &Image{Name: "migration:test", ID: "same", RootFS: "/old"}
 	current := &Image{Name: legacy.Name, ID: legacy.ID, RootFS: "/new"}
 	writeLegacyImageMetadata(t, store, legacy)
 	writeCurrentImageMetadata(t, store, current)
+	images, err := store.ListImages()
+	if err != nil {
+		t.Fatalf("ListImages: %v", err)
+	}
+	if len(images) != 1 || images[0].RootFS != "/new" {
+		t.Fatalf("authoritative migration image=%+v", images)
+	}
+}
+
+func TestListImagesRejectsConflictingNonCurrentCopies(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &Image{Name: "conflict:test", ID: "same", RootFS: "/one"}
+	second := &Image{Name: first.Name, ID: first.ID, RootFS: "/two"}
+	writeLegacyImageMetadata(t, store, first)
+	writeImageMetadataAt(t, filepath.Join(store.imgDir, "unexpected-copy.json"), second)
 	if _, err := store.ListImages(); err == nil || !strings.Contains(err.Error(), "conflicting duplicate") {
 		t.Fatalf("conflicting duplicate error=%v", err)
 	}
