@@ -37,8 +37,8 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 		switch {
 		case errors.Is(err, container.ErrProcessNotFound):
 			// The persisted generation is gone. Reconcile it before deleting the
-			// state record. Finalization consults durable cgroup ownership and never
-			// deletes a merely derived legacy/unowned name.
+			// state record. Finalization consumes only durable resource ownership
+			// belonging to this exact process generation.
 			if _, finalizeErr := container.FinalizeStoppedGeneration(s.store, c, -1, time.Now()); finalizeErr != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": finalizeErr.Error()})
 				return
@@ -56,8 +56,8 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 	}
 
 	// Reload after reconciliation so a concurrent restart cannot be deleted by a
-	// stale pre-stop snapshot. A stopped record may retain a durable cgroup token
-	// after a previous cleanup failure; retry it before discarding state.
+	// stale pre-stop snapshot. A stopped record may retain durable cleanup tokens
+	// after an earlier failure; retry them before discarding state.
 	current, err := s.store.Get(c.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -68,7 +68,7 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 		return
 	}
 	if current.Status == state.StatusStopped {
-		if err := container.CleanupStoppedCgroup(s.store, current); err != nil {
+		if err := container.CleanupStoppedRuntimeResources(s.store, current); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -92,7 +92,7 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 	}
 	if c.Status != state.StatusRunning {
 		if c.Status == state.StatusStopped {
-			if err := container.CleanupStoppedCgroup(s.store, c); err != nil {
+			if err := container.CleanupStoppedRuntimeResources(s.store, c); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
@@ -177,8 +177,8 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 	}
 	// Finalize the exact generation captured before signaling. If the parent
 	// already stopped it or a restart has installed a new PID/start-time pair,
-	// the CAS is a no-op. Cgroup cleanup additionally requires the durable
-	// ownership token for that exact generation.
+	// the CAS is a no-op. Durable cleanup additionally requires exact ownership
+	// proof for that generation.
 	if _, err := container.FinalizeStoppedGeneration(s.store, c, exitCode, time.Now()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

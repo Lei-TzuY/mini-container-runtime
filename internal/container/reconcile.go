@@ -18,14 +18,14 @@ type stoppedGenerationCleanup func(st *state.Store, c *state.Container) error
 // A missing process or a reused PID proves that the persisted generation is
 // gone, so the transition to stopped is performed with MarkStoppedIfIdentity.
 // This keeps a concurrent restart safe: a stale observation cannot stop a newer
-// PID/start-time generation. Stopped records also retry durable cgroup cleanup
-// before callers such as rm/prune are allowed to discard state.
+// PID/start-time generation. Stopped records also retry every durable runtime
+// cleanup token before callers such as rm/prune are allowed to discard state.
 //
 // Once a non-nil snapshot is supplied, errors preserve at least that snapshot
 // (or a newer one already read from disk) so callers can report failures without
 // dereferencing a record that disappeared during reconciliation.
 func ReconcileContainerState(st *state.Store, c *state.Container) (*state.Container, error) {
-	return reconcileContainerStateWith(st, c, probeProcessGeneration, CleanupStoppedCgroup, time.Now)
+	return reconcileContainerStateWith(st, c, probeProcessGeneration, CleanupStoppedRuntimeResources, time.Now)
 }
 
 func probeProcessGeneration(pid int, pidStartTime uint64) (bool, error) {

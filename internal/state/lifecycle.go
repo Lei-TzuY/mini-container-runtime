@@ -8,6 +8,8 @@ import (
 
 // MarkRunning atomically transitions an existing container record to running
 // and binds it to a specific host process identity (PID + Linux starttime).
+// A stopped container cannot start while any durable cleanup ownership from its
+// previous generation remains pending.
 func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt time.Time) error {
 	if s == nil {
 		return fmt.Errorf("state store is nil")
@@ -48,6 +50,19 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 				ownership.Name,
 				ownership.PID,
 				ownership.PIDStartTime,
+			)
+		}
+		networkOwnership, ok, err := s.readNetworkOwnershipUnlocked(id)
+		if err != nil {
+			return fmt.Errorf("read pending network ownership before starting container %s: %w", id, err)
+		}
+		if ok {
+			return fmt.Errorf(
+				"container %s has pending network cleanup for %s (%d/%d)",
+				id,
+				networkOwnership.Owner,
+				networkOwnership.PID,
+				networkOwnership.PIDStartTime,
 			)
 		}
 	}

@@ -8,10 +8,10 @@ import (
 
 // DeleteIfNotRunning atomically verifies the current on-disk lifecycle state
 // and removes the container record only when it is not running. The status
-// check, pending-cgroup-ownership check, sidecar cleanup, and file deletion are
-// serialized under the same process and cross-process state locks, closing the
-// reconcile/delete race where another actor could restart a container after a
-// caller observed it stopped but before state deletion.
+// check, pending durable runtime-ownership checks, sidecar cleanup, and file
+// deletion are serialized under the same process and cross-process state locks,
+// closing the reconcile/delete race where another actor could restart a
+// container after a caller observed it stopped but before state deletion.
 func (s *Store) DeleteIfNotRunning(id string) error {
 	if s == nil {
 		return fmt.Errorf("state store is nil")
@@ -51,6 +51,20 @@ func (s *Store) DeleteIfNotRunning(id string) error {
 			ownership.Name,
 			ownership.PID,
 			ownership.PIDStartTime,
+		)
+	}
+
+	networkOwnership, ok, err := s.readNetworkOwnershipUnlocked(id)
+	if err != nil {
+		return fmt.Errorf("read pending network ownership before deleting container %s: %w", id, err)
+	}
+	if ok {
+		return fmt.Errorf(
+			"container %s has pending network cleanup for %s (%d/%d)",
+			id,
+			networkOwnership.Owner,
+			networkOwnership.PID,
+			networkOwnership.PIDStartTime,
 		)
 	}
 
