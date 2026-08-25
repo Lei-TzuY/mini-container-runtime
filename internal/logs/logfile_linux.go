@@ -23,17 +23,17 @@ func openContainerLog(path string, flags int, mode uint32) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create container log directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure container log directory: %w", err)
-	}
 
 	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open container log directory: %w", err)
 	}
 	defer unix.Close(dfd)
+	if err := unix.Fchmod(dfd, 0o700); err != nil {
+		return nil, fmt.Errorf("secure container log directory: %w", err)
+	}
 
-	fd, err := unix.Openat(dfd, filepath.Base(path), flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, mode)
+	fd, err := unix.Openat(dfd, filepath.Base(path), flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, mode)
 	if err != nil {
 		return nil, fmt.Errorf("open container log: %w", err)
 	}
@@ -47,11 +47,9 @@ func openContainerLog(path string, flags int, mode uint32) (*os.File, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("container log is not a regular file")
 	}
-	if flags&unix.O_WRONLY != 0 {
-		if err := unix.Fchmod(fd, 0o600); err != nil {
-			unix.Close(fd)
-			return nil, fmt.Errorf("secure container log permissions: %w", err)
-		}
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("secure container log permissions: %w", err)
 	}
 
 	file := os.NewFile(uintptr(fd), path)
