@@ -180,51 +180,5 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 }
 
 func applyV1(pid int, cfg Config, debug bool) error {
-	writeV1 := func(controller, file, value string) {
-		cgPath := filepath.Join("/sys/fs/cgroup", controller, cfg.Name)
-		if err := os.MkdirAll(cgPath, 0755); err != nil {
-			if debug {
-				fmt.Printf("[cgroup v1] mkdir %s: %v\n", cgPath, err)
-			}
-			return
-		}
-		path := filepath.Join(cgPath, file)
-		if err := os.WriteFile(path, []byte(value), 0644); err != nil {
-			if debug {
-				fmt.Printf("[cgroup v1] write %s: %v\n", path, err)
-			}
-			return
-		}
-		if debug {
-			fmt.Printf("[cgroup v1] %s/%s = %s\n", controller, file, value)
-		}
-	}
-
-	pidStr := strconv.Itoa(pid)
-
-	if cfg.MemoryMax > 0 {
-		writeV1("memory", "memory.limit_in_bytes", strconv.FormatInt(cfg.MemoryMax, 10))
-		writeV1("memory", "memory.memsw.limit_in_bytes", strconv.FormatInt(cfg.MemoryMax, 10))
-		writeV1("memory", "tasks", pidStr)
-	}
-
-	if cfg.CPUWeight > 0 {
-		writeV1("cpu", "cpu.shares", strconv.FormatInt(cfg.CPUWeight, 10))
-		writeV1("cpu", "tasks", pidStr)
-	}
-
-	if cfg.CPUs > 0 {
-		periodUs := int64(100000)
-		quotaUs := int64(cfg.CPUs * float64(periodUs))
-		writeV1("cpu", "cpu.cfs_period_us", strconv.FormatInt(periodUs, 10))
-		writeV1("cpu", "cpu.cfs_quota_us", strconv.FormatInt(quotaUs, 10))
-		writeV1("cpu", "tasks", pidStr)
-	}
-
-	if cfg.PidsMax > 0 {
-		writeV1("pids", "pids.max", strconv.FormatInt(cfg.PidsMax, 10))
-		writeV1("pids", "tasks", pidStr)
-	}
-
-	return nil
+	return applyV1At("/sys/fs/cgroup", pid, cfg, debug)
 }
