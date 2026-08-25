@@ -21,6 +21,8 @@ type runtimeControlError interface {
 	runtimeControlFailure()
 }
 
+func (*runtimeStateError) runtimeControlFailure() {}
+
 type runtimeSetupError struct {
 	err error
 }
