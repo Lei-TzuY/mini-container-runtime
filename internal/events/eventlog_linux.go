@@ -19,9 +19,22 @@ func openEventLogForRead(path string) (*os.File, error) {
 }
 
 func openEventLog(path string, flags int, mode uint32) (*os.File, error) {
+	if isManagedEventLogPath(path) {
+		return openManagedEventLog(path, flags, mode)
+	}
+
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create event log directory: %w", err)
+	if flags&unix.O_CREAT != 0 {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create event log directory: %w", err)
+		}
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect event log directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("event log directory is not a real directory")
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure event log directory: %w", err)
@@ -32,8 +45,30 @@ func openEventLog(path string, flags int, mode uint32) (*os.File, error) {
 		return nil, fmt.Errorf("open event log directory: %w", err)
 	}
 	defer unix.Close(dfd)
+	return openEventAt(dfd, filepath.Base(path), path, flags, mode)
+}
 
-	fd, err := unix.Openat(dfd, filepath.Base(path), flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, mode)
+func openManagedEventLog(path string, flags int, mode uint32) (*os.File, error) {
+	base := eventStateDir()
+	if flags&unix.O_CREAT != 0 {
+		if err := unix.Mkdir(base, 0o700); err != nil && err != unix.EEXIST {
+			return nil, fmt.Errorf("create event state directory: %w", err)
+		}
+	}
+
+	dfd, err := unix.Open(base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open event state directory: %w", err)
+	}
+	defer unix.Close(dfd)
+	if err := unix.Fchmod(dfd, 0o700); err != nil {
+		return nil, fmt.Errorf("secure event state directory: %w", err)
+	}
+	return openEventAt(dfd, filepath.Base(path), path, flags, mode)
+}
+
+func openEventAt(dirFD int, name, displayPath string, flags int, mode uint32) (*os.File, error) {
+	fd, err := unix.Openat(dirFD, name, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, mode)
 	if err != nil {
 		return nil, fmt.Errorf("open event log: %w", err)
 	}
@@ -47,12 +82,17 @@ func openEventLog(path string, flags int, mode uint32) (*os.File, error) {
 		unix.Close(fd)
 		return nil, fmt.Errorf("event log is not a regular file")
 	}
-	if flags&unix.O_WRONLY != 0 {
+	if flags&(unix.O_WRONLY|unix.O_RDWR) != 0 {
 		if err := unix.Fchmod(fd, 0o600); err != nil {
 			unix.Close(fd)
 			return nil, fmt.Errorf("secure event log permissions: %w", err)
 		}
 	}
 
-	return os.NewFile(uintptr(fd), path), nil
+	file := os.NewFile(uintptr(fd), displayPath)
+	if file == nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("wrap event log fd")
+	}
+	return file, nil
 }
