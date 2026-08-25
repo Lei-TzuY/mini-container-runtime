@@ -80,6 +80,23 @@ func CollectStats(st *state.Store) ([]ContainerStat, error) {
 			continue
 		}
 
+		// Re-check after the cgroup read. A process can exit and its numeric PID
+		// (and runtime cgroup name) can be reused between the first identity check
+		// and the snapshot, so only publish data bracketed by the same identity.
+		stillLive, err := container.ProcessIdentityMatches(c.PID, c.PIDStartTime)
+		if err != nil {
+			result.ProcessLive = false
+			result.UnavailableReason = "process_identity_error_after_snapshot"
+			results = append(results, result)
+			continue
+		}
+		if !stillLive {
+			result.ProcessLive = false
+			result.UnavailableReason = "process_identity_changed_during_snapshot"
+			results = append(results, result)
+			continue
+		}
+
 		result.Available = true
 		result.CPUUsageUsec = snapshot.CPUUsageUsec
 		result.MemBytes = snapshot.MemoryUsage
