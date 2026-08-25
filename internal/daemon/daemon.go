@@ -30,6 +30,7 @@ type Server struct {
 	listener   net.Listener
 	httpServer *http.Server
 	store      *state.Store
+	socketInfo os.FileInfo
 }
 
 // Config options for starting daemon server.
@@ -64,19 +65,51 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s %s: %w", network, listenPath, err)
 	}
+
+	var socketInfo os.FileInfo
 	if network == "unix" {
+		unixListener, ok := l.(*net.UnixListener)
+		if !ok {
+			_ = l.Close()
+			return nil, fmt.Errorf("unix listener has unexpected type %T", l)
+		}
+		// Go's UnixListener normally unlinks its path on Close. Disable that
+		// behavior so cleanup can verify the path still refers to the exact
+		// socket inode created here instead of deleting a replacement path.
+		unixListener.SetUnlinkOnClose(false)
+
+		socketInfo, err = os.Lstat(listenPath)
+		if err != nil {
+			_ = l.Close()
+			return nil, fmt.Errorf("stat newly created unix socket %s: %w", listenPath, err)
+		}
+		if socketInfo.Mode()&os.ModeSocket == 0 {
+			_ = l.Close()
+			return nil, fmt.Errorf("new unix listener path %s is not a socket", listenPath)
+		}
 		if err := os.Chmod(listenPath, unixSocketMode); err != nil {
 			_ = l.Close()
-			_ = removeUnixSocketIfOwnedType(listenPath)
+			_ = removeUnixSocketIfSame(listenPath, socketInfo)
 			return nil, fmt.Errorf("chmod unix socket %s: %w", listenPath, err)
 		}
+		currentInfo, err := os.Lstat(listenPath)
+		if err != nil {
+			_ = l.Close()
+			return nil, fmt.Errorf("re-stat unix socket %s: %w", listenPath, err)
+		}
+		if !os.SameFile(socketInfo, currentInfo) {
+			_ = l.Close()
+			return nil, fmt.Errorf("unix socket path %s changed identity during setup", listenPath)
+		}
+		socketInfo = currentInfo
 	}
 
 	srv := &Server{
-		addr:     listenPath,
-		network:  network,
-		listener: l,
-		store:    st,
+		addr:       listenPath,
+		network:    network,
+		listener:   l,
+		store:      st,
+		socketInfo: socketInfo,
 	}
 
 	mux := http.NewServeMux()
@@ -143,7 +176,7 @@ func ensureUnixSocketPathAvailable(path string) error {
 	return fmt.Errorf("refusing to remove non-socket path %s (mode %s)", path, info.Mode())
 }
 
-func removeUnixSocketIfOwnedType(path string) error {
+func removeUnixSocketIfSame(path string, expected os.FileInfo) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -153,6 +186,9 @@ func removeUnixSocketIfOwnedType(path string) error {
 	}
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove non-socket path %s (mode %s)", path, info.Mode())
+	}
+	if expected == nil || !os.SameFile(expected, info) {
+		return fmt.Errorf("refusing to remove unix socket %s because its identity changed", path)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove unix socket %s: %w", path, err)
@@ -179,7 +215,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	var socketErr error
 	if s.network == "unix" {
-		socketErr = removeUnixSocketIfOwnedType(s.addr)
+		socketErr = removeUnixSocketIfSame(s.addr, s.socketInfo)
 	}
 	return errors.Join(shutdownErr, listenerErr, socketErr)
 }
