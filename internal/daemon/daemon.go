@@ -61,7 +61,7 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 	}
 
-	l, err := net.Listen(network, listenPath)
+	l, err := listen(network, listenPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s %s: %w", network, listenPath, err)
 	}
@@ -87,21 +87,11 @@ func NewServer(cfg Config) (*Server, error) {
 			_ = l.Close()
 			return nil, fmt.Errorf("new unix listener path %s is not a socket", listenPath)
 		}
-		if err := os.Chmod(listenPath, unixSocketMode); err != nil {
+		if got := socketInfo.Mode().Perm(); got != unixSocketMode {
 			_ = l.Close()
 			_ = removeUnixSocketIfSame(listenPath, socketInfo)
-			return nil, fmt.Errorf("chmod unix socket %s: %w", listenPath, err)
+			return nil, fmt.Errorf("unix socket %s permissions are %o, want %o", listenPath, got, unixSocketMode)
 		}
-		currentInfo, err := os.Lstat(listenPath)
-		if err != nil {
-			_ = l.Close()
-			return nil, fmt.Errorf("re-stat unix socket %s: %w", listenPath, err)
-		}
-		if !os.SameFile(socketInfo, currentInfo) {
-			_ = l.Close()
-			return nil, fmt.Errorf("unix socket path %s changed identity during setup", listenPath)
-		}
-		socketInfo = currentInfo
 	}
 
 	srv := &Server{
