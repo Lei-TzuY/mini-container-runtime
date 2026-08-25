@@ -107,6 +107,50 @@ func canonicalSubnet(cidr string) (*net.IPNet, string, error) {
 	return network, network.String(), nil
 }
 
+func subnetBroadcast(network *net.IPNet) net.IP {
+	ipv4 := network.IP.To4()
+	if ipv4 == nil {
+		return nil
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 || ones > 30 {
+		return nil
+	}
+	broadcast := make(net.IP, 4)
+	for i := 0; i < 4; i++ {
+		broadcast[i] = ipv4[i] | ^network.Mask[i]
+	}
+	return broadcast
+}
+
+func validatePoolAllocations(networkName string, pool *SubnetPool, network *net.IPNet) error {
+	gateway := append(net.IP(nil), network.IP...)
+	incIP(gateway)
+	broadcast := subnetBroadcast(network)
+	owners := make(map[string]string, len(pool.Allocated))
+
+	for ipStr, owner := range pool.Allocated {
+		ip := net.ParseIP(ipStr)
+		if ip == nil || ip.String() != ipStr {
+			return fmt.Errorf("IPAM pool %q has invalid allocation address %q", networkName, ipStr)
+		}
+		if !network.Contains(ip) {
+			return fmt.Errorf("IPAM pool %q allocation %s is outside subnet %s", networkName, ipStr, network.String())
+		}
+		if ip.Equal(network.IP) || ip.Equal(gateway) || (broadcast != nil && ip.Equal(broadcast)) {
+			return fmt.Errorf("IPAM pool %q allocation %s uses a reserved subnet address", networkName, ipStr)
+		}
+		if err := validateContainerID(owner); err != nil {
+			return fmt.Errorf("IPAM pool %q allocation %s has invalid owner: %w", networkName, ipStr, err)
+		}
+		if previousIP, exists := owners[owner]; exists && previousIP != ipStr {
+			return fmt.Errorf("IPAM pool %q assigns container %q more than one address (%s, %s)", networkName, owner, previousIP, ipStr)
+		}
+		owners[owner] = ipStr
+	}
+	return nil
+}
+
 // AllocateIP allocates a free IP address in subnet CIDR (e.g. 172.20.0.0/24)
 // for containerID. The read-modify-write sequence is performed while holding a
 // cross-process per-network lock.
@@ -142,17 +186,7 @@ func (ipam *IPAM) AllocateIP(networkName, cidr, containerID string) (string, err
 			}
 		}
 
-		var broadcastIP net.IP
-		if ipv4 := netObj.IP.To4(); ipv4 != nil {
-			ones, bits := netObj.Mask.Size()
-			if bits == 32 && ones <= 30 {
-				broadcastIP = make(net.IP, 4)
-				for i := 0; i < 4; i++ {
-					broadcastIP[i] = ipv4[i] | ^netObj.Mask[len(netObj.Mask)-4+i]
-				}
-			}
-		}
-
+		broadcastIP := subnetBroadcast(netObj)
 		currIP := append(net.IP(nil), netObj.IP...)
 		incIP(currIP) // skip network address
 		incIP(currIP) // skip gateway address
@@ -221,15 +255,9 @@ func (ipam *IPAM) loadPool(networkName, expectedCIDR string) (*SubnetPool, error
 	if !exists {
 		return &SubnetPool{Subnet: expectedCIDR, Allocated: make(map[string]string)}, nil
 	}
-
-	_, actualCIDR, err := canonicalSubnet(pool.Subnet)
-	if err != nil {
-		return nil, fmt.Errorf("IPAM pool %q has invalid stored subnet %q: %w", networkName, pool.Subnet, err)
+	if pool.Subnet != expectedCIDR {
+		return nil, fmt.Errorf("IPAM pool %q subnet mismatch: stored %s, requested %s", networkName, pool.Subnet, expectedCIDR)
 	}
-	if actualCIDR != expectedCIDR {
-		return nil, fmt.Errorf("IPAM pool %q subnet mismatch: stored %s, requested %s", networkName, actualCIDR, expectedCIDR)
-	}
-	pool.Subnet = actualCIDR
 	return pool, nil
 }
 
@@ -258,6 +286,14 @@ func (ipam *IPAM) loadExistingPool(networkName string) (*SubnetPool, bool, error
 	}
 	if pool.Allocated == nil {
 		pool.Allocated = make(map[string]string)
+	}
+	network, canonicalCIDR, err := canonicalSubnet(pool.Subnet)
+	if err != nil {
+		return nil, false, fmt.Errorf("IPAM pool %q has invalid stored subnet %q: %w", networkName, pool.Subnet, err)
+	}
+	pool.Subnet = canonicalCIDR
+	if err := validatePoolAllocations(networkName, &pool, network); err != nil {
+		return nil, false, err
 	}
 	return &pool, true, nil
 }
