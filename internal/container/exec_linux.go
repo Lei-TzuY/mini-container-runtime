@@ -21,7 +21,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -275,5 +274,3 @@ func ContainerCwd(pid int) string {
 	}
 	return cwd
 }
-
-var _ = syscall.CLONE_NEWPID
