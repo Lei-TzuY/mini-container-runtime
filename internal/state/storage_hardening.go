@@ -59,11 +59,10 @@ func syncStateDirectory(dir, label string) error {
 }
 
 func removeStateFileDurable(dir, path, label string) error {
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s: %w", label, err)
 	}
+	// Sync even when the file is already absent. This lets a retry repair the
+	// durability of a previous unlink whose directory fsync reported an error.
 	return syncStateDirectory(dir, label)
 }
