@@ -154,16 +154,70 @@ func TestNewServerUnixSocketPermissionsAndCleanup(t *testing.T) {
 	}
 }
 
+func TestUnixListenerCloseDoesNotAutoUnlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket test")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon.sock")
+	srv, err := NewServer(Config{ListenAddr: "unix://" + path, StoreDir: filepath.Join(dir, "state")})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("listener close auto-unlinked socket: %v", err)
+	}
+	if err := removeUnixSocketIfSame(path, srv.socketInfo); err != nil {
+		t.Fatalf("manual safe cleanup: %v", err)
+	}
+}
+
 func TestRemoveUnixSocketRefusesRegularFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "keep-me")
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeUnixSocketIfOwnedType(path); err == nil {
+	if err := removeUnixSocketIfSame(path, nil); err == nil {
 		t.Fatal("expected regular file cleanup refusal")
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
 		t.Fatalf("regular file was removed or changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestRemoveUnixSocketRefusesDifferentIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket test")
+	}
+
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.sock")
+	secondPath := filepath.Join(dir, "second.sock")
+
+	first, err := net.Listen("unix", firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := net.Listen("unix", secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	firstInfo, err := os.Lstat(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeUnixSocketIfSame(secondPath, firstInfo); err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("expected identity mismatch refusal, got %v", err)
+	}
+	if _, err := os.Lstat(secondPath); err != nil {
+		t.Fatalf("different socket was removed: %v", err)
 	}
 }
 
