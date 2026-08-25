@@ -7,11 +7,6 @@
 // cgroups v2 provides a unified process freezer via `/sys/fs/cgroup/<name>/cgroup.freeze`.
 // Writing `1` freezes all processes inside the cgroup atomically in kernel space;
 // writing `0` resumes them.
-//
-// Unlike sending SIGSTOP to individual processes, freezing via cgroups:
-//   • Operates atomically on the whole process sub-tree.
-//   • Does not leak signals or trigger user-space signal handlers.
-//   • Prevents new processes spawned inside from escaping freeze.
 
 package cgroups
 
@@ -34,15 +29,29 @@ func Unfreeze(name string) error {
 
 // IsFrozen checks if the cgroup is currently frozen.
 func IsFrozen(name string) (bool, error) {
+	if err := validateCgroupName(name); err != nil {
+		return false, err
+	}
 	cgPath := filepath.Join(cgroupV2Root, name, "cgroup.freeze")
 	data, err := os.ReadFile(cgPath)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read cgroup.freeze: %w", err)
 	}
-	return strings.TrimSpace(string(data)) == "1", nil
+	raw := strings.TrimSpace(string(data))
+	switch raw {
+	case "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("unexpected cgroup.freeze value %q", raw)
+	}
 }
 
 func setFreeze(name, value string) error {
+	if err := validateCgroupName(name); err != nil {
+		return err
+	}
 	cgPath := filepath.Join(cgroupV2Root, name, "cgroup.freeze")
 	if err := os.WriteFile(cgPath, []byte(value), 0644); err != nil {
 		return fmt.Errorf("write %s to %s: %w", value, cgPath, err)
