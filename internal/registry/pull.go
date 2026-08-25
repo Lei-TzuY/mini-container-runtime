@@ -8,9 +8,9 @@
 // Protocol sequence:
 //   1. Authenticate with auth.docker.io to get Bearer Token.
 //   2. Fetch OCI Manifest (GET /v2/library/<image>/manifests/<tag>).
-//   3. Download layer blobs (GET /v2/library/<image>/blobs/<digest>).
-//   4. Verify descriptor size and digest before extraction.
-//   5. Extract layers sequentially to destDir applying OCI whiteout rules.
+//   3. Download and verify every layer blob.
+//   4. Only after all blobs pass size/digest validation, extract layers sequentially
+//      to destDir applying OCI whiteout rules.
 
 package registry
 
@@ -67,7 +67,8 @@ func PullImage(imageRef, destDir string) error {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Step 2: Fetch Image Manifest
+	// Step 2: Fetch Image Manifest and preflight every descriptor before any
+	// download or extraction can mutate local image state.
 	manifest, err := getManifest(imageName, tag, token)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
@@ -78,7 +79,10 @@ func PullImage(imageRef, destDir string) error {
 
 	fmt.Printf("Image manifest loaded: %d layer(s)\n", len(manifest.Layers))
 
-	// Step 3: Download layer blobs to temp directory
+	// Step 3: Download and verify every layer into an isolated temp directory.
+	// Do not begin extraction until the entire layer set has passed integrity
+	// validation; a later corrupt/missing blob must not leave a partially applied
+	// rootfs behind.
 	tmpDir, err := os.MkdirTemp("", "minicontainer-pull-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -86,7 +90,7 @@ func PullImage(imageRef, destDir string) error {
 	defer os.RemoveAll(tmpDir)
 
 	client := &http.Client{Timeout: 60 * time.Second}
-
+	layerFiles := make([]string, len(manifest.Layers))
 	for i, layer := range manifest.Layers {
 		short, err := shortDigest(layer.Digest)
 		if err != nil {
@@ -101,8 +105,12 @@ func PullImage(imageRef, destDir string) error {
 		if err := downloadBlob(client, imageName, layer.Digest, token, layerFile, layer.Size); err != nil {
 			return fmt.Errorf("layer %d download failed: %w", i+1, err)
 		}
+		layerFiles[i] = layerFile
+	}
 
-		fmt.Printf("  [%d/%d] applying layer to %s …\n", i+1, len(manifest.Layers), destDir)
+	// Step 4: All blobs are locally verified; only now mutate destDir.
+	for i, layerFile := range layerFiles {
+		fmt.Printf("  [%d/%d] applying verified layer to %s …\n", i+1, len(layerFiles), destDir)
 		if err := image.Unpack(layerFile, destDir); err != nil {
 			return fmt.Errorf("apply layer %d: %w", i+1, err)
 		}
