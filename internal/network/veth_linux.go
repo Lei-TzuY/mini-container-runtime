@@ -62,7 +62,7 @@ const (
 	iflaInfoData = 2  // IFLA_INFO_DATA nested: link-type-specific attributes
 	vethInfoPeer = 1  // VETH_INFO_PEER nested: peer ifinfomsg + attributes
 
-	iflaNetNsPid = 28 // IFLA_NET_NS_PID u32: move iface into this PID's netns
+	iflaNetNsPid = 19 // IFLA_NET_NS_PID u32: move iface into this PID's netns
 
 	ifaAddress = 1 // IFA_ADDRESS: interface address (broadcast-capable ifaces)
 	ifaLocal   = 2 // IFA_LOCAL:   local unicast address
