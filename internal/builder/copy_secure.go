@@ -50,7 +50,7 @@ func copySymlink(src, dstRoot, dstLogical string) error {
 	if err := mkdirRootFSPath(dstRoot, path.Dir(dstLogical), 0o755); err != nil {
 		return err
 	}
-	dst, err := resolveRootFSPath(dstRoot, dstLogical)
+	dst, err := resolveRootFSLeaf(dstRoot, dstLogical)
 	if err != nil {
 		return err
 	}
