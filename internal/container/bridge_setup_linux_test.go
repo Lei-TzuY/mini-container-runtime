@@ -23,7 +23,7 @@ func TestBridgeHostVethFailureRollsBackPartialVeth(t *testing.T) {
 			return nil
 		},
 		setupPort: func(int, int, string, string, bool) error { portCalls++; return nil },
-		removePort: func(int, int, string, string, bool) {},
+		removePort: func(int, int, string, string, bool) error { return nil },
 	})
 	if cleanup != nil {
 		t.Fatal("failed setup returned cleanup ownership")
@@ -56,8 +56,9 @@ func TestBridgeHostPortFailureRollsBackInstalledRulesInReverseAndVeth(t *testing
 			}
 			return nil
 		},
-		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) {
+		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
 			order = append(order, fmt.Sprintf("port-%d", hostPort))
+			return nil
 		},
 	})
 	if cleanup != nil {
@@ -82,8 +83,9 @@ func TestBridgeHostSuccessReturnsCleanupForAllResources(t *testing.T) {
 			order = append(order, fmt.Sprintf("port+%d", hostPort))
 			return nil
 		},
-		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) {
+		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
 			order = append(order, fmt.Sprintf("port-%d", hostPort))
+			return nil
 		},
 	})
 	if err != nil {
@@ -108,10 +110,28 @@ func TestBridgeHostPreservesSetupAndRollbackFailures(t *testing.T) {
 		setupVeth:  func(int, string, bool) error { return nil },
 		removeVeth: func(int, bool) error { return cleanupCause },
 		setupPort:  func(int, int, string, string, bool) error { return setupCause },
-		removePort: func(int, int, string, string, bool) {},
+		removePort: func(int, int, string, string, bool) error { return nil },
 	})
 	if !errors.Is(err, setupCause) || !errors.Is(err, cleanupCause) {
 		t.Fatalf("joined setup/rollback errors not preserved: %v", err)
+	}
+}
+
+func TestBridgeHostCleanupPreservesPortAndVethFailures(t *testing.T) {
+	portCause := errors.New("port delete failed")
+	vethCause := errors.New("veth delete failed")
+	cleanup, err := setupBridgeHostWithOps(13, "172.20.0.1/24", "172.20.0.2", []PortMapping{{HostPort: 8080, ContainerPort: 80}}, false, bridgeHostOps{
+		setupVeth:  func(int, string, bool) error { return nil },
+		removeVeth: func(int, bool) error { return vethCause },
+		setupPort:  func(int, int, string, string, bool) error { return nil },
+		removePort: func(int, int, string, string, bool) error { return portCause },
+	})
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	err = cleanup()
+	if !errors.Is(err, portCause) || !errors.Is(err, vethCause) {
+		t.Fatalf("cleanup failures not preserved: %v", err)
 	}
 }
 
