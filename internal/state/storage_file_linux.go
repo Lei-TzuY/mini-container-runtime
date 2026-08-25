@@ -33,10 +33,8 @@ func readRegularStateFile(path, label string) ([]byte, error) {
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		return nil, fmt.Errorf("%s %q must be a regular file", label, path)
 	}
-	if st.Mode&0o777 != 0o600 {
-		if err := unix.Fchmod(fd, 0o600); err != nil {
-			return nil, fmt.Errorf("secure %s permissions: %w", label, err)
-		}
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		return nil, fmt.Errorf("secure %s permissions: %w", label, err)
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {

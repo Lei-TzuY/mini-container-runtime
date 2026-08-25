@@ -28,10 +28,8 @@ func readRegularStateFile(path, label string) ([]byte, error) {
 	if !openedInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s %q must be a regular file", label, path)
 	}
-	if openedInfo.Mode().Perm() != 0o600 {
-		if err := file.Chmod(0o600); err != nil {
-			return nil, fmt.Errorf("secure %s permissions: %w", label, err)
-		}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, fmt.Errorf("secure %s permissions: %w", label, err)
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {

@@ -28,11 +28,9 @@ func openStateLock(path string) (*os.File, error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("state lock %q is not a regular file", path)
 	}
-	if info.Mode().Perm() != 0o600 {
-		if err := file.Chmod(0o600); err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("secure state lock permissions: %w", err)
-		}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("secure state lock permissions: %w", err)
 	}
 	return file, nil
 }
