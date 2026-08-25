@@ -10,7 +10,7 @@ import (
 )
 
 // GeneratePrometheusMetrics generates Prometheus text exposition format metrics
-// from persisted container state plus live cgroup v2 resource snapshots.
+// from persisted container state plus identity-verified live cgroup v2 resource snapshots.
 func GeneratePrometheusMetrics(st *state.Store) (string, error) {
 	if st == nil {
 		return "", fmt.Errorf("state store is nil")
@@ -30,24 +30,43 @@ func GeneratePrometheusMetrics(st *state.Store) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	liveByID := make(map[string]runtimestats.ContainerStat, len(resourceStats))
+	for _, stat := range resourceStats {
+		liveByID[stat.ContainerID] = stat
+	}
 
 	var sb strings.Builder
 
-	sb.WriteString("# HELP minictl_container_info Container general metadata\n")
+	sb.WriteString("# HELP minictl_container_info Container persisted metadata\n")
 	sb.WriteString("# TYPE minictl_container_info gauge\n")
 	for _, c := range ctrs {
 		sb.WriteString(fmt.Sprintf("minictl_container_info{id=%q,hostname=%q,status=%q,health=%q} 1\n",
 			c.ID, c.Hostname, c.Status, c.Health))
 	}
 
-	sb.WriteString("\n# HELP minictl_container_status Container state (1 if running, 0 otherwise)\n")
+	sb.WriteString("\n# HELP minictl_container_status Verified live container state (1 only when persisted running state matches the current process identity)\n")
 	sb.WriteString("# TYPE minictl_container_status gauge\n")
 	for _, c := range ctrs {
 		val := 0
 		if c.Status == state.StatusRunning {
-			val = 1
+			if stat, ok := liveByID[c.ID]; ok && stat.ProcessLive {
+				val = 1
+			}
 		}
 		sb.WriteString(fmt.Sprintf("minictl_container_status{id=%q} %d\n", c.ID, val))
+	}
+
+	sb.WriteString("\n# HELP minictl_container_state_stale Persisted running state without a matching live process identity\n")
+	sb.WriteString("# TYPE minictl_container_state_stale gauge\n")
+	for _, c := range ctrs {
+		val := 0
+		if c.Status == state.StatusRunning {
+			stat, ok := liveByID[c.ID]
+			if !ok || !stat.ProcessLive {
+				val = 1
+			}
+		}
+		sb.WriteString(fmt.Sprintf("minictl_container_state_stale{id=%q} %d\n", c.ID, val))
 	}
 
 	sb.WriteString("\n# HELP minictl_container_exit_code Exit code of the container process\n")
@@ -69,7 +88,7 @@ func appendResourceMetrics(sb *strings.Builder, containerStats []runtimestats.Co
 	sb.WriteString("\n# HELP minictl_container_cpu_usage_seconds_total Cumulative container CPU time from cgroup v2\n")
 	sb.WriteString("# TYPE minictl_container_cpu_usage_seconds_total counter\n")
 	for _, stat := range containerStats {
-		if !stat.Available {
+		if !stat.ProcessLive || !stat.Available {
 			continue
 		}
 		fmt.Fprintf(sb, "minictl_container_cpu_usage_seconds_total{id=%q} %.6f\n",
@@ -79,7 +98,7 @@ func appendResourceMetrics(sb *strings.Builder, containerStats []runtimestats.Co
 	sb.WriteString("\n# HELP minictl_container_memory_usage_bytes Current container memory usage from cgroup v2\n")
 	sb.WriteString("# TYPE minictl_container_memory_usage_bytes gauge\n")
 	for _, stat := range containerStats {
-		if stat.Available {
+		if stat.ProcessLive && stat.Available {
 			fmt.Fprintf(sb, "minictl_container_memory_usage_bytes{id=%q} %d\n", stat.ContainerID, stat.MemBytes)
 		}
 	}
@@ -87,7 +106,7 @@ func appendResourceMetrics(sb *strings.Builder, containerStats []runtimestats.Co
 	sb.WriteString("\n# HELP minictl_container_memory_limit_bytes Container memory limit in bytes; 0 means unlimited\n")
 	sb.WriteString("# TYPE minictl_container_memory_limit_bytes gauge\n")
 	for _, stat := range containerStats {
-		if stat.Available {
+		if stat.ProcessLive && stat.Available {
 			fmt.Fprintf(sb, "minictl_container_memory_limit_bytes{id=%q} %d\n", stat.ContainerID, stat.MemLimitBytes)
 		}
 	}
@@ -95,7 +114,7 @@ func appendResourceMetrics(sb *strings.Builder, containerStats []runtimestats.Co
 	sb.WriteString("\n# HELP minictl_container_pids_current Current number of processes/threads in the container cgroup\n")
 	sb.WriteString("# TYPE minictl_container_pids_current gauge\n")
 	for _, stat := range containerStats {
-		if stat.Available {
+		if stat.ProcessLive && stat.Available {
 			fmt.Fprintf(sb, "minictl_container_pids_current{id=%q} %d\n", stat.ContainerID, stat.PIDs)
 		}
 	}
@@ -105,7 +124,7 @@ func appendResourceMetrics(sb *strings.Builder, containerStats []runtimestats.Co
 	sb.WriteString("# HELP minictl_container_pressure_stall_seconds_total Cumulative PSI stall time in seconds\n")
 	sb.WriteString("# TYPE minictl_container_pressure_stall_seconds_total counter\n")
 	for _, stat := range containerStats {
-		if !stat.Available {
+		if !stat.ProcessLive || !stat.Available {
 			continue
 		}
 		appendPSIMetrics(sb, stat.ContainerID, "cpu", stat.CPUPressure)
