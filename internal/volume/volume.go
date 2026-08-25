@@ -2,6 +2,7 @@ package volume
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,35 +53,158 @@ func ValidateVolumeName(name string) error {
 	return nil
 }
 
+func ensureRealDir(path, label string, create bool, mode os.FileMode) error {
+	if create {
+		if err := os.MkdirAll(path, mode); err != nil {
+			return fmt.Errorf("create %s: %w", label, err)
+		}
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", label, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%s is not a real directory", label)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("secure %s permissions: %w", label, err)
+	}
+	return nil
+}
+
+func volumeRoot(create bool) (string, error) {
+	base := state.DefaultDir()
+	if err := ensureRealDir(base, "state directory", create, 0o700); err != nil {
+		return "", err
+	}
+	root := DefaultVolumeDir()
+	if err := ensureRealDir(root, "volume storage directory", create, 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func ensureVolumeLayout(root, name string, create bool) (volDir, dataPath string, err error) {
+	volDir = filepath.Join(root, name)
+	if create {
+		if mkdirErr := os.Mkdir(volDir, 0o700); mkdirErr != nil && !os.IsExist(mkdirErr) {
+			return "", "", fmt.Errorf("create volume directory: %w", mkdirErr)
+		}
+	}
+	if err := ensureRealDir(volDir, fmt.Sprintf("volume %q directory", name), false, 0o700); err != nil {
+		return "", "", err
+	}
+
+	dataPath = filepath.Join(volDir, "_data")
+	if create {
+		if mkdirErr := os.Mkdir(dataPath, 0o755); mkdirErr != nil && !os.IsExist(mkdirErr) {
+			return "", "", fmt.Errorf("create volume data directory: %w", mkdirErr)
+		}
+	}
+	if err := ensureRealDir(dataPath, fmt.Sprintf("volume %q data directory", name), false, 0o755); err != nil {
+		return "", "", err
+	}
+	return volDir, dataPath, nil
+}
+
+func writeVolumeMetadata(volDir string, vol *Volume) error {
+	data, err := json.MarshalIndent(vol, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal volume metadata: %w", err)
+	}
+	tmp, err := os.CreateTemp(volDir, ".volume-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create volume metadata temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure volume metadata temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write volume metadata: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync volume metadata: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close volume metadata: %w", err)
+	}
+	closed = true
+
+	metaPath := filepath.Join(volDir, "volume.json")
+	if info, err := os.Lstat(metaPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("volume metadata is not a regular file")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect volume metadata: %w", err)
+	}
+	if err := os.Rename(tmpName, metaPath); err != nil {
+		return fmt.Errorf("replace volume metadata: %w", err)
+	}
+	return nil
+}
+
+func readVolume(root, name string) (*Volume, error) {
+	volDir, dataPath, err := ensureVolumeLayout(root, name, false)
+	if err != nil {
+		return nil, err
+	}
+	metaPath := filepath.Join(volDir, "volume.json")
+	info, err := os.Lstat(metaPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect volume metadata: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("volume metadata is not a regular file")
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, fmt.Errorf("read volume metadata: %w", err)
+	}
+	var vol Volume
+	if err := json.Unmarshal(data, &vol); err != nil {
+		return nil, fmt.Errorf("decode volume metadata: %w", err)
+	}
+	if vol.Name != name {
+		return nil, fmt.Errorf("volume metadata name %q does not match directory %q", vol.Name, name)
+	}
+	if filepath.Clean(vol.MountPath) != filepath.Clean(dataPath) {
+		return nil, fmt.Errorf("volume %q metadata mount path %q does not match managed data path %q", name, vol.MountPath, dataPath)
+	}
+	sz, err := imagestore.CalculateDirSize(dataPath)
+	if err != nil {
+		return nil, fmt.Errorf("calculate volume size: %w", err)
+	}
+	vol.Size = sz
+	return &vol, nil
+}
+
 // CreateVolume creates a new named persistent volume.
 func CreateVolume(name string) (*Volume, error) {
 	if err := ValidateVolumeName(name); err != nil {
 		return nil, err
 	}
-
-	volDir := filepath.Join(DefaultVolumeDir(), name)
-	dataPath := filepath.Join(volDir, "_data")
-
-	if err := os.MkdirAll(dataPath, 0755); err != nil {
-		return nil, fmt.Errorf("create volume data directory: %w", err)
-	}
-
-	vol := &Volume{
-		Name:      name,
-		MountPath: dataPath,
-		CreatedAt: time.Now(),
-	}
-
-	metaPath := filepath.Join(volDir, "volume.json")
-	data, err := json.MarshalIndent(vol, "", "  ")
+	root, err := volumeRoot(true)
 	if err != nil {
-		return nil, fmt.Errorf("marshal volume metadata: %w", err)
+		return nil, err
+	}
+	volDir, dataPath, err := ensureVolumeLayout(root, name, true)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := os.WriteFile(metaPath, data, 0644); err != nil {
-		return nil, fmt.Errorf("write volume metadata: %w", err)
+	vol := &Volume{Name: name, MountPath: dataPath, CreatedAt: time.Now()}
+	if err := writeVolumeMetadata(volDir, vol); err != nil {
+		return nil, err
 	}
-
 	return vol, nil
 }
 
@@ -89,45 +213,45 @@ func GetVolume(name string) (*Volume, error) {
 	if err := ValidateVolumeName(name); err != nil {
 		return nil, err
 	}
-
-	volDir := filepath.Join(DefaultVolumeDir(), name)
-	metaPath := filepath.Join(volDir, "volume.json")
-
-	data, err := os.ReadFile(metaPath)
+	root, err := volumeRoot(false)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("volume %q not found", name)
 		}
 		return nil, err
 	}
-
-	var vol Volume
-	if err := json.Unmarshal(data, &vol); err != nil {
+	vol, err := readVolume(root, name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("volume %q not found", name)
+		}
 		return nil, err
 	}
-
-	sz, _ := imagestore.CalculateDirSize(vol.MountPath)
-	vol.Size = sz
-	return &vol, nil
+	return vol, nil
 }
 
 // ListVolumes lists all registered volumes.
 func ListVolumes() ([]*Volume, error) {
-	dir := DefaultVolumeDir()
-	entries, err := os.ReadDir(dir)
+	root, err := volumeRoot(false)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return []*Volume{}, nil
 		}
 		return nil, err
 	}
-
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
 	var out []*Volume
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		if vol, err := GetVolume(entry.Name()); err == nil {
+		if err := ValidateVolumeName(entry.Name()); err != nil {
+			continue
+		}
+		if vol, err := readVolume(root, entry.Name()); err == nil {
 			out = append(out, vol)
 		}
 	}
@@ -139,12 +263,28 @@ func RemoveVolume(name string) error {
 	if err := ValidateVolumeName(name); err != nil {
 		return err
 	}
-
-	volDir := filepath.Join(DefaultVolumeDir(), name)
-	if _, err := os.Stat(volDir); os.IsNotExist(err) {
-		return fmt.Errorf("volume %q not found", name)
+	root, err := volumeRoot(false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("volume %q not found", name)
+		}
+		return err
 	}
-	return os.RemoveAll(volDir)
+	volDir, _, err := ensureVolumeLayout(root, name, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("volume %q not found", name)
+		}
+		return err
+	}
+	// Require valid metadata before recursively deleting any managed directory.
+	if _, err := readVolume(root, name); err != nil {
+		return fmt.Errorf("validate volume before removal: %w", err)
+	}
+	if err := os.RemoveAll(volDir); err != nil {
+		return fmt.Errorf("remove volume %q: %w", name, err)
+	}
+	return nil
 }
 
 // PruneVolumes removes all volumes.
