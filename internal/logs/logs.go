@@ -13,6 +13,7 @@ package logs
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +64,7 @@ func PrintLogs(containerID string, tail int, follow bool, out io.Writer) error {
 	path := LogFilePath(containerID)
 	f, err := openContainerLogForRead(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("no logs found for container %s", shortContainerID(containerID))
 		}
 		return fmt.Errorf("open log file: %w", err)
