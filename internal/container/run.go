@@ -421,14 +421,8 @@ func ContainerInit(cfg Config) error {
 		return fmt.Errorf("rootfs isolation: %w", err)
 	}
 
-	if cfg.ReadOnly {
-		if err := syscall.Mount("", "/", "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
-			if cfg.Debug {
-				fmt.Printf("[init] remount root read-only: %v (ignored)\n", err)
-			}
-		} else if cfg.Debug {
-			fmt.Println("[init] container rootfs remounted read-only")
-		}
+	if err := enforceReadOnlyRoot(cfg.ReadOnly, cfg.Debug); err != nil {
+		return err
 	}
 
 	if cfg.WorkDir != "" && cfg.WorkDir != "/" {
