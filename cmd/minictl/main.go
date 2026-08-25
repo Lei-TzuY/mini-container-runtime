@@ -536,7 +536,7 @@ func cmdCompose(args []string) {
 func cmdEvents(args []string) {
 	fs := flag.NewFlagSet("events", flag.ExitOnError)
 	follow := fs.Bool("f", false, "follow real-time event log")
-	_ = fs.Bool("follow", false, "follow real-time event log")
+	_ = fs.Bool("follow", false, "follow log output")
 	fs.SetOutput(os.Stderr)
 	_ = fs.Parse(args)
 
@@ -818,64 +818,7 @@ func cmdUnpause(args []string) {
 }
 
 func cmdStop(args []string) {
-	fs := flag.NewFlagSet("stop", flag.ExitOnError)
-	timeoutSec := fs.Int("t", 10, "seconds to wait for stop before killing")
-	_ = fs.Int("timeout", 10, "seconds to wait for stop before killing")
-	fs.SetOutput(os.Stderr)
-	_ = fs.Parse(args)
-
-	rest := fs.Args()
-	if len(rest) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl stop [-t timeout] <id>")
-		os.Exit(1)
-	}
-
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	rec, err := store.Resolve(rest[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if rec.Status != state.StatusRunning {
-		fmt.Fprintf(os.Stderr, "container %s is already %s\n", rec.ID[:8], rec.Status)
-		os.Exit(1)
-	}
-
-	proc, err := os.FindProcess(rec.PID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "find process %d: %v\n", rec.PID, err)
-		os.Exit(1)
-	}
-
-	_ = proc.Signal(os.Interrupt)
-
-	deadline := time.Now().Add(time.Duration(*timeoutSec) * time.Second)
-	exited := false
-	for time.Now().Before(deadline) {
-		if !container.IsRunning(rec.PID) {
-			exited = true
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	if !exited {
-		_ = proc.Kill()
-	}
-
-	now := time.Now()
-	rec.Status = state.StatusStopped
-	rec.FinishedAt = &now
-	rec.ExitCode = 0
-	_ = store.Save(rec)
-	_ = events.Publish(events.EventStop, rec.ID, rec.RootFS, "stopped container")
-	fmt.Printf("%s\n", rec.ID[:8])
+	cmdStopSafe(args)
 }
 
 func cmdPs(args []string) {
@@ -937,60 +880,7 @@ func cmdPs(args []string) {
 }
 
 func cmdKill(args []string) {
-	fs := flag.NewFlagSet("kill", flag.ExitOnError)
-	sigStr := fs.String("s", "SIGKILL", "signal to send to container")
-	_ = fs.String("signal", "SIGKILL", "signal to send to container")
-	fs.SetOutput(os.Stderr)
-	_ = fs.Parse(args)
-
-	rest := fs.Args()
-	if len(rest) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl kill [-s SIGNAL] <id>")
-		os.Exit(1)
-	}
-
-	sig, err := container.ParseSignal(*sigStr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid signal: %v\n", err)
-		os.Exit(1)
-	}
-
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	rec, err := store.Resolve(rest[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if rec.Status != state.StatusRunning {
-		fmt.Fprintf(os.Stderr, "container %s is already %s\n", rec.ID[:8], rec.Status)
-		os.Exit(1)
-	}
-
-	proc, err := os.FindProcess(rec.PID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "find process %d: %v\n", rec.PID, err)
-		os.Exit(1)
-	}
-	if err := proc.Signal(sig); err != nil {
-		fmt.Fprintf(os.Stderr, "signal %v to %d: %v\n", sig, rec.PID, err)
-		os.Exit(1)
-	}
-
-	now := time.Now()
-	rec.Status = state.StatusStopped
-	rec.FinishedAt = &now
-	rec.ExitCode = -1
-	if err := store.Save(rec); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: update state: %v\n", err)
-	}
-	_ = events.Publish(events.EventDie, rec.ID, rec.RootFS, fmt.Sprintf("signaled container (%v)", sig))
-	fmt.Printf("%s\n", rec.ID[:8])
+	cmdKillSafe(args)
 }
 
 func cmdRm(args []string) {
