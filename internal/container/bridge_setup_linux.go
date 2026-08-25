@@ -16,23 +16,35 @@ type bridgeHostOps struct {
 	removePort func(hostPort, containerPort int, containerIP, protocol string, debug bool) error
 }
 
-func defaultBridgeHostOps() bridgeHostOps {
+func defaultBridgeHostOps(portOwner string) bridgeHostOps {
 	return bridgeHostOps{
 		setupVeth:  network.SetupVethHostOwned,
 		removeVeth: network.RemoveVethHost,
-		setupPort:  network.SetupPortForwarding,
-		removePort: network.RemovePortForwarding,
+		setupPort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+			return network.SetupPortForwardingOwned(portOwner, hostPort, containerPort, containerIP, protocol, debug)
+		},
+		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+			return network.RemovePortForwardingOwned(portOwner, hostPort, containerPort, containerIP, protocol, debug)
+		},
 	}
 }
 
 // setupBridgeHost establishes all requested host-side bridge networking before
 // the container child is released from its sync pipe. Each setup operation owns
 // rollback for side effects created before that operation reports success. Once
-// veth setup succeeds, this layer owns the veth and every successfully installed
-// port rule. The returned cleanup function owns those resources after successful
-// setup and should be called when the container exits.
+// veth setup succeeds, this layer owns the veth and every successfully installed,
+// generation-tagged port rule. The returned cleanup function owns those resources
+// after successful setup and should be called when the container exits.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
-	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps())
+	portOwner := ""
+	if len(mappings) > 0 {
+		var err error
+		portOwner, err = network.NewPortForwardingOwner()
+		if err != nil {
+			return nil, fmt.Errorf("create port-forwarding ownership marker: %w", err)
+		}
+	}
+	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(portOwner))
 }
 
 func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool, ops bridgeHostOps) (func() error, error) {
