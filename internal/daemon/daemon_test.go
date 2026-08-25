@@ -19,10 +19,11 @@ func TestDaemonRESTAPI(t *testing.T) {
 		t.Fatalf("Open state error: %v", err)
 	}
 
-	// Create dummy container record
+	// Generic API smoke test uses a stopped record. Live-process lifecycle
+	// semantics are covered separately with real pidfd-backed process tests.
 	c := &state.Container{
 		ID:        "ctr-test-123",
-		Status:    state.StatusRunning,
+		Status:    state.StatusStopped,
 		RootFS:    "/tmp/rootfs",
 		Command:   []string{"/bin/sh"},
 		CreatedAt: time.Now(),
@@ -31,7 +32,6 @@ func TestDaemonRESTAPI(t *testing.T) {
 		t.Fatalf("Save dummy container error: %v", err)
 	}
 
-	// Create dummy image record
 	img := &state.Image{
 		ID:         "img-test-456",
 		Repository: "test-repo",
@@ -80,6 +80,7 @@ func TestDaemonRESTAPI(t *testing.T) {
 		t.Fatalf("ListImages failed: %v", err)
 	}
 
+	// Stop is idempotent for an already-stopped container.
 	if err := cli.StopContainer("ctr-test-123"); err != nil {
 		t.Fatalf("StopContainer error: %v", err)
 	}
