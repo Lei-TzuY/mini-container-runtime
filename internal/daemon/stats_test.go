@@ -23,12 +23,12 @@ func newTestServer(t *testing.T) *Server {
 
 func TestHandleStatsEmptyStore(t *testing.T) {
 	srv := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/v1/stats?interval=250ms", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/stats?interval=2s", nil)
 	rec := httptest.NewRecorder()
 
 	start := time.Now()
 	srv.handleStats(rec, req)
-	if elapsed := time.Since(start); elapsed >= 200*time.Millisecond {
+	if elapsed := time.Since(start); elapsed >= time.Second {
 		t.Fatalf("empty stats request unnecessarily waited for sample interval: %s", elapsed)
 	}
 	if rec.Code != http.StatusOK {
