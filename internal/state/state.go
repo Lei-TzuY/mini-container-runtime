@@ -54,6 +54,11 @@ type Container struct {
 	// PID is the host PID of the container's init process.
 	PID int `json:"pid"`
 
+	// PIDStartTime is Linux /proc/<pid>/stat field 22 (clock ticks since boot).
+	// Pairing it with PID lets lifecycle operations detect PID reuse before
+	// signaling what may now be an unrelated host process.
+	PIDStartTime uint64 `json:"pid_start_time,omitempty"`
+
 	// Status is the current lifecycle state.
 	Status Status `json:"status"`
 
