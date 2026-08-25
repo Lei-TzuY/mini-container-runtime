@@ -233,15 +233,22 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 		containerIP = "172.20.0.2"
 	)
 
+	var bridgeCleanup func() error
 	if cfg.BridgeNetwork {
-		if err := network.SetupVethHost(childPID, hostCIDR, cfg.Debug); err != nil {
-			fmt.Fprintf(os.Stderr, "[parent] warning: veth setup failed: %v\n", err)
-		}
-		for _, p := range cfg.PortMappings {
-			if err := network.SetupPortForwarding(p.HostPort, p.ContainerPort, containerIP, p.Protocol, cfg.Debug); err != nil {
-				fmt.Fprintf(os.Stderr, "[parent] warning: port mapping %d:%d failed: %v\n",
-					p.HostPort, p.ContainerPort, err)
+		bridgeCleanup, err = setupBridgeHost(childPID, hostCIDR, containerIP, cfg.PortMappings, cfg.Debug)
+		if err != nil {
+			if cgroupApplied {
+				cgroups.Remove(cgCfg.Name, cfg.Debug)
 			}
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				fmt.Errorf("configure required bridge network: %w", err),
+			)
 		}
 	}
 
@@ -249,15 +256,17 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 
 	waitErr := cmd.Wait()
 
-	if cfg.BridgeNetwork {
-		for _, p := range cfg.PortMappings {
-			network.RemovePortForwarding(p.HostPort, p.ContainerPort, containerIP, p.Protocol, cfg.Debug)
+	var bridgeCleanupErr error
+	if bridgeCleanup != nil {
+		if err := bridgeCleanup(); err != nil {
+			bridgeCleanupErr = &runtimeSetupError{err: fmt.Errorf("cleanup bridge network: %w", err)}
 		}
 	}
 	if cgroupApplied {
 		cgroups.Remove(cgCfg.Name, cfg.Debug)
 	}
 
+	var lifecycleErr error
 	if lifecycleStore != nil {
 		finishedAt := time.Now()
 		_, stateErr := lifecycleStore.MarkStoppedIfIdentity(
@@ -268,19 +277,26 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 			finishedAt,
 		)
 		if stateErr != nil {
-			lifecycleErr := &runtimeStateError{err: fmt.Errorf("persist stopped state for container %s: %w", cfg.ContainerID, stateErr)}
-			if waitErr != nil {
-				return errors.Join(waitErr, lifecycleErr)
-			}
-			return lifecycleErr
+			lifecycleErr = &runtimeStateError{err: fmt.Errorf("persist stopped state for container %s: %w", cfg.ContainerID, stateErr)}
 		}
 	}
 
+	var resultErr error
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			return exitErr
+			resultErr = exitErr
+		} else {
+			resultErr = fmt.Errorf("container exited with error: %w", waitErr)
 		}
-		return fmt.Errorf("container exited with error: %w", waitErr)
+	}
+	if lifecycleErr != nil {
+		resultErr = errors.Join(resultErr, lifecycleErr)
+	}
+	if bridgeCleanupErr != nil {
+		resultErr = errors.Join(resultErr, bridgeCleanupErr)
+	}
+	if resultErr != nil {
+		return resultErr
 	}
 
 	if cfg.Debug {
@@ -399,16 +415,12 @@ func ContainerInit(cfg Config) error {
 		}
 	}
 
-	if cfg.BridgeNetwork {
-		const (
-			containerCIDR = "172.20.0.2/24"
-			gateway       = "172.20.0.1"
-		)
-		if err := network.SetupVethContainer(containerCIDR, gateway, cfg.Debug); err != nil {
-			if cfg.Debug {
-				fmt.Printf("[init] veth setup: %v (ignored)\n", err)
-			}
-		}
+	const (
+		containerCIDR = "172.20.0.2/24"
+		gateway       = "172.20.0.1"
+	)
+	if err := setupBridgeContainer(cfg.BridgeNetwork, containerCIDR, gateway, cfg.Debug); err != nil {
+		return err
 	}
 
 	for _, v := range cfg.Volumes {

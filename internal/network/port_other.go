@@ -11,4 +11,6 @@ func SetupPortForwarding(hostPort, containerPort int, containerIP, protocol stri
 	return fmt.Errorf("port forwarding requires Linux and iptables")
 }
 
-func RemovePortForwarding(hostPort, containerPort int, containerIP, protocol string, debug bool) {}
+func RemovePortForwarding(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+	return fmt.Errorf("port forwarding requires Linux and iptables")
+}
