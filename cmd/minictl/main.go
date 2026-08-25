@@ -328,7 +328,7 @@ func cmdRun(args []string) {
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
-		os.Exit(1)
+		os.Exit(runCommandExitCode(runErr))
 	}
 }
 
