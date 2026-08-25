@@ -12,6 +12,7 @@ type ContainerStat struct {
 	ContainerID    string            `json:"container_id"`
 	PID            int               `json:"pid"`
 	Status         string            `json:"status"`
+	Available      bool              `json:"available"`
 	CPUPercent     float64           `json:"cpu_percent"`
 	CPUUsageUsec   uint64            `json:"cpu_usage_usec"`
 	MemBytes       int64             `json:"mem_bytes"`
@@ -49,6 +50,7 @@ func CollectStats(st *state.Store) ([]ContainerStat, error) {
 
 		cgName := fmt.Sprintf("minicontainer-%d", c.PID)
 		if snapshot, err := cgroups.ReadStats(cgName); err == nil {
+			result.Available = true
 			result.CPUUsageUsec = snapshot.CPUUsageUsec
 			result.MemBytes = snapshot.MemoryUsage
 			result.MemLimitBytes = snapshot.MemoryLimit
