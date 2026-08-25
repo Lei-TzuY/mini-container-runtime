@@ -238,7 +238,7 @@ func TestConcurrentAtomicSaves(t *testing.T) {
 	for g := 0; g < goroutines; g++ {
 		go func(gid int) {
 			// Each goroutine creates its own store instance pointing to the same dir
-			// to simulate independent concurrent processes writing state.
+			// to simulate independent concurrent processes writing distinct records.
 			localStore, err := Open(dir)
 			if err != nil {
 				errCh <- err
@@ -246,14 +246,15 @@ func TestConcurrentAtomicSaves(t *testing.T) {
 			}
 
 			ctrID := fmt.Sprintf("ctr-concurrent-%d", gid)
+			c := &Container{ID: ctrID, Status: StatusRunning}
 			for i := 0; i < iterations; i++ {
-				c := &Container{
-					ID:     ctrID,
-					PID:    gid*1000 + i,
-					Status: StatusRunning,
-				}
+				c.PID = gid*1000 + i
 				if err := localStore.Save(c); err != nil {
 					errCh <- fmt.Errorf("Save error on gid %d iter %d: %w", gid, i, err)
+					return
+				}
+				if c.Revision != uint64(i+1) {
+					errCh <- fmt.Errorf("revision on gid %d iter %d = %d, want %d", gid, i, c.Revision, i+1)
 					return
 				}
 				loaded, err := localStore.Get(ctrID)
