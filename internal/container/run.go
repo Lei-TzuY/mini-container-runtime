@@ -425,10 +425,8 @@ func ContainerInit(cfg Config) error {
 		return err
 	}
 
-	if cfg.WorkDir != "" && cfg.WorkDir != "/" {
-		if err := os.MkdirAll(cfg.WorkDir, 0755); err == nil {
-			_ = syscall.Chdir(cfg.WorkDir)
-		}
+	if err := enterWorkDir(cfg.WorkDir); err != nil {
+		return err
 	}
 
 	// Drop Linux Capabilities if specified
