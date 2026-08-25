@@ -21,19 +21,25 @@ func openContainerLogForRotate(path string) (*os.File, error) {
 }
 
 func openContainerLogPortable(path string, flags int, mode os.FileMode, createDir bool) (*os.File, error) {
-	dir := filepath.Dir(path)
-	if createDir {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create container log directory: %w", err)
+	if isManagedLogPath(path) {
+		if err := ensureManagedLogStoragePortable(createDir); err != nil {
+			return nil, err
 		}
-	}
-	if info, err := os.Lstat(dir); err != nil {
-		return nil, fmt.Errorf("inspect container log directory: %w", err)
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("container log directory is not a real directory")
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure container log directory: %w", err)
+	} else {
+		dir := filepath.Dir(path)
+		if createDir {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, fmt.Errorf("create container log directory: %w", err)
+			}
+		}
+		if info, err := os.Lstat(dir); err != nil {
+			return nil, fmt.Errorf("inspect container log directory: %w", err)
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("container log directory is not a real directory")
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("secure container log directory: %w", err)
+		}
 	}
 
 	if info, err := os.Lstat(path); err == nil {
@@ -62,4 +68,41 @@ func openContainerLogPortable(path string, flags int, mode os.FileMode, createDi
 		return nil, fmt.Errorf("secure container log permissions: %w", err)
 	}
 	return f, nil
+}
+
+func ensureManagedLogStoragePortable(create bool) error {
+	base := managedLogStateDir()
+	if create {
+		if err := os.Mkdir(base, 0o700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create log state directory: %w", err)
+		}
+	}
+	baseInfo, err := os.Lstat(base)
+	if err != nil {
+		return fmt.Errorf("inspect log state directory: %w", err)
+	}
+	if baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return fmt.Errorf("log state directory is not a real directory")
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		return fmt.Errorf("secure log state directory: %w", err)
+	}
+
+	dir := managedLogDir()
+	if create {
+		if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create container log directory: %w", err)
+		}
+	}
+	dirInfo, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect container log directory: %w", err)
+	}
+	if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return fmt.Errorf("container log directory is not a real directory")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("secure container log directory: %w", err)
+	}
+	return nil
 }
