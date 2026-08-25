@@ -112,13 +112,16 @@ type Image struct {
 }
 
 // Store handles process-local serialization plus a Linux cross-process lock for
-// mutations under one state directory.
+// mutations under one state directory. On Linux, the state, container, and
+// image directories are pinned for the Store lifetime so later pathname
+// replacement cannot redirect an already-open Store to another filesystem tree.
 type Store struct {
-	mu       sync.Mutex
-	dir      string
-	ctrDir   string
-	imgDir   string
-	lockFile *os.File
+	mu          sync.Mutex
+	dir         string
+	ctrDir      string
+	imgDir      string
+	lockFile    *os.File
+	storagePins []*os.File
 }
 
 func Open(dir string) (*Store, error) {
@@ -134,19 +137,28 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 
-	lockFile, err := openStateLock(filepath.Join(dir, ".state.lock"))
+	pinned, err := pinStateStorage(dir)
 	if err != nil {
+		return nil, err
+	}
+	lockFile, err := openStateLock(filepath.Join(pinned.rootDir, ".state.lock"))
+	if err != nil {
+		closePinnedStateStorage(pinned)
 		return nil, err
 	}
 
 	return &Store{
-		dir:      dir,
-		ctrDir:   ctrDir,
-		imgDir:   imgDir,
-		lockFile: lockFile,
+		dir:         dir,
+		ctrDir:      pinned.ctrDir,
+		imgDir:      pinned.imgDir,
+		lockFile:    lockFile,
+		storagePins: pinned.files,
 	}, nil
 }
 
+// Dir returns the durable configured state-root pathname. Call StoragePath for
+// filesystem mutations that must fail if that pathname no longer references
+// the directory generation pinned by Open.
 func (s *Store) Dir() string {
 	return s.dir
 }
