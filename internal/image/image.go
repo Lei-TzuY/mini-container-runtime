@@ -111,12 +111,17 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
 
 	case tar.TypeReg, tar.TypeRegA:
-		if fi, err := os.Lstat(target); err == nil {
-			if fi.Mode()&os.ModeSymlink != 0 || fi.IsDir() {
-				if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("remove existing node before write %s: %w", target, err)
-				}
+		// Never truncate an existing inode in place. The extraction root may be
+		// pre-populated, and a regular-looking leaf can be a hard link to a file
+		// outside destDir. Unlinking the pathname first preserves the external
+		// inode, while writeRegular's O_EXCL create also fails closed if another
+		// actor races a symlink or hardlink back into the leaf before creation.
+		if _, err := os.Lstat(target); err == nil {
+			if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing node before write %s: %w", target, err)
 			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect existing node before write %s: %w", target, err)
 		}
 		return writeRegular(target, hdr, r)
 
@@ -212,14 +217,14 @@ func isSubDir(base, target string) bool {
 	return true
 }
 
-// writeRegular creates or truncates target and copies the tar entry into it.
+// writeRegular creates target exclusively and copies the tar entry into it.
+// The caller must first remove any existing leaf. O_EXCL is a security boundary:
+// if a symlink or hardlink is raced back into place, creation fails instead of
+// following/truncating an inode that may live outside the extraction root.
 func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
-	if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
-		return fmt.Errorf("refusing to write regular file to symlink target %s", target)
-	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, hdr.FileInfo().Mode())
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, hdr.FileInfo().Mode())
 	if err != nil {
-		return fmt.Errorf("create %s: %w", target, err)
+		return fmt.Errorf("create %s exclusively: %w", target, err)
 	}
 	if _, err := io.Copy(out, r); err != nil {
 		out.Close()
