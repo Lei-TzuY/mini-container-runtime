@@ -3,8 +3,8 @@ package builder
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -60,6 +60,9 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("create build output dir: %w", err)
 	}
+	if _, err := canonicalBuildRoot(opts.OutputDir); err != nil {
+		return nil, fmt.Errorf("validate build output dir: %w", err)
+	}
 
 	repo, tag := imagestore.ParseRepositoryTag(opts.Tag)
 	img := &state.Image{
@@ -98,16 +101,16 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 			log(fmt.Sprintf("Step: FROM %s", args))
 			if opts.Store != nil {
 				if baseImg, err := opts.Store.GetImage(args); err == nil && baseImg.RootFS != "" {
-					if err := copyDir(baseImg.RootFS, opts.OutputDir); err != nil {
+					if err := copyTree(baseImg.RootFS, opts.OutputDir, "/", true); err != nil {
 						return nil, fmt.Errorf("copy base image rootfs: %w", err)
 					}
 					log(fmt.Sprintf("  Loaded base rootfs from image %s", args))
 					continue
 				}
 			}
-			// If base image is directory path
-			if _, err := os.Stat(args); err == nil {
-				if err := copyDir(args, opts.OutputDir); err != nil {
+			// If base image is directory path.
+			if info, err := os.Stat(args); err == nil && info.IsDir() {
+				if err := copyTree(args, opts.OutputDir, "/", true); err != nil {
 					return nil, fmt.Errorf("copy base directory %s: %w", args, err)
 				}
 				log(fmt.Sprintf("  Loaded base rootfs from directory %s", args))
@@ -117,10 +120,15 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 
 		case "WORKDIR":
 			log(fmt.Sprintf("Step: WORKDIR %s", args))
-			workDir = args
-			img.WorkDir = workDir
-			targetPath := filepath.Join(opts.OutputDir, strings.TrimPrefix(workDir, "/"))
-			_ = os.MkdirAll(targetPath, 0755)
+			logical, err := normalizeContainerPath(workDir, args)
+			if err != nil {
+				return nil, fmt.Errorf("WORKDIR %q: %w", args, err)
+			}
+			workDir = logical
+			img.WorkDir = logical
+			if err := mkdirRootFSPath(opts.OutputDir, logical, 0755); err != nil {
+				return nil, fmt.Errorf("create WORKDIR %q: %w", logical, err)
+			}
 
 		case "ENV":
 			log(fmt.Sprintf("Step: ENV %s", args))
@@ -132,13 +140,11 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 
 		case "CMD":
 			log(fmt.Sprintf("Step: CMD %s", args))
-			cmdParts := parseArrayOrString(args)
-			img.Cmd = cmdParts
+			img.Cmd = parseArrayOrString(args)
 
 		case "ENTRYPOINT":
 			log(fmt.Sprintf("Step: ENTRYPOINT %s", args))
-			cmdParts := parseArrayOrString(args)
-			img.Cmd = cmdParts
+			img.Cmd = parseArrayOrString(args)
 
 		case "COPY":
 			log(fmt.Sprintf("Step: COPY %s", args))
@@ -149,44 +155,62 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 			src := copyParts[0]
 			dst := copyParts[1]
 
-			srcPath := filepath.Join(opts.ContextDir, src)
-			dstPath := dst
-			if !filepath.IsAbs(dstPath) {
-				dstPath = filepath.Join(opts.OutputDir, strings.TrimPrefix(workDir, "/"), dstPath)
-			} else {
-				dstPath = filepath.Join(opts.OutputDir, strings.TrimPrefix(dstPath, "/"))
+			srcPath, err := resolveBuildContextSource(opts.ContextDir, src)
+			if err != nil {
+				return nil, err
+			}
+			srcInfo, err := os.Lstat(srcPath)
+			if err != nil {
+				return nil, fmt.Errorf("inspect COPY source %q: %w", src, err)
+			}
+			dstLogical, err := normalizeContainerPath(workDir, dst)
+			if err != nil {
+				return nil, fmt.Errorf("COPY destination %q: %w", dst, err)
+			}
+			dstIsDir, err := destinationIsDirectory(opts.OutputDir, dstLogical)
+			if err != nil {
+				return nil, fmt.Errorf("inspect COPY destination %q: %w", dst, err)
+			}
+			if dstIsDir || dst == "." || strings.HasSuffix(dst, "/") || strings.HasSuffix(dst, "\\") {
+				if err := mkdirRootFSPath(opts.OutputDir, dstLogical, 0755); err != nil {
+					return nil, fmt.Errorf("create COPY destination %q: %w", dst, err)
+				}
+				dstLogical = path.Join(dstLogical, filepath.Base(srcPath))
 			}
 
-			if fi, err := os.Stat(dstPath); err == nil && fi.IsDir() {
-				dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
-			} else if dst == "." || strings.HasSuffix(dst, "/") || strings.HasSuffix(dst, "\\") {
-				_ = os.MkdirAll(dstPath, 0755)
-				dstPath = filepath.Join(dstPath, filepath.Base(srcPath))
-			}
-
-			if fi, err := os.Stat(srcPath); err == nil && fi.IsDir() {
-				if err := copyDir(srcPath, dstPath); err != nil {
-					return nil, fmt.Errorf("COPY dir %s to %s failed: %w", srcPath, dstPath, err)
+			if srcInfo.IsDir() {
+				if err := copyTree(srcPath, opts.OutputDir, dstLogical, false); err != nil {
+					return nil, fmt.Errorf("COPY dir %s to %s failed: %w", src, dst, err)
 				}
 			} else {
-				_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
-				if err := copyFile(srcPath, dstPath); err != nil {
-					return nil, fmt.Errorf("COPY file %s to %s failed: %w", srcPath, dstPath, err)
+				if err := copyRegularFile(srcPath, opts.OutputDir, dstLogical, srcInfo.Mode()); err != nil {
+					return nil, fmt.Errorf("COPY file %s to %s failed: %w", src, dst, err)
 				}
 			}
 			log(fmt.Sprintf("  Copied %s -> %s", src, dst))
 
 		case "RUN":
 			log(fmt.Sprintf("Step: RUN %s", args))
-			// Execute simple shell inline script if file creation / echo
+			// Execute simple shell inline script if file creation / echo.
 			if strings.HasPrefix(args, "echo ") && strings.Contains(args, ">") {
 				echoParts := strings.SplitN(args, ">", 2)
 				val := strings.TrimSpace(strings.TrimPrefix(echoParts[0], "echo"))
 				val = strings.Trim(val, "\"'")
 				outFile := strings.TrimSpace(echoParts[1])
-				targetFile := filepath.Join(opts.OutputDir, strings.TrimPrefix(outFile, "/"))
-				_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-				_ = os.WriteFile(targetFile, []byte(val+"\n"), 0644)
+				targetLogical, err := normalizeContainerPath(workDir, outFile)
+				if err != nil {
+					return nil, fmt.Errorf("RUN output %q: %w", outFile, err)
+				}
+				if err := mkdirRootFSPath(opts.OutputDir, path.Dir(targetLogical), 0755); err != nil {
+					return nil, fmt.Errorf("create RUN output parent: %w", err)
+				}
+				targetFile, err := resolveRootFSPath(opts.OutputDir, targetLogical)
+				if err != nil {
+					return nil, fmt.Errorf("resolve RUN output: %w", err)
+				}
+				if err := os.WriteFile(targetFile, []byte(val+"\n"), 0644); err != nil {
+					return nil, fmt.Errorf("write RUN output: %w", err)
+				}
 			}
 		}
 	}
@@ -224,38 +248,4 @@ func parseArrayOrString(val string) []string {
 		return out
 	}
 	return strings.Fields(val)
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
-}
-
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		return copyFile(path, target)
-	})
 }
