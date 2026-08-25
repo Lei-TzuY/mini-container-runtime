@@ -1,15 +1,14 @@
 package container
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"runtime"
-	"syscall"
 
 	"minicontainer/internal/state"
 )
 
-// SendSignal sends a custom OS signal to a container's payload PID 1.
+// SendSignal sends a custom signal to the exact process identity persisted for
+// a running container. It never falls back to signaling a raw numeric PID.
 func SendSignal(st *state.Store, containerID, sigName string) error {
 	if st == nil {
 		return fmt.Errorf("state store is nil")
@@ -19,26 +18,32 @@ func SendSignal(st *state.Store, containerID, sigName string) error {
 	if err != nil {
 		return fmt.Errorf("resolve container: %w", err)
 	}
-
-	if c.Status != state.StatusRunning || c.PID <= 0 {
-		return fmt.Errorf("container %s is not running", c.ID[:8])
+	shortID := c.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	if c.Status != state.StatusRunning {
+		return fmt.Errorf("container %s is not running", shortID)
+	}
+	if c.PID <= 0 || c.PIDStartTime == 0 {
+		return fmt.Errorf("container %s: %w", shortID, ErrProcessIdentityUnavailable)
 	}
 
-	proc, err := os.FindProcess(c.PID)
+	sig, err := ParseSignal(sigName)
 	if err != nil {
-		return fmt.Errorf("find process %d: %w", c.PID, err)
+		return err
 	}
-
-	if runtime.GOOS != "linux" {
-		return nil
+	handle, err := OpenProcessHandle(c.PID, c.PIDStartTime)
+	if err != nil {
+		if errors.Is(err, ErrProcessNotFound) {
+			return fmt.Errorf("container %s process exited: %w", shortID, err)
+		}
+		return fmt.Errorf("container %s process verification: %w", shortID, err)
 	}
+	defer handle.Close()
 
-	sig := syscall.SIGTERM
-	if sigName == "SIGKILL" || sigName == "KILL" {
-		sig = syscall.SIGKILL
-	} else if sigName == "SIGHUP" || sigName == "HUP" {
-		sig = syscall.SIGHUP
+	if err := handle.Signal(sig); err != nil {
+		return fmt.Errorf("signal container %s: %w", shortID, err)
 	}
-
-	return proc.Signal(sig)
+	return nil
 }
