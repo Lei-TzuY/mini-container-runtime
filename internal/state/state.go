@@ -347,6 +347,20 @@ func (s *Store) Delete(id string) error {
 		)
 	}
 
+	networkOwnership, ok, err := s.readNetworkOwnershipUnlocked(id)
+	if err != nil {
+		return fmt.Errorf("read pending network ownership before deleting container %s: %w", id, err)
+	}
+	if ok {
+		return fmt.Errorf(
+			"container %s has pending network cleanup for %s (%d/%d)",
+			id,
+			networkOwnership.Owner,
+			networkOwnership.PID,
+			networkOwnership.PIDStartTime,
+		)
+	}
+
 	file := filepath.Join(s.ctrDir, id+".json")
 	return removeStateFileDurable(s.ctrDir, file, "container state")
 }

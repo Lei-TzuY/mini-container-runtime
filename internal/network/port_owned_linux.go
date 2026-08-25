@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -84,7 +85,29 @@ func setupPortForwardingOwnedWith(owner string, hostPort, containerPort int, con
 	return nil
 }
 
-// RemovePortForwardingOwned deletes only the DNAT rules carrying owner.
+func iptablesRuleAbsent(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1
+}
+
+func removeOwnedRuleIfPresent(label string, checkArgs, deleteArgs []string, run iptablesCommand) error {
+	out, err := run(checkArgs...)
+	if err != nil {
+		if iptablesRuleAbsent(err) {
+			return nil
+		}
+		return fmt.Errorf("iptables check owned %s: %w\n%s", label, err, out)
+	}
+	if out, err := run(deleteArgs...); err != nil {
+		return fmt.Errorf("iptables delete owned %s: %w\n%s", label, err, out)
+	}
+	return nil
+}
+
+// RemovePortForwardingOwned deletes only the DNAT rules carrying owner. Missing
+// rules are idempotent success after an explicit iptables -C check. This lets a
+// persisted ownership intent safely describe rules that may only have been
+// partially installed when a runtime process crashed.
 func RemovePortForwardingOwned(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error {
 	return removePortForwardingOwnedWith(owner, hostPort, containerPort, containerIP, protocol, debug, runIPTables)
 }
@@ -103,17 +126,22 @@ func removePortForwardingOwnedWith(owner string, hostPort, containerPort int, co
 	target := fmt.Sprintf("%s:%d", containerIP, containerPort)
 	portStr := strconv.Itoa(hostPort)
 	ownerArgs := []string{"-m", "comment", "--comment", owner}
+
+	preroutingCheck := append([]string{"-t", "nat", "-C", "PREROUTING", "-p", protocol, "--dport", portStr}, ownerArgs...)
+	preroutingCheck = append(preroutingCheck, "-j", "DNAT", "--to-destination", target)
 	preroutingDelete := append([]string{"-t", "nat", "-D", "PREROUTING", "-p", protocol, "--dport", portStr}, ownerArgs...)
 	preroutingDelete = append(preroutingDelete, "-j", "DNAT", "--to-destination", target)
+	outputCheck := append([]string{"-t", "nat", "-C", "OUTPUT", "-p", protocol, "-m", "addrtype", "--dst-type", "LOCAL", "--dport", portStr}, ownerArgs...)
+	outputCheck = append(outputCheck, "-j", "DNAT", "--to-destination", target)
 	outputDelete := append([]string{"-t", "nat", "-D", "OUTPUT", "-p", protocol, "-m", "addrtype", "--dst-type", "LOCAL", "--dport", portStr}, ownerArgs...)
 	outputDelete = append(outputDelete, "-j", "DNAT", "--to-destination", target)
 
 	var cleanupErrs []error
-	if out, err := run(preroutingDelete...); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("iptables delete owned PREROUTING DNAT: %w\n%s", err, out))
+	if err := removeOwnedRuleIfPresent("PREROUTING DNAT", preroutingCheck, preroutingDelete, run); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
 	}
-	if out, err := run(outputDelete...); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("iptables delete owned OUTPUT DNAT: %w\n%s", err, out))
+	if err := removeOwnedRuleIfPresent("OUTPUT DNAT", outputCheck, outputDelete, run); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
 	}
 	if err := errors.Join(cleanupErrs...); err != nil {
 		return err

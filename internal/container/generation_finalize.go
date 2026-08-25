@@ -11,19 +11,25 @@ import (
 
 type generationCleanupFunc func(containerID string, pid int, pidStartTime uint64) error
 
-// FinalizeStoppedGeneration reconciles lifecycle state and cleans the cgroup
-// belonging to one exact container process generation. Callers must invoke it
-// only after they have established that the referenced PID/start-time process
-// has exited (or that the PID now belongs to another generation).
-//
-// State reconciliation and cgroup cleanup are deliberately independent: a
-// cleanup failure must not leave a dead process recorded as running, while a
-// concurrent lifecycle actor must not redirect cleanup to another generation.
-// Cgroup deletion additionally requires a durable ownership sidecar written by
-// the runtime after successful cgroup admission; a derivable name alone is not
-// ownership proof.
+// FinalizeStoppedGeneration reconciles lifecycle state and cleans every durable
+// host-side resource owned by one exact container process generation. Callers
+// must invoke it only after they have established that the referenced
+// PID/start-time process has exited (or that the PID now belongs to another
+// generation).
 func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int, finishedAt time.Time) (bool, error) {
-	return finalizeStoppedGenerationWithCleanup(st, c, exitCode, finishedAt, cleanupContainerProcessGeneration)
+	changed, cgroupErr := finalizeStoppedGenerationWithCleanup(st, c, exitCode, finishedAt, cleanupContainerProcessGeneration)
+	if st == nil || c == nil || c.ID == "" {
+		return changed, cgroupErr
+	}
+
+	current, readErr := st.Get(c.ID)
+	if readErr != nil {
+		return changed, errors.Join(cgroupErr, fmt.Errorf("reload container after generation finalization: %w", readErr))
+	}
+	if current.Status != state.StatusStopped {
+		return changed, cgroupErr
+	}
+	return changed, errors.Join(cgroupErr, CleanupStoppedNetwork(st, current))
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {

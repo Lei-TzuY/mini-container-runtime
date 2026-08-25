@@ -14,9 +14,8 @@ const waitStateRefresh = 250 * time.Millisecond
 // stopped state and returns its persisted exit code. For a running record it
 // binds to the exact PID/start-time identity with a pidfd instead of polling a
 // numeric PID. If the persisted identity is already gone or has been reused,
-// the stale running record is reconciled to stopped. Cgroup cleanup is attempted
-// only when a durable ownership sidecar proves which exact generation the
-// runtime owns; stopped records retain that proof until cleanup succeeds.
+// the stale running record is reconciled to stopped. Durable host-side cleanup
+// tokens are retried before a stopped result is returned.
 func WaitContainer(st *state.Store, containerID string) (int, error) {
 	if st == nil {
 		return -1, fmt.Errorf("state store is nil")
@@ -28,8 +27,8 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 			return -1, fmt.Errorf("resolve container: %w", err)
 		}
 		if c.Status == state.StatusStopped {
-			if err := CleanupStoppedCgroup(st, c); err != nil {
-				return c.ExitCode, fmt.Errorf("cleanup pending cgroup for stopped container %s: %w", c.ID, err)
+			if err := CleanupStoppedRuntimeResources(st, c); err != nil {
+				return c.ExitCode, fmt.Errorf("cleanup pending runtime resources for stopped container %s: %w", c.ID, err)
 			}
 			return c.ExitCode, nil
 		}
@@ -74,7 +73,14 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 						return latest.ExitCode, fmt.Errorf("cleanup stopped container %s generation: %w", c.ID, finalizeErr)
 					}
 				}
-				return latest.ExitCode, nil
+				refreshed, err := st.Get(c.ID)
+				if err != nil {
+					return latest.ExitCode, fmt.Errorf("reload stopped container %s before cleanup: %w", c.ID, err)
+				}
+				if err := CleanupStoppedRuntimeResources(st, refreshed); err != nil {
+					return refreshed.ExitCode, fmt.Errorf("cleanup pending runtime resources for stopped container %s: %w", c.ID, err)
+				}
+				return refreshed.ExitCode, nil
 			}
 			if latest.Status != state.StatusRunning || latest.PID != c.PID || latest.PIDStartTime != c.PIDStartTime {
 				_ = handle.Close()

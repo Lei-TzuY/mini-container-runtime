@@ -29,12 +29,9 @@ func defaultBridgeHostOps(portOwner string) bridgeHostOps {
 	}
 }
 
-// setupBridgeHost establishes all requested host-side bridge networking before
-// the container child is released from its sync pipe. Each setup operation owns
-// rollback for side effects created before that operation reports success. Once
-// veth setup succeeds, this layer owns the veth and every successfully installed,
-// generation-tagged port rule. The returned cleanup function owns those resources
-// after successful setup and should be called when the container exits.
+// setupBridgeHost is the compatibility wrapper for callers that do not persist
+// network ownership. Managed runtime paths should generate and persist the owner
+// before mutation, then call setupBridgeHostOwned with that exact marker.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
 	portOwner := ""
 	if len(mappings) > 0 {
@@ -44,9 +41,23 @@ func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []
 			return nil, fmt.Errorf("create port-forwarding ownership marker: %w", err)
 		}
 	}
+	return setupBridgeHostOwned(containerPID, hostCIDR, containerIP, mappings, portOwner, debug)
+}
+
+func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, portOwner string, debug bool) (func() error, error) {
+	if len(mappings) > 0 && portOwner == "" {
+		return nil, fmt.Errorf("port-forwarding ownership marker is required")
+	}
 	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(portOwner))
 }
 
+// setupBridgeHostWithOps establishes all requested host-side bridge networking
+// before the container child is released from its sync pipe. Each setup
+// operation owns rollback for side effects created before that operation reports
+// success. Once veth setup succeeds, this layer owns the veth and every
+// successfully installed, generation-tagged port rule. The returned cleanup
+// function owns those resources after successful setup and should be called when
+// the container exits.
 func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool, ops bridgeHostOps) (func() error, error) {
 	if ops.setupVeth == nil || ops.removeVeth == nil || ops.setupPort == nil || ops.removePort == nil {
 		return nil, fmt.Errorf("bridge host network operation is nil")

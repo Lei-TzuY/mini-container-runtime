@@ -56,11 +56,10 @@ func runtimeCgroupName(containerID string, childPID int, childStartTime uint64, 
 
 // abortRuntimeSetupFailure terminates and reaps a child that is still blocked
 // on the parent/child sync pipe, cleans only cgroup paths that the child was
-// observed to own, and reconciles the persisted running identity. Capturing
-// cgroup membership before termination avoids deleting a same-named cgroup when
-// Apply failed because the runtime never acquired that cgroup. If a prior Apply
-// succeeded and durable ownership exists, cleanup is retried from that token
-// after the stopped state is persisted so the token is cleared only on success.
+// observed to own, reconciles the persisted running identity, then retries all
+// durable stopped-generation cleanup tokens. Capturing cgroup membership before
+// termination avoids deleting a same-named cgroup when Apply failed because the
+// runtime never acquired it.
 func abortRuntimeSetupFailure(
 	cmd *exec.Cmd,
 	writePipe *os.File,
@@ -118,8 +117,8 @@ func abortRuntimeSetupFailure(
 		return resultErr
 	}
 	if current.Status == state.StatusStopped {
-		if cleanupErr := CleanupStoppedCgroup(lifecycleStore, current); cleanupErr != nil {
-			resultErr = errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("cleanup persisted cgroup after runtime setup failure for container %s: %w", containerID, cleanupErr)})
+		if cleanupErr := CleanupStoppedRuntimeResources(lifecycleStore, current); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("cleanup persisted runtime resources after runtime setup failure for container %s: %w", containerID, cleanupErr)})
 		}
 	}
 	return resultErr
