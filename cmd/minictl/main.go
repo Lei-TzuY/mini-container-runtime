@@ -319,16 +319,11 @@ func cmdRun(args []string) {
 	runErr := container.Run(cfg)
 
 	if store != nil && rec != nil {
-		now := time.Now()
-		exitCode := 0
-		if runErr != nil {
-			exitCode = 1
+		settled, settleErr := settleRunCommandState(store, containerID, runErr, time.Now())
+		if settled != nil && settled.Status == state.StatusStopped {
+			_ = events.Publish(events.EventDie, containerID, cfg.RootFS, fmt.Sprintf("exited with code %d", settled.ExitCode))
 		}
-		rec.Status = state.StatusStopped
-		rec.FinishedAt = &now
-		rec.ExitCode = exitCode
-		_ = store.Save(rec)
-		_ = events.Publish(events.EventDie, containerID, cfg.RootFS, fmt.Sprintf("exited with code %d", exitCode))
+		runErr = joinRunCommandErrors(runErr, settleErr)
 	}
 
 	if runErr != nil {
