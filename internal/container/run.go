@@ -92,7 +92,7 @@ func openLifecycleStore(cfg Config) (*state.Store, error) {
 	return st, nil
 }
 
-func runOnce(cfg Config, lifecycleStore *state.Store) error {
+func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	if cfg.Debug {
 		fmt.Println("[parent] spawning child with new namespaces")
 	}
@@ -164,6 +164,20 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), sentinelEnv)
+
+	overlayWorkDir, err := createParentOverlayWorkDir(cfg.Overlay, os.MkdirTemp)
+	if err != nil {
+		return err
+	}
+	if overlayWorkDir != "" {
+		cmd.Env = appendOverlayWorkDirEnv(cmd.Env, overlayWorkDir)
+		defer func() {
+			resultErr = finishOverlayWorkDir(resultErr, overlayWorkDir, os.RemoveAll)
+			if cfg.Debug && resultErr == nil {
+				fmt.Println("[parent] container exited cleanly")
+			}
+		}()
+	}
 
 	cmd.SysProcAttr = ns.BuildCloneFlags(ns.Options{
 		UserNS:  cfg.UserNS,
@@ -320,7 +334,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 		return resultErr
 	}
 
-	if cfg.Debug {
+	if cfg.Debug && overlayWorkDir == "" {
 		fmt.Println("[parent] container exited cleanly")
 	}
 	return nil
@@ -371,12 +385,13 @@ func ContainerInit(cfg Config) error {
 		fmt.Println("[init] mount namespace propagation set to private")
 	}
 
+	overlayTmp, err := consumeOverlayWorkDir(cfg.Overlay)
+	if err != nil {
+		return fmt.Errorf("runtime overlay workdir: %w", err)
+	}
+
 	targetRootFS := cfg.RootFS
 	if cfg.Overlay {
-		overlayTmp, err := os.MkdirTemp("", "minicontainer-overlay-*")
-		if err != nil {
-			return fmt.Errorf("create overlay temp dir: %w", err)
-		}
 		overlayDirs, err := rootfs.PrepareOverlay(cfg.RootFS, overlayTmp)
 		if err != nil {
 			return fmt.Errorf("prepare overlay: %w", err)
