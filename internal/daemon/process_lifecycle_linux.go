@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultContainerStopTimeout = 5 * time.Second
-	maxContainerStopTimeout     = 10 * time.Second
+	maxContainerStopTimeout     = 7 * time.Second
 	parentStateSettleTimeout    = 500 * time.Millisecond
 	postKillWaitTimeout         = 2 * time.Second
 )
@@ -148,7 +148,11 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	current, err := s.store.Get(c.ID)
-	if err == nil && current.Status == state.StatusRunning && current.PID == c.PID && current.PIDStartTime == c.PIDStartTime {
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if current.Status == state.StatusRunning && current.PID == c.PID && current.PIDStartTime == c.PIDStartTime {
 		if _, err := s.store.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -240,9 +244,7 @@ func waitForParentStoppedState(st *state.Store, id string, timeout time.Duration
 	for time.Now().Before(deadline) {
 		c, err := st.Get(id)
 		if err != nil {
-			// A concurrent explicit deletion after process exit is a valid terminal
-			// state; do not recreate it.
-			return nil
+			return fmt.Errorf("read container state while settling stop: %w", err)
 		}
 		if c.Status != state.StatusRunning {
 			return nil
