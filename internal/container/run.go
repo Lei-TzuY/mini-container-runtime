@@ -182,6 +182,16 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		}()
 	}
 
+	runtimeHostsFile, err := createRuntimeHostsFile(cfg.BridgeNetwork)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if runtimeHostsFile != nil {
+			_ = runtimeHostsFile.Close()
+		}
+	}()
+
 	cmd.SysProcAttr = ns.BuildCloneFlags(ns.Options{
 		UserNS:  cfg.UserNS,
 		HostUID: os.Getuid(),
@@ -200,6 +210,9 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	}
 	defer initStatusReadPipe.Close()
 	cmd.ExtraFiles = []*os.File{readPipe, initStatusWritePipe}
+	if runtimeHostsFile != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, runtimeHostsFile)
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = readPipe.Close()
@@ -210,6 +223,10 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	}
 	_ = readPipe.Close()
 	_ = initStatusWritePipe.Close()
+	if runtimeHostsFile != nil {
+		_ = runtimeHostsFile.Close()
+		runtimeHostsFile = nil
+	}
 
 	childPID := cmd.Process.Pid
 	if cfg.Debug {
@@ -388,6 +405,16 @@ func ContainerInit(cfg Config) (resultErr error) {
 	}
 	defer func() { initStatus.finish(resultErr) }()
 
+	runtimeHostsFile, err := runtimeHostsFileFromFD(cfg.BridgeNetwork)
+	if err != nil {
+		return fmt.Errorf("open runtime hosts file: %w", err)
+	}
+	defer func() {
+		if runtimeHostsFile != nil {
+			_ = runtimeHostsFile.Close()
+		}
+	}()
+
 	if cfg.Debug {
 		fmt.Println("[init] running inside new namespaces")
 	}
@@ -423,6 +450,14 @@ func ContainerInit(cfg Config) (resultErr error) {
 		if cfg.Debug {
 			fmt.Printf("[init] overlayfs mounted (%s -> %s)\n", cfg.RootFS, targetRootFS)
 		}
+	}
+
+	if err := mountRuntimeHostsFile(runtimeHostsFile, targetRootFS, cfg.Debug); err != nil {
+		return fmt.Errorf("runtime hosts: %w", err)
+	}
+	if runtimeHostsFile != nil {
+		_ = runtimeHostsFile.Close()
+		runtimeHostsFile = nil
 	}
 
 	hostname := cfg.Hostname
