@@ -21,7 +21,7 @@ func (s *Store) saveContainerCASUnlocked(c *Container) error {
 	target := filepath.Join(s.ctrDir, c.ID+".json")
 	nextRevision := uint64(1)
 
-	data, err := os.ReadFile(target)
+	data, err := readRegularStateFile(target, "container state")
 	switch {
 	case err == nil:
 		var current Container
@@ -64,8 +64,9 @@ func (s *Store) writeContainerRevisionUnlocked(c *Container, revision uint64) er
 	if err := atomicWriteFile(s.ctrDir, target, data); err != nil {
 		return err
 	}
-	// Only publish the new revision to the caller after durable file creation
-	// and rename succeeded. Failed writes leave the caller's CAS token intact.
+	// Only publish the new revision to the caller after durable file creation,
+	// rename, and parent-directory sync have succeeded. Failed writes leave the
+	// caller's CAS token intact.
 	c.Revision = revision
 	return nil
 }

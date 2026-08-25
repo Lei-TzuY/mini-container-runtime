@@ -122,14 +122,16 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
+	if err := ensurePrivateStateDir(dir, "state"); err != nil {
+		return nil, err
+	}
 	ctrDir := filepath.Join(dir, "containers")
 	imgDir := filepath.Join(dir, "images")
-
-	if err := os.MkdirAll(ctrDir, 0755); err != nil {
-		return nil, fmt.Errorf("create container state dir: %w", err)
+	if err := ensurePrivateStateDir(ctrDir, "container state"); err != nil {
+		return nil, err
 	}
-	if err := os.MkdirAll(imgDir, 0755); err != nil {
-		return nil, fmt.Errorf("create image state dir: %w", err)
+	if err := ensurePrivateStateDir(imgDir, "image state"); err != nil {
+		return nil, err
 	}
 
 	lockFile, err := openStateLock(filepath.Join(dir, ".state.lock"))
@@ -159,6 +161,13 @@ func validateID(id string) error {
 	return nil
 }
 
+func validateImageSelector(nameOrID string) error {
+	if strings.TrimSpace(nameOrID) == "" {
+		return fmt.Errorf("image name or ID cannot be empty")
+	}
+	return nil
+}
+
 func atomicWriteFile(dir, target string, data []byte) error {
 	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
@@ -173,24 +182,25 @@ func atomicWriteFile(dir, target string, data []byte) error {
 		_ = os.Remove(tmpName)
 	}()
 
+	if err := tmpFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure state tmp file permissions: %w", err)
+	}
 	if _, err := tmpFile.Write(data); err != nil {
 		return fmt.Errorf("write state tmp file: %w", err)
 	}
-
 	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("sync state tmp file: %w", err)
 	}
-
-	closed = true
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close state tmp file: %w", err)
 	}
+	closed = true
 
 	var renameErr error
 	for attempts := 0; attempts < 10; attempts++ {
 		renameErr = os.Rename(tmpName, target)
 		if renameErr == nil {
-			return nil
+			return syncStateDirectory(dir, "state")
 		}
 		time.Sleep(time.Duration(attempts+1) * 2 * time.Millisecond)
 	}
@@ -233,7 +243,7 @@ func (s *Store) Load(id string) (*Container, error) {
 
 func (s *Store) getUnlocked(id string) (*Container, error) {
 	file := filepath.Join(s.ctrDir, id+".json")
-	data, err := os.ReadFile(file)
+	data, err := readRegularStateFile(file, "container state")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("container %q not found", id)
@@ -302,9 +312,11 @@ func (s *Store) List() ([]*Container, error) {
 			continue
 		}
 		id := entry.Name()[:len(entry.Name())-len(".json")]
-		if c, err := s.getUnlocked(id); err == nil {
-			out = append(out, c)
+		c, err := s.getUnlocked(id)
+		if err != nil {
+			return nil, fmt.Errorf("load container state %q: %w", id, err)
 		}
+		out = append(out, c)
 	}
 
 	return out, nil
@@ -323,13 +335,21 @@ func (s *Store) Delete(id string) error {
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	file := filepath.Join(s.ctrDir, id+".json")
-	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove container state: %w", err)
-	}
-	return nil
+	return removeStateFileDurable(s.ctrDir, file, "container state")
 }
 
 func (s *Store) SaveImage(img *Image) error {
+	if img == nil {
+		return fmt.Errorf("image state is nil")
+	}
+	key := img.Name
+	if key == "" {
+		key = img.ID
+	}
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("image name or ID cannot be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := lockStateFile(s.lockFile); err != nil {
@@ -342,16 +362,16 @@ func (s *Store) SaveImage(img *Image) error {
 		return fmt.Errorf("marshal image: %w", err)
 	}
 
-	key := img.Name
-	if key == "" {
-		key = img.ID
-	}
 	filename := sanitizeImageFilename(key)
 	target := filepath.Join(s.imgDir, filename+".json")
 	return atomicWriteFile(s.imgDir, target, data)
 }
 
 func (s *Store) GetImage(nameOrID string) (*Image, error) {
+	if err := validateImageSelector(nameOrID); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -372,6 +392,10 @@ func (s *Store) GetImage(nameOrID string) (*Image, error) {
 }
 
 func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
+	if err := validateImageSelector(nameOrID); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := lockStateFile(s.lockFile); err != nil {
@@ -389,13 +413,16 @@ func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
 		key = img.ID
 	}
 	file := filepath.Join(s.imgDir, sanitizeImageFilename(key)+".json")
-	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("remove image metadata: %w", err)
+	if err := removeStateFileDurable(s.imgDir, file, "image metadata"); err != nil {
+		return nil, err
 	}
 	return img, nil
 }
 
 func (s *Store) GetImageUnlocked(nameOrID string) (*Image, error) {
+	if err := validateImageSelector(nameOrID); err != nil {
+		return nil, err
+	}
 	images, err := s.listImagesUnlocked()
 	if err != nil {
 		return nil, err
@@ -430,13 +457,16 @@ func (s *Store) listImagesUnlocked() ([]*Image, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.imgDir, entry.Name()))
-		if err == nil {
-			var img Image
-			if err := json.Unmarshal(data, &img); err == nil {
-				out = append(out, &img)
-			}
+		path := filepath.Join(s.imgDir, entry.Name())
+		data, err := readRegularStateFile(path, "image state")
+		if err != nil {
+			return nil, fmt.Errorf("read image state %q: %w", entry.Name(), err)
 		}
+		var img Image
+		if err := json.Unmarshal(data, &img); err != nil {
+			return nil, fmt.Errorf("unmarshal image state %q: %w", entry.Name(), err)
+		}
+		out = append(out, &img)
 	}
 	return out, nil
 }
