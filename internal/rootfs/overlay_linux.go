@@ -59,6 +59,42 @@ type OverlayDirs struct {
 	Merged string   // the final merged view — container's /
 }
 
+// validateOverlayOptionPath rejects path bytes that have syntax in the legacy
+// mount(2) option string. OverlayFS parses options as a comma-separated list;
+// lowerdir additionally uses ':' to separate layers. Backslash is rejected as
+// well so callers cannot escape or reinterpret those delimiters. Failing closed
+// is safer than trying to hand-roll escaping for kernel option parsing.
+func validateOverlayOptionPath(kind, path string, lowerdir bool) error {
+	if path == "" {
+		return fmt.Errorf("overlay %s path is empty", kind)
+	}
+	if strings.ContainsAny(path, ",\\") {
+		return fmt.Errorf("overlay %s path %q contains unsupported mount-option delimiter", kind, path)
+	}
+	if lowerdir && strings.Contains(path, ":") {
+		return fmt.Errorf("overlay %s path %q contains unsupported lowerdir delimiter ':'", kind, path)
+	}
+	return nil
+}
+
+func validateOverlayDirs(dirs *OverlayDirs) error {
+	if dirs == nil {
+		return fmt.Errorf("overlay directories are nil")
+	}
+	for i, lower := range dirs.Lower {
+		if err := validateOverlayOptionPath(fmt.Sprintf("lower[%d]", i), lower, true); err != nil {
+			return err
+		}
+	}
+	if err := validateOverlayOptionPath("upper", dirs.Upper, false); err != nil {
+		return err
+	}
+	if err := validateOverlayOptionPath("work", dirs.Work, false); err != nil {
+		return err
+	}
+	return nil
+}
+
 // PrepareOverlay creates the overlay work directories under containerDir,
 // mounts the overlayfs, and returns the merged path (the container's rootfs).
 //
@@ -75,6 +111,9 @@ func PrepareOverlay(imageRootFS, containerDir string) (*OverlayDirs, error) {
 		Upper:  filepath.Join(containerDir, "upper"),
 		Work:   filepath.Join(containerDir, "work"),
 		Merged: filepath.Join(containerDir, "merged"),
+	}
+	if err := validateOverlayDirs(dirs); err != nil {
+		return nil, err
 	}
 
 	for _, d := range []string{dirs.Upper, dirs.Work, dirs.Merged} {
@@ -142,6 +181,9 @@ func PrepareOverlayMultiLayer(layers []string, containerDir string) (*OverlayDir
 		Upper:  filepath.Join(containerDir, "upper"),
 		Work:   filepath.Join(containerDir, "work"),
 		Merged: filepath.Join(containerDir, "merged"),
+	}
+	if err := validateOverlayDirs(dirs); err != nil {
+		return nil, err
 	}
 
 	for _, d := range []string{dirs.Upper, dirs.Work, dirs.Merged} {
