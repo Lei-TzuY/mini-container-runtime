@@ -2,25 +2,12 @@
 
 // internal/rootfs/rootfs_linux.go
 //
-// Filesystem Isolation — pivot_root and chroot
-// ─────────────────────────────────────────────
+// Filesystem Isolation — pivot_root
+// ───────────────────────────────
 // Container filesystem isolation means the container process sees a
-// completely different directory tree than the host.  This is achieved by
-// changing what "/" means for that process.
-//
-// Two mechanisms:
-//
-//   chroot(2)     – simple, widely available, but leaves the host's mount
-//                   table visible inside the container (processes can escape
-//                   with a crafted sequence of chdir + chroot calls if they
-//                   have sufficient privilege).
-//
-//   pivot_root(2) – proper, runc/Docker default.  Atomically swaps the
-//                   root filesystem and then lets us unmount the old one,
-//                   so the host's mounts are not visible at all.
-//
-// We try pivot_root first and fall back to chroot if it fails (e.g., the
-// root filesystem is not a mount point).
+// completely different directory tree than the host. This runtime requires
+// pivot_root(2): unlike chroot(2), pivot_root lets us detach the old root mount
+// entirely instead of silently retaining a weaker filesystem-isolation model.
 //
 // pivot_root algorithm
 // ────────────────────
@@ -44,15 +31,25 @@ import (
 	"syscall"
 )
 
+type pivotRootFunc func(newRoot string, debug bool) error
+
 // Isolate changes the root filesystem of the current process to newRoot.
 // It must be called after the process has entered a new mount namespace
 // (CLONE_NEWNS), otherwise the bind-mount in step 1 would affect the host.
+//
+// Filesystem isolation is fail-closed: if pivot_root cannot be established we
+// return the failure instead of downgrading to chroot, whose weaker mount-table
+// isolation is not an equivalent container security boundary.
 func Isolate(newRoot string, debug bool) error {
-	if err := pivotRoot(newRoot, debug); err != nil {
-		if debug {
-			fmt.Printf("[init] pivot_root failed (%v), falling back to chroot\n", err)
-		}
-		return chrootIsolate(newRoot, debug)
+	return isolateWithPivot(newRoot, debug, pivotRoot)
+}
+
+func isolateWithPivot(newRoot string, debug bool, pivot pivotRootFunc) error {
+	if pivot == nil {
+		return fmt.Errorf("pivot_root isolation function is nil")
+	}
+	if err := pivot(newRoot, debug); err != nil {
+		return fmt.Errorf("pivot_root isolation required: %w", err)
 	}
 	return nil
 }
@@ -62,9 +59,9 @@ func Isolate(newRoot string, debug bool) error {
 func pivotRoot(newRoot string, debug bool) error {
 	// Step 1: bind-mount newRoot onto itself.
 	//
-	// pivot_root(2) requires newRoot to already be a mount point.  A plain
-	// directory is NOT a mount point.  Bind-mounting the directory onto
-	// itself promotes it to a mount point without changing its contents.
+	// pivot_root(2) requires newRoot to already be a mount point. A plain
+	// directory is NOT a mount point. Bind-mounting the directory onto itself
+	// promotes it to a mount point without changing its contents.
 	//
 	// MS_REC propagates the bind to all sub-mounts (e.g., /proc and /sys
 	// that ContainerInit mounted inside newRoot before calling us).
@@ -96,7 +93,6 @@ func pivotRoot(newRoot string, debug bool) error {
 	// Step 5: unmount the old root with MNT_DETACH (lazy unmount).
 	// MNT_DETACH detaches the mount immediately from the filesystem tree
 	// while keeping it accessible to any process that already has it open.
-	// This is the correct way to unmount a potentially busy mount.
 	if err := syscall.Unmount("/.pivot_old", syscall.MNT_DETACH); err != nil {
 		return fmt.Errorf("unmount old root: %w", err)
 	}
@@ -108,25 +104,6 @@ func pivotRoot(newRoot string, debug bool) error {
 
 	if debug {
 		fmt.Println("[init] pivot_root complete")
-	}
-	return nil
-}
-
-// chrootIsolate is the simpler fallback using chroot(2).
-// Less secure than pivot_root because the host's mount table is still
-// partially visible, but sufficient for many educational scenarios and
-// environments that don't support pivot_root (e.g. some VMs).
-func chrootIsolate(newRoot string, debug bool) error {
-	if err := syscall.Chroot(newRoot); err != nil {
-		return fmt.Errorf("chroot(%s): %w", newRoot, err)
-	}
-	// After chroot the kernel has changed "/" but not the CWD.
-	// We must chdir into the new root explicitly.
-	if err := syscall.Chdir("/"); err != nil {
-		return fmt.Errorf("chdir / after chroot: %w", err)
-	}
-	if debug {
-		fmt.Println("[init] chroot complete")
 	}
 	return nil
 }
