@@ -318,7 +318,6 @@ func (s *Store) List() ([]*Container, error) {
 		}
 		out = append(out, c)
 	}
-
 	return out, nil
 }
 
@@ -333,6 +332,20 @@ func (s *Store) Delete(id string) error {
 		return err
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	ownership, ok, err := s.readCgroupOwnershipUnlocked(id)
+	if err != nil {
+		return fmt.Errorf("read pending cgroup ownership before deleting container %s: %w", id, err)
+	}
+	if ok {
+		return fmt.Errorf(
+			"container %s has pending cgroup cleanup for %s (%d/%d)",
+			id,
+			ownership.Name,
+			ownership.PID,
+			ownership.PIDStartTime,
+		)
+	}
 
 	file := filepath.Join(s.ctrDir, id+".json")
 	return removeStateFileDurable(s.ctrDir, file, "container state")

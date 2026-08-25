@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"minicontainer/internal/cgroups"
 	"minicontainer/internal/container"
 	"minicontainer/internal/state"
 )
@@ -24,6 +25,29 @@ func saveRunningProcess(t *testing.T, st *state.Store, id string, cmd *exec.Cmd,
 		CreatedAt:    time.Now(),
 	}); err != nil {
 		t.Fatalf("save running state: %v", err)
+	}
+}
+
+func saveStoppedOwnedGeneration(t *testing.T, st *state.Store, id string, pid int, start uint64) {
+	t.Helper()
+	if err := st.Save(&state.Container{
+		ID:           id,
+		PID:          pid,
+		PIDStartTime: start,
+		Status:       state.StatusRunning,
+		CreatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	name, err := cgroups.NameForContainerProcess(id, pid, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkCgroupOwnedIfIdentity(id, pid, start, name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkStoppedIfIdentity(id, pid, start, -1, time.Now()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -109,6 +133,33 @@ func TestStopContainerRefusesReusedPIDIdentity(t *testing.T) {
 	}
 }
 
+func TestStopAlreadyStoppedRetriesPendingCgroupCleanup(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "ctr-stopped-owned-stop"
+	saveStoppedOwnedGeneration(t, st, id, 1<<29, 12345)
+	srv := &Server{store: st}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/containers/"+id+"/stop", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStopContainer(rec, req, id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok, err := st.GetCgroupOwnership(id); err != nil || ok {
+		t.Fatalf("already-stopped handler left cgroup ownership: ok=%v err=%v", ok, err)
+	}
+	current, err := st.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != state.StatusStopped {
+		t.Fatalf("state=%s, want stopped", current.Status)
+	}
+}
+
 func TestDeleteRefusesLiveRunningContainer(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
@@ -137,6 +188,28 @@ func TestDeleteRefusesLiveRunningContainer(t *testing.T) {
 	}
 	if _, err := st.Get("ctr-live"); err != nil {
 		t.Fatalf("running state was deleted: %v", err)
+	}
+}
+
+func TestDeleteRetriesPendingStoppedCgroupBeforeStateRemoval(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "ctr-stopped-owned-delete"
+	saveStoppedOwnedGeneration(t, st, id, 1<<29, 54321)
+	srv := &Server{store: st}
+
+	rec := httptest.NewRecorder()
+	srv.handleDeleteContainer(rec, id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.Get(id); err == nil {
+		t.Fatal("stopped container state remained after successful cleanup/delete")
+	}
+	if _, ok, err := st.GetCgroupOwnership(id); err != nil || ok {
+		t.Fatalf("delete retained ownership token: ok=%v err=%v", ok, err)
 	}
 }
 

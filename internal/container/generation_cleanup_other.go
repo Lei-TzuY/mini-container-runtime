@@ -12,5 +12,5 @@ func cleanupContainerProcessGeneration(containerID string, pid int, pidStartTime
 	if _, err := cgroups.NameForContainerProcess(containerID, pid, pidStartTime); err != nil {
 		return fmt.Errorf("derive cgroup for stopped process generation: %w", err)
 	}
-	return nil
+	return fmt.Errorf("cgroup generation cleanup requires Linux")
 }

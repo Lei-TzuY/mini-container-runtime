@@ -36,6 +36,21 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	if c.Status == StatusRunning && (c.PID != pid || c.PIDStartTime != pidStartTime) {
 		return fmt.Errorf("container %s is already bound to running process %d/%d", id, c.PID, c.PIDStartTime)
 	}
+	if c.Status != StatusRunning {
+		ownership, ok, err := s.readCgroupOwnershipUnlocked(id)
+		if err != nil {
+			return fmt.Errorf("read pending cgroup ownership before starting container %s: %w", id, err)
+		}
+		if ok {
+			return fmt.Errorf(
+				"container %s has pending cgroup cleanup for %s (%d/%d)",
+				id,
+				ownership.Name,
+				ownership.PID,
+				ownership.PIDStartTime,
+			)
+		}
+	}
 
 	c.PID = pid
 	c.PIDStartTime = pidStartTime
