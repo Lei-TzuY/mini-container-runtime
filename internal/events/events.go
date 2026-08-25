@@ -2,7 +2,7 @@
 //
 // Container Real-time Lifecycle Event Audit Stream (`minictl events`)
 // ───────────────────────────────────────────────────────────────────
-// Emits and logs container lifecycle events (create, start, exec, pause, unpause, stop, die, rm).
+// Emits and logs container lifecycle events (create, start, exec, pause, unpause, stop, signal, die, rm).
 
 package events
 
@@ -28,6 +28,7 @@ const (
 	EventPause   EventType = "pause"
 	EventUnpause EventType = "unpause"
 	EventStop    EventType = "stop"
+	EventSignal  EventType = "signal"
 	EventDie     EventType = "die"
 	EventRemove  EventType = "destroy"
 )
