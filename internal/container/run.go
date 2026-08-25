@@ -41,6 +41,9 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if err := requireDurablePublishedPortOwnership(cfg, lifecycleStore); err != nil {
+		return err
+	}
 
 	maxAttempts := 1
 	if cfg.Restart == "always" || cfg.Restart == "on-failure" {
