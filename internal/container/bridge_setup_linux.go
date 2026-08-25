@@ -18,7 +18,7 @@ type bridgeHostOps struct {
 
 func defaultBridgeHostOps() bridgeHostOps {
 	return bridgeHostOps{
-		setupVeth:  network.SetupVethHost,
+		setupVeth:  network.SetupVethHostOwned,
 		removeVeth: network.RemoveVethHost,
 		setupPort:  network.SetupPortForwarding,
 		removePort: network.RemovePortForwarding,
@@ -26,10 +26,11 @@ func defaultBridgeHostOps() bridgeHostOps {
 }
 
 // setupBridgeHost establishes all requested host-side bridge networking before
-// the container child is released from its sync pipe. On failure it rolls back
-// every side effect it knows was installed. The returned cleanup function owns
-// the same resources after successful setup and should be called when the
-// container exits.
+// the container child is released from its sync pipe. Each setup operation owns
+// rollback for side effects created before that operation reports success. Once
+// veth setup succeeds, this layer owns the veth and every successfully installed
+// port rule. The returned cleanup function owns those resources after successful
+// setup and should be called when the container exits.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
 	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps())
 }
@@ -61,11 +62,7 @@ func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mapp
 	}
 
 	if err := ops.setupVeth(containerPID, hostCIDR, debug); err != nil {
-		setupErr := fmt.Errorf("setup host veth: %w", err)
-		if cleanupErr := ops.removeVeth(containerPID, debug); cleanupErr != nil {
-			return nil, errors.Join(setupErr, fmt.Errorf("rollback partial host veth: %w", cleanupErr))
-		}
-		return nil, setupErr
+		return nil, fmt.Errorf("setup host veth: %w", err)
 	}
 
 	installed := make([]PortMapping, 0, len(mappings))
