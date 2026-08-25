@@ -111,20 +111,52 @@ func normalizedProtocol(protocol string) string {
 	return protocol
 }
 
+type loopbackSetup func(debug bool) error
 type bridgeContainerSetup func(containerCIDR, gateway string, debug bool) error
 
+// setupBridgeContainer is the final container-side network admission gate used
+// by ContainerInit before mount isolation and payload exec. ContainerInit makes
+// an earlier best-effort loopback attempt for diagnostics; this gate retries the
+// idempotent operation and fails closed if lo still cannot be brought up.
 func setupBridgeContainer(enabled bool, containerCIDR, gateway string, debug bool) error {
-	return setupBridgeContainerWith(enabled, containerCIDR, gateway, debug, network.SetupVethContainer)
+	return setupContainerNetworkWith(
+		enabled,
+		containerCIDR,
+		gateway,
+		debug,
+		network.SetupLoopback,
+		network.SetupVethContainer,
+	)
 }
 
+// setupBridgeContainerWith preserves the focused bridge-only injection surface
+// used by existing tests. Production setupBridgeContainer additionally enforces
+// loopback through setupContainerNetworkWith.
 func setupBridgeContainerWith(enabled bool, containerCIDR, gateway string, debug bool, setup bridgeContainerSetup) error {
+	return setupContainerNetworkWith(
+		enabled,
+		containerCIDR,
+		gateway,
+		debug,
+		func(bool) error { return nil },
+		setup,
+	)
+}
+
+func setupContainerNetworkWith(enabled bool, containerCIDR, gateway string, debug bool, setupLoopback loopbackSetup, setupBridge bridgeContainerSetup) error {
+	if setupLoopback == nil {
+		return fmt.Errorf("container loopback network operation is nil")
+	}
+	if err := setupLoopback(debug); err != nil {
+		return fmt.Errorf("configure container loopback: %w", err)
+	}
 	if !enabled {
 		return nil
 	}
-	if setup == nil {
+	if setupBridge == nil {
 		return fmt.Errorf("bridge container network operation is nil")
 	}
-	if err := setup(containerCIDR, gateway, debug); err != nil {
+	if err := setupBridge(containerCIDR, gateway, debug); err != nil {
 		return fmt.Errorf("configure container bridge network: %w", err)
 	}
 	return nil
