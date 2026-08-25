@@ -72,7 +72,12 @@ func CollectStats(st *state.Store) ([]ContainerStat, error) {
 		}
 		result.ProcessLive = true
 
-		cgName := fmt.Sprintf("minicontainer-%d", c.PID)
+		cgName, err := cgroups.NameForContainerProcess(c.ID, c.PIDStartTime)
+		if err != nil {
+			result.UnavailableReason = "invalid_cgroup_identity"
+			results = append(results, result)
+			continue
+		}
 		snapshot, err := cgroups.ReadStats(cgName)
 		if err != nil {
 			result.UnavailableReason = "cgroup_stats_unavailable"
@@ -80,9 +85,10 @@ func CollectStats(st *state.Store) ([]ContainerStat, error) {
 			continue
 		}
 
-		// Re-check after the cgroup read. A process can exit and its numeric PID
-		// (and runtime cgroup name) can be reused between the first identity check
-		// and the snapshot, so only publish data bracketed by the same identity.
+		// Re-check after the cgroup read. The generation-derived cgroup name keeps
+		// a concurrent restart from redirecting this read to the replacement
+		// process, while this identity check ensures we do not publish stale data
+		// after the original process exited during the snapshot.
 		stillLive, err := container.ProcessIdentityMatches(c.PID, c.PIDStartTime)
 		if err != nil {
 			result.ProcessLive = false
