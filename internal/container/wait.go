@@ -14,7 +14,8 @@ const waitStateRefresh = 250 * time.Millisecond
 // stopped state and returns its persisted exit code. For a running record it
 // binds to the exact PID/start-time identity with a pidfd instead of polling a
 // numeric PID. If the persisted identity is already gone or has been reused,
-// the stale running record is reconciled to stopped with an unknown exit code.
+// the stale running record is reconciled to stopped with an unknown exit code
+// and the old process generation's cgroup is removed.
 func WaitContainer(st *state.Store, containerID string) (int, error) {
 	if st == nil {
 		return -1, fmt.Errorf("state store is nil")
@@ -38,9 +39,9 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 		handle, err := OpenProcessHandle(c.PID, c.PIDStartTime)
 		if err != nil {
 			if errors.Is(err, ErrProcessNotFound) || errors.Is(err, ErrProcessIdentityMismatch) {
-				changed, stateErr := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now())
-				if stateErr != nil {
-					return -1, fmt.Errorf("reconcile stale running state for container %s: %w", c.ID, stateErr)
+				changed, finalizeErr := FinalizeStoppedGeneration(st, c, -1, time.Now())
+				if finalizeErr != nil {
+					return -1, fmt.Errorf("finalize stale running state for container %s: %w", c.ID, finalizeErr)
 				}
 				if changed {
 					return -1, nil
@@ -64,6 +65,11 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 			}
 			if latest.Status == state.StatusStopped {
 				_ = handle.Close()
+				if exited {
+					if _, finalizeErr := FinalizeStoppedGeneration(st, c, latest.ExitCode, time.Now()); finalizeErr != nil {
+						return latest.ExitCode, fmt.Errorf("cleanup stopped container %s generation: %w", c.ID, finalizeErr)
+					}
+				}
 				return latest.ExitCode, nil
 			}
 			if latest.Status != state.StatusRunning || latest.PID != c.PID || latest.PIDStartTime != c.PIDStartTime {
@@ -75,9 +81,9 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 			}
 
 			_ = handle.Close()
-			changed, markErr := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now())
-			if markErr != nil {
-				return -1, fmt.Errorf("reconcile exited container %s: %w", c.ID, markErr)
+			changed, finalizeErr := FinalizeStoppedGeneration(st, c, -1, time.Now())
+			if finalizeErr != nil {
+				return -1, fmt.Errorf("finalize exited container %s: %w", c.ID, finalizeErr)
 			}
 			if changed {
 				return -1, nil

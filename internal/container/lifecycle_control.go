@@ -47,7 +47,9 @@ func openRunningProcess(st *state.Store, containerID string) (*state.Container, 
 // running container. It sends SIGTERM through pidfd, waits for that pidfd to
 // become readable, then escalates to SIGKILL on timeout. State is reconciled
 // only after the referenced process is confirmed exited, and only if the state
-// record still points at the same PID/start-time pair.
+// record still points at the same PID/start-time pair. The exact generation's
+// cgroup is then removed even if a concurrent lifecycle actor already updated
+// the state record.
 func StopContainer(st *state.Store, containerID string, timeout time.Duration) (*state.Container, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("stop timeout must not be negative")
@@ -88,8 +90,8 @@ func StopContainer(st *state.Store, containerID string, timeout time.Duration) (
 		}
 	}
 
-	if _, err := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil {
-		return nil, fmt.Errorf("reconcile stopped container state: %w", err)
+	if _, err := FinalizeStoppedGeneration(st, c, -1, time.Now()); err != nil {
+		return c, fmt.Errorf("finalize stopped container: %w", err)
 	}
 	return c, nil
 }
