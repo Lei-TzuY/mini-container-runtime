@@ -5,7 +5,10 @@ import (
 	"math"
 )
 
-const maxCgroupNameLen = 255
+const (
+	maxCgroupNameLen = 255
+	cpuPeriodUsec    = 100000
+)
 
 // validateCgroupName restricts runtime-managed cgroups to a single safe path
 // component. The runtime only creates names such as "minicontainer-1234", so
@@ -42,8 +45,9 @@ func validateResourceValues(memoryMax, cpuWeight int64, cpus float64, pidsMax in
 	if cpuWeight < 0 || cpuWeight > 10000 {
 		return fmt.Errorf("CPU weight must be 0 or in range 1..10000: %d", cpuWeight)
 	}
-	if math.IsNaN(cpus) || math.IsInf(cpus, 0) || cpus < 0 {
-		return fmt.Errorf("CPU quota must be a finite non-negative value: %v", cpus)
+	maxCPUs := float64(math.MaxInt64) / cpuPeriodUsec
+	if math.IsNaN(cpus) || math.IsInf(cpus, 0) || cpus < 0 || cpus > maxCPUs {
+		return fmt.Errorf("CPU quota must be finite and in range 0..%.0f: %v", maxCPUs, cpus)
 	}
 	if pidsMax < 0 {
 		return fmt.Errorf("PID limit must not be negative: %d", pidsMax)
