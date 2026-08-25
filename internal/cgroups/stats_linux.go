@@ -43,8 +43,8 @@ type Stats struct {
 
 // ReadStats reads live cgroup metrics for the given cgroup name (e.g., "minicontainer-1234").
 func ReadStats(name string) (*Stats, error) {
-	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
-		return nil, fmt.Errorf("invalid cgroup name %q", name)
+	if err := validateCgroupName(name); err != nil {
+		return nil, err
 	}
 	return readStatsAtPath(filepath.Join(cgroupV2Root, name))
 }
