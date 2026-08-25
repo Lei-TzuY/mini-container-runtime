@@ -37,14 +37,6 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 		return fmt.Errorf("container %s is already bound to running process %d/%d", id, c.PID, c.PIDStartTime)
 	}
 
-	previousExitIdentity, hadPreviousExitIdentity, err := s.readExitedIdentityUnlocked(id)
-	if err != nil {
-		return fmt.Errorf("read prior exited identity before start: %w", err)
-	}
-	if err := s.clearExitedIdentityUnlocked(id); err != nil {
-		return fmt.Errorf("clear prior exited identity before start: %w", err)
-	}
-
 	c.PID = pid
 	c.PIDStartTime = pidStartTime
 	c.Status = StatusRunning
@@ -53,14 +45,13 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	c.ExitCode = 0
 
 	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
-		if hadPreviousExitIdentity {
-			restoreErr := s.writeExitedIdentityUnlocked(id, previousExitIdentity.PID, previousExitIdentity.PIDStartTime)
-			if restoreErr != nil {
-				return errors.Join(err, fmt.Errorf("restore prior exited identity after failed start transition: %w", restoreErr))
-			}
-		}
 		return err
 	}
+	// A tombstone from the previous lifecycle is never consulted while the
+	// record is running, and a later unknown stop overwrites it before changing
+	// state. Clear it only after the new running state is durable so a crash can
+	// never destroy the sole reconciliation key for an older stopped record.
+	_ = s.clearExitedIdentityUnlocked(id)
 	return nil
 }
 
