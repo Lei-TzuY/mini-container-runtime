@@ -1,9 +1,7 @@
 package state
 
 import (
-	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"time"
 )
 
@@ -25,6 +23,10 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	c, err := s.getUnlocked(id)
 	if err != nil {
@@ -41,11 +43,7 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	c.FinishedAt = nil
 	c.ExitCode = 0
 
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal container: %w", err)
-	}
-	return atomicWriteFile(s.ctrDir, filepath.Join(s.ctrDir, id+".json"), data)
+	return s.writeContainerNextRevisionUnlocked(c)
 }
 
 // MarkStoppedIfIdentity atomically marks a running container stopped only when
@@ -65,6 +63,10 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return false, err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	c, err := s.getUnlocked(id)
 	if err != nil {
@@ -80,11 +82,7 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 	c.FinishedAt = &finishedAt
 	c.ExitCode = exitCode
 
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return false, fmt.Errorf("marshal container: %w", err)
-	}
-	if err := atomicWriteFile(s.ctrDir, filepath.Join(s.ctrDir, id+".json"), data); err != nil {
+	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
 		return false, err
 	}
 	return true, nil
