@@ -189,12 +189,18 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 		fmt.Printf("[parent] child started, PID=%d\n", childPID)
 	}
 
+	cgName := fmt.Sprintf("minicontainer-%d", childPID)
 	var childStartTime uint64
 	if lifecycleStore != nil {
 		childStartTime, err = ProcessStartTime(childPID)
 		if err != nil {
 			abortBlockedChild(cmd, writePipe)
 			return &runtimeStateError{err: fmt.Errorf("capture process identity for container %s: %w", cfg.ContainerID, err)}
+		}
+		cgName, err = cgroups.NameForContainerProcess(cfg.ContainerID, childStartTime)
+		if err != nil {
+			abortBlockedChild(cmd, writePipe)
+			return &runtimeStateError{err: fmt.Errorf("derive cgroup identity for container %s: %w", cfg.ContainerID, err)}
 		}
 		startedAt := time.Now()
 		if err := lifecycleStore.MarkRunning(cfg.ContainerID, childPID, childStartTime, startedAt); err != nil {
@@ -204,7 +210,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 	}
 
 	cgCfg := cgroups.Config{
-		Name:      fmt.Sprintf("minicontainer-%d", childPID),
+		Name:      cgName,
 		MemoryMax: cfg.Memory,
 		CPUWeight: cfg.CPUWeight,
 		CPUs:      cfg.CPUs,
