@@ -23,6 +23,11 @@ type Config struct {
 	// ContainerID is the unique ID assigned to the container.
 	ContainerID string
 
+	// StateDir optionally overrides the persistent runtime state directory used
+	// for lifecycle transitions. Empty uses state.DefaultDir(). It is parent-side
+	// runtime metadata and is not propagated into the container process.
+	StateDir string
+
 	// RootFS is the path to the directory that will become the container's root.
 	RootFS string
 

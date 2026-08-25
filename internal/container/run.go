@@ -7,6 +7,7 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,12 +20,25 @@ import (
 	"minicontainer/internal/network"
 	"minicontainer/internal/ns"
 	"minicontainer/internal/rootfs"
+	"minicontainer/internal/state"
 )
 
 const sentinelEnv = "MINICONTAINER_INIT=1"
 
+type runtimeStateError struct {
+	err error
+}
+
+func (e *runtimeStateError) Error() string { return e.err.Error() }
+func (e *runtimeStateError) Unwrap() error { return e.err }
+
 // Run launches a new container, optionally handles restart policies.
 func Run(cfg Config) error {
+	lifecycleStore, err := openLifecycleStore(cfg)
+	if err != nil {
+		return err
+	}
+
 	maxAttempts := 1
 	if cfg.Restart == "always" || cfg.Restart == "on-failure" {
 		maxAttempts = 5
@@ -33,7 +47,15 @@ func Run(cfg Config) error {
 	attempt := 0
 	for {
 		attempt++
-		err := runOnce(cfg)
+		err := runOnce(cfg, lifecycleStore)
+
+		var stateErr *runtimeStateError
+		if errors.As(err, &stateErr) {
+			// State persistence/identity failures are runtime-control failures, not
+			// payload failures. Restarting would create more unmanaged processes.
+			return err
+		}
+
 		if err == nil {
 			if cfg.Restart == "always" && attempt < maxAttempts {
 				if cfg.Debug {
@@ -56,7 +78,22 @@ func Run(cfg Config) error {
 	}
 }
 
-func runOnce(cfg Config) error {
+func openLifecycleStore(cfg Config) (*state.Store, error) {
+	if cfg.ContainerID == "" {
+		return nil, nil
+	}
+	dir := cfg.StateDir
+	if dir == "" {
+		dir = state.DefaultDir()
+	}
+	st, err := state.Open(dir)
+	if err != nil {
+		return nil, &runtimeStateError{err: fmt.Errorf("open lifecycle state store: %w", err)}
+	}
+	return st, nil
+}
+
+func runOnce(cfg Config, lifecycleStore *state.Store) error {
 	if cfg.Debug {
 		fmt.Println("[parent] spawning child with new namespaces")
 	}
@@ -153,6 +190,20 @@ func runOnce(cfg Config) error {
 		fmt.Printf("[parent] child started, PID=%d\n", childPID)
 	}
 
+	var childStartTime uint64
+	if lifecycleStore != nil {
+		childStartTime, err = ProcessStartTime(childPID)
+		if err != nil {
+			abortBlockedChild(cmd, writePipe)
+			return &runtimeStateError{err: fmt.Errorf("capture process identity for container %s: %w", cfg.ContainerID, err)}
+		}
+		startedAt := time.Now()
+		if err := lifecycleStore.MarkRunning(cfg.ContainerID, childPID, childStartTime, startedAt); err != nil {
+			abortBlockedChild(cmd, writePipe)
+			return &runtimeStateError{err: fmt.Errorf("persist running state for container %s: %w", cfg.ContainerID, err)}
+		}
+	}
+
 	cgCfg := cgroups.Config{
 		Name:      fmt.Sprintf("minicontainer-%d", childPID),
 		MemoryMax: cfg.Memory,
@@ -197,6 +248,24 @@ func runOnce(cfg Config) error {
 		cgroups.Remove(cgCfg.Name, cfg.Debug)
 	}
 
+	if lifecycleStore != nil {
+		finishedAt := time.Now()
+		_, stateErr := lifecycleStore.MarkStoppedIfIdentity(
+			cfg.ContainerID,
+			childPID,
+			childStartTime,
+			exitCodeFromWaitError(waitErr),
+			finishedAt,
+		)
+		if stateErr != nil {
+			lifecycleErr := &runtimeStateError{err: fmt.Errorf("persist stopped state for container %s: %w", cfg.ContainerID, stateErr)}
+			if waitErr != nil {
+				return errors.Join(waitErr, lifecycleErr)
+			}
+			return lifecycleErr
+		}
+	}
+
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			return exitErr
@@ -208,6 +277,29 @@ func runOnce(cfg Config) error {
 		fmt.Println("[parent] container exited cleanly")
 	}
 	return nil
+}
+
+func abortBlockedChild(cmd *exec.Cmd, writePipe *os.File) {
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	if writePipe != nil {
+		_ = writePipe.Close()
+	}
+	if cmd != nil {
+		_ = cmd.Wait()
+	}
+}
+
+func exitCodeFromWaitError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 1
 }
 
 // ContainerInit is called when the re-executed child detects sentinelEnv.
