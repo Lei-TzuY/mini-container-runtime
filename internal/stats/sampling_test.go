@@ -2,9 +2,11 @@ package stats
 
 import (
 	"math"
+	"os"
 	"testing"
 	"time"
 
+	"minicontainer/internal/container"
 	"minicontainer/internal/state"
 )
 
@@ -51,7 +53,7 @@ func TestCollectStatsSampledReturnsImmediatelyWithoutRunningContainers(t *testin
 		t.Fatalf("state.Open: %v", err)
 	}
 
-	start := time.Now()
+	started := time.Now()
 	got, err := CollectStatsSampled(st, 2*time.Second)
 	if err != nil {
 		t.Fatalf("CollectStatsSampled: %v", err)
@@ -59,7 +61,39 @@ func TestCollectStatsSampledReturnsImmediatelyWithoutRunningContainers(t *testin
 	if len(got) != 0 {
 		t.Fatalf("expected no stats, got %d", len(got))
 	}
-	if elapsed := time.Since(start); elapsed >= time.Second {
+	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("empty collection unnecessarily slept for %s", elapsed)
+	}
+}
+
+func TestCollectStatsSampledDoesNotSleepForStaleIdentity(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := container.ProcessStartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(&state.Container{
+		ID:           "ctr-stale-sample",
+		PID:          os.Getpid(),
+		PIDStartTime: identity + 1,
+		Status:       state.StatusRunning,
+		CreatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	got, err := CollectStatsSampled(st, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ProcessLive {
+		t.Fatalf("unexpected stale sampled stats: %+v", got)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("stale identity unnecessarily consumed sample interval: %s", elapsed)
 	}
 }
