@@ -243,9 +243,6 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 	if cfg.BridgeNetwork {
 		bridgeCleanup, err = setupBridgeHost(childPID, hostCIDR, containerIP, cfg.PortMappings, cfg.Debug)
 		if err != nil {
-			if cgroupApplied {
-				cgroups.Remove(cgCfg.Name, cfg.Debug)
-			}
 			return abortRuntimeSetupFailure(
 				cmd,
 				writePipe,
@@ -268,40 +265,27 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 			bridgeCleanupErr = &runtimeSetupError{err: fmt.Errorf("cleanup bridge network: %w", err)}
 		}
 	}
-	if cgroupApplied {
-		cgroups.Remove(cgCfg.Name, cfg.Debug)
-	}
 
-	var lifecycleErr error
+	var finalizationErr error
 	if lifecycleStore != nil {
-		finishedAt := time.Now()
-		_, stateErr := lifecycleStore.MarkStoppedIfIdentity(
-			cfg.ContainerID,
-			childPID,
-			childStartTime,
+		snapshot := &state.Container{
+			ID:           cfg.ContainerID,
+			PID:          childPID,
+			PIDStartTime: childStartTime,
+		}
+		_, finalizationErr = FinalizeStoppedGeneration(
+			lifecycleStore,
+			snapshot,
 			exitCodeFromWaitError(waitErr),
-			finishedAt,
+			time.Now(),
 		)
-		if stateErr != nil {
-			lifecycleErr = &runtimeStateError{err: fmt.Errorf("persist stopped state for container %s: %w", cfg.ContainerID, stateErr)}
+	} else if cgroupApplied {
+		if err := cgroups.RemoveChecked(cgCfg.Name, cfg.Debug); err != nil {
+			finalizationErr = fmt.Errorf("cleanup cgroup %s: %w", cgCfg.Name, err)
 		}
 	}
 
-	var resultErr error
-	if waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
-			resultErr = exitErr
-		} else {
-			resultErr = fmt.Errorf("container exited with error: %w", waitErr)
-		}
-	}
-	if lifecycleErr != nil {
-		resultErr = errors.Join(resultErr, lifecycleErr)
-	}
-	if bridgeCleanupErr != nil {
-		resultErr = errors.Join(resultErr, bridgeCleanupErr)
-	}
-	if resultErr != nil {
+	if resultErr := parentExitResult(waitErr, finalizationErr, bridgeCleanupErr); resultErr != nil {
 		return resultErr
 	}
 
