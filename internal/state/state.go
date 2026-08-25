@@ -369,16 +369,7 @@ func (s *Store) GetImage(nameOrID string) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	for _, img := range images {
-		if img.Name == nameOrID || img.ID == nameOrID || (img.Repository+":"+img.Tag) == nameOrID {
-			return img, nil
-		}
-		if len(img.ID) >= len(nameOrID) && img.ID[:len(nameOrID)] == nameOrID {
-			return img, nil
-		}
-	}
-	return nil, fmt.Errorf("image %q not found", nameOrID)
+	return resolveImageForRead(images, nameOrID)
 }
 
 func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
@@ -393,7 +384,11 @@ func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	img, err := s.GetImageUnlocked(nameOrID)
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	img, err := resolveImageForDelete(images, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -411,16 +406,7 @@ func (s *Store) GetImageUnlocked(nameOrID string) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	for _, img := range images {
-		if img.Name == nameOrID || img.ID == nameOrID || (img.Repository+":"+img.Tag) == nameOrID {
-			return img, nil
-		}
-		if len(img.ID) >= len(nameOrID) && img.ID[:len(nameOrID)] == nameOrID {
-			return img, nil
-		}
-	}
-	return nil, fmt.Errorf("image %q not found", nameOrID)
+	return resolveImageForRead(images, nameOrID)
 }
 
 func (s *Store) ListImages() ([]*Image, error) {
