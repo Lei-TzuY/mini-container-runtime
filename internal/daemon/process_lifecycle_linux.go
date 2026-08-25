@@ -74,7 +74,10 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 		}
 	}
 
-	if err := s.store.Delete(c.ID); err != nil {
+	// Recheck the current on-disk status while holding the state lock. This
+	// closes the final cleanup->delete window if another actor restarts the
+	// container after the reload above.
+	if err := s.store.DeleteIfNotRunning(c.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

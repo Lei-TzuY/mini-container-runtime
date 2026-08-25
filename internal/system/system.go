@@ -77,11 +77,12 @@ func CalculateDF(st *state.Store) (*DFResult, error) {
 func SystemPrune(st *state.Store, pruneAll bool) (*PruneResult, error) {
 	res := &PruneResult{}
 
-	// Prune stopped containers
+	// Prune stopped containers. DeleteIfNotRunning rechecks disk under the state
+	// lock, so a generation restarted after List cannot be removed here.
 	ctrs, _ := st.List()
 	for _, c := range ctrs {
 		if c.Status == state.StatusStopped {
-			if err := st.Delete(c.ID); err == nil {
+			if err := st.DeleteIfNotRunning(c.ID); err == nil {
 				res.ContainersReclaimed++
 			}
 		}

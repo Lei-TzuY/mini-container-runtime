@@ -29,7 +29,9 @@ func PruneUntil(st *state.Store, cutoff time.Time) (*PruneResult, error) {
 
 	for _, c := range ctrs {
 		if c.Status == state.StatusStopped && c.CreatedAt.Before(cutoff) {
-			if err := st.Delete(c.ID); err == nil {
+			// Recheck the current on-disk lifecycle under the state lock so a
+			// concurrent restart after List cannot be deleted from a stale snapshot.
+			if err := st.DeleteIfNotRunning(c.ID); err == nil {
 				res.ContainersReclaimed++
 			}
 		}
