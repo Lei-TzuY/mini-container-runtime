@@ -239,7 +239,6 @@ func (s *Server) handleContainerRoute(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 
 	if len(parts) == 1 && r.Method == http.MethodGet {
-		// Inspect container
 		c, err := s.store.Resolve(id)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -250,25 +249,12 @@ func (s *Server) handleContainerRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 1 && r.Method == http.MethodDelete {
-		if err := s.store.Delete(id); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "id": id})
+		s.handleDeleteContainer(w, id)
 		return
 	}
 
 	if len(parts) == 2 && parts[1] == "stop" && r.Method == http.MethodPost {
-		c, err := s.store.Resolve(id)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-			return
-		}
-		c.Status = state.StatusStopped
-		now := time.Now()
-		c.FinishedAt = &now
-		_ = s.store.Save(c)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "stopped", "id": c.ID})
+		s.handleStopContainer(w, r, id)
 		return
 	}
 
