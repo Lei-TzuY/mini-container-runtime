@@ -23,7 +23,10 @@ import (
 	"minicontainer/internal/state"
 )
 
-const sentinelEnv = "MINICONTAINER_INIT=1"
+const (
+	sentinelEnvKey = "MINICONTAINER_INIT"
+	sentinelEnv    = sentinelEnvKey + "=1"
+)
 
 type runtimeStateError struct {
 	err error
@@ -189,14 +192,24 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("creating sync pipe: %w", err)
 	}
-	cmd.ExtraFiles = []*os.File{readPipe}
+	initStatusReadPipe, initStatusWritePipe, err := os.Pipe()
+	if err != nil {
+		_ = readPipe.Close()
+		_ = writePipe.Close()
+		return fmt.Errorf("creating runtime init status pipe: %w", err)
+	}
+	defer initStatusReadPipe.Close()
+	cmd.ExtraFiles = []*os.File{readPipe, initStatusWritePipe}
 
 	if err := cmd.Start(); err != nil {
 		_ = readPipe.Close()
 		_ = writePipe.Close()
+		_ = initStatusReadPipe.Close()
+		_ = initStatusWritePipe.Close()
 		return fmt.Errorf("starting container process: %w", err)
 	}
 	_ = readPipe.Close()
+	_ = initStatusWritePipe.Close()
 
 	childPID := cmd.Process.Pid
 	if cfg.Debug {
@@ -300,6 +313,8 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		)
 	}
 
+	initStatusErr := awaitPayloadExec(initStatusReadPipe)
+	_ = initStatusReadPipe.Close()
 	waitErr := cmd.Wait()
 
 	var bridgeCleanupErr error
@@ -330,7 +345,9 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		}
 	}
 
-	if resultErr := parentExitResult(waitErr, finalizationErr, bridgeCleanupErr); resultErr != nil {
+	resultErr = parentExitResult(waitErr, finalizationErr, bridgeCleanupErr)
+	resultErr = joinRuntimeInitFailure(resultErr, initStatusErr)
+	if resultErr != nil {
 		return resultErr
 	}
 
@@ -364,7 +381,13 @@ func exitCodeFromWaitError(err error) int {
 }
 
 // ContainerInit is called when the re-executed child detects sentinelEnv.
-func ContainerInit(cfg Config) error {
+func ContainerInit(cfg Config) (resultErr error) {
+	initStatus, err := openRuntimeInitStatusWriter()
+	if err != nil {
+		return fmt.Errorf("open runtime init status: %w", err)
+	}
+	defer func() { initStatus.finish(resultErr) }()
+
 	if cfg.Debug {
 		fmt.Println("[init] running inside new namespaces")
 	}
@@ -499,11 +522,17 @@ func ContainerInit(cfg Config) error {
 		fmt.Printf("[init] exec: %s %v\n", binary, cfg.Command[1:])
 	}
 
+	if err := os.Unsetenv(sentinelEnvKey); err != nil {
+		return fmt.Errorf("clear runtime init environment: %w", err)
+	}
 	env := os.Environ()
 	if len(cfg.Env) > 0 {
 		env = append(env, cfg.Env...)
 	}
 
+	if err := initStatus.readyForExec(); err != nil {
+		return err
+	}
 	if err := syscall.Exec(binary, cfg.Command, env); err != nil {
 		return fmt.Errorf("exec %s: %w", binary, err)
 	}
