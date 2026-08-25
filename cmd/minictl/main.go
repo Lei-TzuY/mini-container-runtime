@@ -15,7 +15,6 @@ import (
 	"minicontainer/internal/attach"
 	"minicontainer/internal/bench"
 	"minicontainer/internal/builder"
-	"minicontainer/internal/cgroups"
 	"minicontainer/internal/compose"
 	"minicontainer/internal/container"
 	"minicontainer/internal/daemon"
@@ -32,7 +31,6 @@ import (
 	"minicontainer/internal/registry"
 	"minicontainer/internal/security"
 	"minicontainer/internal/state"
-	"minicontainer/internal/stats"
 	"minicontainer/internal/system"
 	"minicontainer/internal/volume"
 )
@@ -386,52 +384,7 @@ func cmdExec(args []string) {
 }
 
 func cmdUpdate(args []string) {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	memory := fs.String("memory", "", "memory limit in bytes, k, m, or g")
-	cpus := fs.Float64("cpus", 0.0, "hard fractional CPU limit (e.g. 1.5)")
-	cpuWeight := fs.Int64("cpu-weight", 0, "cgroup v2 CPU weight, 1..10000")
-	pidsLimit := fs.Int64("pids-limit", 0, "maximum process count")
-	fs.SetOutput(os.Stderr)
-	_ = fs.Parse(args)
-
-	rest := fs.Args()
-	if len(rest) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl update [--memory size] [--cpus float] <id>")
-		os.Exit(1)
-	}
-
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	rec, err := store.Resolve(rest[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	memBytes, err := parseByteSize(*memory)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid --memory: %v\n", err)
-		os.Exit(1)
-	}
-
-	cgName := fmt.Sprintf("minicontainer-%d", rec.PID)
-	upCfg := cgroups.UpdateConfig{
-		MemoryMax: memBytes,
-		CPUs:      *cpus,
-		CPUWeight: *cpuWeight,
-		PidsMax:   *pidsLimit,
-	}
-
-	debug := os.Getenv("MINICONTAINER_DEBUG") == "1"
-	if err := cgroups.UpdateLimits(cgName, upCfg, debug); err != nil {
-		fmt.Fprintf(os.Stderr, "update error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("%s\n", rec.ID[:8])
+	cmdUpdateSafe(args)
 }
 
 func cmdPull(args []string) {
@@ -607,8 +560,7 @@ func cmdExport(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Exporting container %s rootfs (%s) → %s …\n",
-		rec.ID[:8], rec.RootFS, outPath)
+	fmt.Printf("Exporting container %s rootfs (%s) → %s …\n", rec.ID[:8], rec.RootFS, outPath)
 	if err := image.ExportDir(rec.RootFS, outPath); err != nil {
 		fmt.Fprintf(os.Stderr, "export error: %v\n", err)
 		os.Exit(1)
@@ -713,108 +665,15 @@ func cmdLogs(args []string) {
 }
 
 func cmdStats(args []string) {
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	collectedStats, _ := stats.CollectStats(store)
-	_ = collectedStats
-
-	var targetContainers []*state.Container
-	if len(args) > 0 {
-		rec, err := store.Resolve(args[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		targetContainers = []*state.Container{rec}
-	} else {
-		all, err := store.List()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error listing containers: %v\n", err)
-			os.Exit(1)
-		}
-		for _, c := range all {
-			if c.Status == state.StatusRunning && container.IsRunning(c.PID) {
-				targetContainers = append(targetContainers, c)
-			}
-		}
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "CONTAINER ID\tPID\tMEM USAGE / LIMIT\tPIDS\tCPU USEC")
-	for _, c := range targetContainers {
-		cgName := fmt.Sprintf("minicontainer-%d", c.PID)
-		st, err := cgroups.ReadStats(cgName)
-		if err != nil {
-			fmt.Fprintf(w, "%s\t%d\tN/A\tN/A\tN/A\n", c.ID[:8], c.PID)
-			continue
-		}
-		memLimitStr := "unlimited"
-		if st.MemoryLimit > 0 {
-			memLimitStr = fmt.Sprintf("%.2f MiB", float64(st.MemoryLimit)/(1024*1024))
-		}
-		memUsageStr := fmt.Sprintf("%.2f MiB", float64(st.MemoryUsage)/(1024*1024))
-		fmt.Fprintf(w, "%s\t%d\t%s / %s\t%d\t%d us\n",
-			c.ID[:8], c.PID, memUsageStr, memLimitStr, st.PidsCurrent, st.CPUUsageUsec)
-	}
-	_ = w.Flush()
+	cmdStatsSafe(args)
 }
 
 func cmdPause(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl pause <id>")
-		os.Exit(1)
-	}
-
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	rec, err := store.Resolve(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	cgName := fmt.Sprintf("minicontainer-%d", rec.PID)
-	if err := cgroups.Freeze(cgName); err != nil {
-		fmt.Fprintf(os.Stderr, "pause error: %v\n", err)
-		os.Exit(1)
-	}
-	_ = events.Publish(events.EventPause, rec.ID, rec.RootFS, "paused container")
-	fmt.Printf("%s\n", rec.ID[:8])
+	cmdPauseSafe(args)
 }
 
 func cmdUnpause(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: minictl unpause <id>")
-		os.Exit(1)
-	}
-
-	store, err := openStore()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	rec, err := store.Resolve(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	cgName := fmt.Sprintf("minicontainer-%d", rec.PID)
-	if err := cgroups.Unfreeze(cgName); err != nil {
-		fmt.Fprintf(os.Stderr, "unpause error: %v\n", err)
-		os.Exit(1)
-	}
-	_ = events.Publish(events.EventUnpause, rec.ID, rec.RootFS, "unpaused container")
-	fmt.Printf("%s\n", rec.ID[:8])
+	cmdUnpauseSafe(args)
 }
 
 func cmdStop(args []string) {
@@ -873,8 +732,7 @@ func cmdPs(args []string) {
 			cmd = cmd[:27] + "..."
 		}
 		age := time.Since(c.CreatedAt).Round(time.Second)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s ago\n",
-			shortID, statusStr, cmd, c.Hostname, age)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s ago\n", shortID, statusStr, cmd, c.Hostname, age)
 	}
 	_ = w.Flush()
 }
@@ -902,8 +760,7 @@ func cmdRm(args []string) {
 	}
 
 	if rec.Status == state.StatusRunning && container.IsRunning(rec.PID) {
-		fmt.Fprintf(os.Stderr, "container %s is running — stop it first with 'minictl kill %s'\n",
-			rec.ID[:8], rec.ID[:8])
+		fmt.Fprintf(os.Stderr, "container %s is running — stop it first with 'minictl kill %s'\n", rec.ID[:8], rec.ID[:8])
 		os.Exit(1)
 	}
 
@@ -1144,9 +1001,7 @@ func cmdDaemon(args []string) {
 	_ = fs.Parse(args)
 
 	fmt.Printf("Starting minictl REST API Daemon on %s...\n", *listen)
-	srv, err := daemon.NewServer(daemon.Config{
-		ListenAddr: *listen,
-	})
+	srv, err := daemon.NewServer(daemon.Config{ListenAddr: *listen})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize daemon server: %v\n", err)
 		os.Exit(1)
