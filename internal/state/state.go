@@ -148,7 +148,7 @@ func Open(dir string) (*Store, error) {
 	}
 
 	return &Store{
-		dir:         pinned.rootDir,
+		dir:         dir,
 		ctrDir:      pinned.ctrDir,
 		imgDir:      pinned.imgDir,
 		lockFile:    lockFile,
@@ -156,8 +156,9 @@ func Open(dir string) (*Store, error) {
 	}, nil
 }
 
-// Dir returns the stable state-root path used for I/O by this Store. On Linux
-// this is a /proc/self/fd alias for the directory generation pinned by Open.
+// Dir returns the durable configured state-root pathname. Call StoragePath for
+// filesystem mutations that must fail if that pathname no longer references
+// the directory generation pinned by Open.
 func (s *Store) Dir() string {
 	return s.dir
 }
