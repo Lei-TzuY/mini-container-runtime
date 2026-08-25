@@ -116,12 +116,15 @@ func TestStorePinsImageDirectoryAcrossPathReplacement(t *testing.T) {
 	}
 }
 
-func TestStorePinsRootGenerationAndDirForExternalIO(t *testing.T) {
+func TestStorePinsRootGenerationInternally(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "state")
 	st, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if st.Dir() != root {
+		t.Fatalf("Store.Dir()=%q, want configured durable path %q", st.Dir(), root)
 	}
 
 	originalRoot := filepath.Join(parent, "state-original")
@@ -142,17 +145,6 @@ func TestStorePinsRootGenerationAndDirForExternalIO(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "containers", c.ID+".json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("container state escaped through replaced root: %v", err)
-	}
-
-	probe := filepath.Join(st.Dir(), "external-io-probe")
-	if err := os.WriteFile(probe, []byte("pinned"), 0o600); err != nil {
-		t.Fatalf("write through Store.Dir: %v", err)
-	}
-	if data, err := os.ReadFile(filepath.Join(originalRoot, "external-io-probe")); err != nil || string(data) != "pinned" {
-		t.Fatalf("Store.Dir did not resolve to original root: data=%q err=%v", data, err)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "external-io-probe")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Store.Dir escaped to replacement root: %v", err)
 	}
 
 	if _, err := Open(root); err == nil {
