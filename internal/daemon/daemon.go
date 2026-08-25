@@ -3,18 +3,24 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"minicontainer/internal/imagestore"
 	"minicontainer/internal/metrics"
 	"minicontainer/internal/state"
 	runtimestats "minicontainer/internal/stats"
+)
+
+const (
+	defaultListenAddr = "unix:///tmp/minictl.sock"
+	unixSocketMode    = 0o600
 )
 
 // Server represents the minictl REST API Daemon.
@@ -24,7 +30,6 @@ type Server struct {
 	listener   net.Listener
 	httpServer *http.Server
 	store      *state.Store
-	mu         sync.Mutex
 }
 
 // Config options for starting daemon server.
@@ -45,25 +50,26 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("open state store: %w", err)
 	}
 
-	addr := cfg.ListenAddr
-	if addr == "" {
-		addr = "unix:///tmp/minictl.sock"
+	network, listenPath, err := resolveListenAddress(cfg.ListenAddr)
+	if err != nil {
+		return nil, err
 	}
-
-	network := "tcp"
-	listenPath := addr
-	if strings.HasPrefix(addr, "unix://") {
-		network = "unix"
-		listenPath = strings.TrimPrefix(addr, "unix://")
-		_ = os.Remove(listenPath)
-	} else if strings.HasPrefix(addr, "tcp://") {
-		network = "tcp"
-		listenPath = strings.TrimPrefix(addr, "tcp://")
+	if network == "unix" {
+		if err := ensureUnixSocketPathAvailable(listenPath); err != nil {
+			return nil, err
+		}
 	}
 
 	l, err := net.Listen(network, listenPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s %s: %w", network, listenPath, err)
+	}
+	if network == "unix" {
+		if err := os.Chmod(listenPath, unixSocketMode); err != nil {
+			_ = l.Close()
+			_ = removeUnixSocketIfOwnedType(listenPath)
+			return nil, fmt.Errorf("chmod unix socket %s: %w", listenPath, err)
+		}
 	}
 
 	srv := &Server{
@@ -82,24 +88,100 @@ func NewServer(cfg Config) (*Server, error) {
 	mux.HandleFunc("/v1/metrics", srv.handleMetrics)
 
 	srv.httpServer = &http.Server{
-		Handler: mux,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 
 	return srv, nil
 }
 
+func resolveListenAddress(raw string) (network, address string, err error) {
+	if raw == "" {
+		raw = defaultListenAddr
+	}
+
+	switch {
+	case strings.HasPrefix(raw, "unix://"):
+		address = strings.TrimPrefix(raw, "unix://")
+		if address == "" {
+			return "", "", fmt.Errorf("unix listen path must not be empty")
+		}
+		if !filepath.IsAbs(address) {
+			return "", "", fmt.Errorf("unix listen path must be absolute: %q", address)
+		}
+		return "unix", address, nil
+	case strings.HasPrefix(raw, "tcp://"):
+		address = strings.TrimPrefix(raw, "tcp://")
+		if address == "" {
+			return "", "", fmt.Errorf("TCP listen address must not be empty")
+		}
+		return "tcp", address, nil
+	case strings.Contains(raw, "://"):
+		return "", "", fmt.Errorf("unsupported listen address scheme in %q", raw)
+	default:
+		// Preserve compatibility with bare host:port TCP addresses.
+		return "tcp", raw, nil
+	}
+}
+
+func ensureUnixSocketPathAvailable(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect unix socket path %s: %w", path, err)
+	}
+
+	if info.Mode()&os.ModeSocket != 0 {
+		return fmt.Errorf("unix socket path %s already exists; refusing to replace it", path)
+	}
+	return fmt.Errorf("refusing to remove non-socket path %s (mode %s)", path, info.Mode())
+}
+
+func removeUnixSocketIfOwnedType(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect unix socket path %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket path %s (mode %s)", path, info.Mode())
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove unix socket %s: %w", path, err)
+	}
+	return nil
+}
+
 // Start runs the HTTP server loop.
 func (s *Server) Start() error {
-	return s.httpServer.Serve(s.listener)
+	err := s.httpServer.Serve(s.listener)
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // Stop gracefully shuts down daemon server.
 func (s *Server) Stop(ctx context.Context) error {
-	err := s.httpServer.Shutdown(ctx)
-	if s.network == "unix" {
-		_ = os.Remove(s.addr)
+	shutdownErr := s.httpServer.Shutdown(ctx)
+	listenerErr := s.listener.Close()
+	if errors.Is(listenerErr, net.ErrClosed) {
+		listenerErr = nil
 	}
-	return err
+
+	var socketErr error
+	if s.network == "unix" {
+		socketErr = removeUnixSocketIfOwnedType(s.addr)
+	}
+	return errors.Join(shutdownErr, listenerErr, socketErr)
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
