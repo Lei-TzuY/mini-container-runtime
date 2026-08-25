@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
 
@@ -44,20 +45,32 @@ func saveNetworkOwnershipContainer(t *testing.T, st *state.Store, id string, pid
 	return ownership
 }
 
-func TestNetworkOwnershipForGenerationNormalizesProtocol(t *testing.T) {
+func TestNetworkOwnershipForGenerationIncludesVethAndNormalizesProtocol(t *testing.T) {
+	owner := "minicontainer:test-owner"
 	ownership := networkOwnershipForGeneration(
-		"minicontainer:test-owner",
+		owner,
 		1,
 		2,
 		"172.20.0.2",
 		[]PortMapping{{HostPort: 8080, ContainerPort: 80}, {HostPort: 5353, ContainerPort: 53, Protocol: "udp"}},
 	)
+	if ownership.VethHost != network.VethHostIfaceOwned(owner) {
+		t.Fatalf("veth host=%q, want generation-owned %q", ownership.VethHost, network.VethHostIfaceOwned(owner))
+	}
 	if len(ownership.Mappings) != 2 || ownership.Mappings[0].Protocol != "tcp" || ownership.Mappings[1].Protocol != "udp" {
 		t.Fatalf("unexpected normalized ownership: %+v", ownership)
 	}
 }
 
-func TestCleanupNetworkOwnershipAttemptsAllMappingsAndClearsSidecar(t *testing.T) {
+func TestNetworkOwnershipForGenerationSupportsBridgeWithoutPublishedPorts(t *testing.T) {
+	owner := "minicontainer:veth-only"
+	ownership := networkOwnershipForGeneration(owner, 3, 4, "172.20.0.2", nil)
+	if ownership.VethHost == "" || len(ownership.Mappings) != 0 {
+		t.Fatalf("unexpected veth-only ownership: %+v", ownership)
+	}
+}
+
+func TestCleanupNetworkOwnershipAttemptsPortsThenVethAndClearsSidecar(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -66,14 +79,18 @@ func TestCleanupNetworkOwnershipAttemptsAllMappingsAndClearsSidecar(t *testing.T
 	ownership := saveNetworkOwnershipContainer(t, st, id, 101, 202)
 
 	var calls []string
-	remove := func(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error {
-		calls = append(calls, owner+" "+protocol+" "+containerIP)
+	removePort := func(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+		calls = append(calls, "port "+owner+" "+protocol+" "+containerIP)
 		return nil
 	}
-	if err := cleanupNetworkOwnershipWith(st, id, ownership, false, remove); err != nil {
+	removeVeth := func(name, owner string, debug bool) error {
+		calls = append(calls, "veth "+name+" "+owner)
+		return nil
+	}
+	if err := cleanupNetworkOwnershipWith(st, id, ownership, false, removePort, removeVeth); err != nil {
 		t.Fatalf("cleanup network ownership: %v", err)
 	}
-	if len(calls) != 2 || !strings.Contains(calls[0], "udp") || !strings.Contains(calls[1], "tcp") {
+	if len(calls) != 3 || !strings.Contains(calls[0], "udp") || !strings.Contains(calls[1], "tcp") || !strings.HasPrefix(calls[2], "veth ") {
 		t.Fatalf("cleanup order/calls=%v", calls)
 	}
 	if _, ok, err := st.GetNetworkOwnership(id); err != nil || ok {
@@ -81,7 +98,7 @@ func TestCleanupNetworkOwnershipAttemptsAllMappingsAndClearsSidecar(t *testing.T
 	}
 }
 
-func TestCleanupNetworkOwnershipFailurePreservesSidecarAndAttemptsAll(t *testing.T) {
+func TestCleanupNetworkOwnershipFailurePreservesSidecarAndAttemptsAllResources(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -89,24 +106,54 @@ func TestCleanupNetworkOwnershipFailurePreservesSidecarAndAttemptsAll(t *testing
 	const id = "ctr-network-cleanup-fail"
 	ownership := saveNetworkOwnershipContainer(t, st, id, 301, 302)
 	cause := errors.New("iptables unavailable")
-	calls := 0
-	remove := func(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error {
-		calls++
+	portCalls := 0
+	vethCalls := 0
+	removePort := func(owner string, hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+		portCalls++
 		if protocol == "udp" {
 			return cause
 		}
 		return nil
 	}
-	err = cleanupNetworkOwnershipWith(st, id, ownership, false, remove)
+	removeVeth := func(name, owner string, debug bool) error {
+		vethCalls++
+		return nil
+	}
+	err = cleanupNetworkOwnershipWith(st, id, ownership, false, removePort, removeVeth)
 	if !errors.Is(err, cause) {
 		t.Fatalf("cleanup cause not preserved: %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("cleanup calls=%d, want all mappings attempted", calls)
+	if portCalls != 2 || vethCalls != 1 {
+		t.Fatalf("cleanup calls ports=%d veth=%d, want all resources attempted", portCalls, vethCalls)
 	}
 	got, ok, readErr := st.GetNetworkOwnership(id)
-	if readErr != nil || !ok || got.Owner != ownership.Owner {
+	if readErr != nil || !ok || got.Owner != ownership.Owner || got.VethHost != ownership.VethHost {
 		t.Fatalf("cleanup failure lost recovery sidecar: got=%+v ok=%v err=%v", got, ok, readErr)
+	}
+}
+
+func TestCleanupNetworkOwnershipVethFailurePreservesSidecar(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "ctr-veth-cleanup-fail"
+	ownership := saveNetworkOwnershipContainer(t, st, id, 401, 402)
+	cause := errors.New("netlink delete failed")
+	portCalls := 0
+	err = cleanupNetworkOwnershipWith(
+		st,
+		id,
+		ownership,
+		false,
+		func(string, int, int, string, string, bool) error { portCalls++; return nil },
+		func(name, owner string, debug bool) error { return cause },
+	)
+	if !errors.Is(err, cause) || portCalls != len(ownership.Mappings) {
+		t.Fatalf("veth cleanup failure err=%v portCalls=%d", err, portCalls)
+	}
+	if _, ok, readErr := st.GetNetworkOwnership(id); readErr != nil || !ok {
+		t.Fatalf("veth cleanup failure lost sidecar: ok=%v err=%v", ok, readErr)
 	}
 }
 

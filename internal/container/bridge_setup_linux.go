@@ -16,39 +16,40 @@ type bridgeHostOps struct {
 	removePort func(hostPort, containerPort int, containerIP, protocol string, debug bool) error
 }
 
-func defaultBridgeHostOps(portOwner string) bridgeHostOps {
+func defaultBridgeHostOps(owner string) bridgeHostOps {
+	hostVeth := network.VethHostIfaceOwned(owner)
 	return bridgeHostOps{
-		setupVeth:  network.SetupVethHostOwned,
-		removeVeth: network.RemoveVethHost,
+		setupVeth: func(containerPID int, hostCIDR string, debug bool) error {
+			return network.SetupVethHostGenerationOwned(owner, hostVeth, containerPID, hostCIDR, debug)
+		},
+		removeVeth: func(_ int, debug bool) error {
+			return network.RemoveVethHostOwned(hostVeth, owner, debug)
+		},
 		setupPort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
-			return network.SetupPortForwardingOwned(portOwner, hostPort, containerPort, containerIP, protocol, debug)
+			return network.SetupPortForwardingOwned(owner, hostPort, containerPort, containerIP, protocol, debug)
 		},
 		removePort: func(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
-			return network.RemovePortForwardingOwned(portOwner, hostPort, containerPort, containerIP, protocol, debug)
+			return network.RemovePortForwardingOwned(owner, hostPort, containerPort, containerIP, protocol, debug)
 		},
 	}
 }
 
 // setupBridgeHost is the compatibility wrapper for callers that do not persist
-// network ownership. Managed runtime paths should generate and persist the owner
-// before mutation, then call setupBridgeHostOwned with that exact marker.
+// network ownership. Managed runtime paths persist the owner before mutation and
+// call setupBridgeHostOwned with that exact marker.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
-	portOwner := ""
-	if len(mappings) > 0 {
-		var err error
-		portOwner, err = network.NewPortForwardingOwner()
-		if err != nil {
-			return nil, fmt.Errorf("create port-forwarding ownership marker: %w", err)
-		}
+	owner, err := network.NewPortForwardingOwner()
+	if err != nil {
+		return nil, fmt.Errorf("create bridge ownership marker: %w", err)
 	}
-	return setupBridgeHostOwned(containerPID, hostCIDR, containerIP, mappings, portOwner, debug)
+	return setupBridgeHostOwned(containerPID, hostCIDR, containerIP, mappings, owner, debug)
 }
 
-func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, portOwner string, debug bool) (func() error, error) {
-	if len(mappings) > 0 && portOwner == "" {
-		return nil, fmt.Errorf("port-forwarding ownership marker is required")
+func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, owner string, debug bool) (func() error, error) {
+	if owner == "" {
+		return nil, fmt.Errorf("bridge ownership marker is required")
 	}
-	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(portOwner))
+	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(owner))
 }
 
 // setupBridgeHostWithOps establishes all requested host-side bridge networking

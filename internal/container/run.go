@@ -41,7 +41,7 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := requireDurablePublishedPortOwnership(cfg, lifecycleStore); err != nil {
+	if err := requireDurableNetworkOwnership(cfg, lifecycleStore); err != nil {
 		return err
 	}
 
@@ -299,53 +299,55 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	)
 
 	var bridgeCleanup func() error
-	var persistedNetworkOwnership state.NetworkOwnership
-	networkOwnershipPersisted := false
 	if cfg.BridgeNetwork {
-		portOwner := ""
-		if len(cfg.PortMappings) > 0 {
-			portOwner, err = network.NewPortForwardingOwner()
-			if err != nil {
-				return abortRuntimeSetupFailure(
-					cmd,
-					writePipe,
-					lifecycleStore,
-					cfg.ContainerID,
-					childPID,
-					childStartTime,
-					fmt.Errorf("create port-forwarding ownership marker: %w", err),
-				)
-			}
-			if lifecycleStore != nil {
-				persistedNetworkOwnership = networkOwnershipForGeneration(
-					portOwner,
-					childPID,
-					childStartTime,
-					containerIP,
-					cfg.PortMappings,
-				)
-				if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
-					return abortRuntimeSetupFailure(
-						cmd,
-						writePipe,
-						lifecycleStore,
-						cfg.ContainerID,
-						childPID,
-						childStartTime,
-						&runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)},
-					)
-				}
-				networkOwnershipPersisted = true
-			}
+		networkOwner, err := network.NewPortForwardingOwner()
+		if err != nil {
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				fmt.Errorf("create bridge ownership marker: %w", err),
+			)
+		}
+		if lifecycleStore == nil {
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				&runtimeStateError{err: fmt.Errorf("bridge networking requires managed lifecycle state")},
+			)
 		}
 
-		bridgeCleanup, err = setupBridgeHostOwned(childPID, hostCIDR, containerIP, cfg.PortMappings, portOwner, cfg.Debug)
+		persistedNetworkOwnership := networkOwnershipForGeneration(
+			networkOwner,
+			childPID,
+			childStartTime,
+			containerIP,
+			cfg.PortMappings,
+		)
+		if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				&runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)},
+			)
+		}
+
+		bridgeCleanup, err = setupBridgeHostOwned(childPID, hostCIDR, containerIP, cfg.PortMappings, networkOwner, cfg.Debug)
 		if err != nil {
 			setupErr := error(fmt.Errorf("configure required bridge network: %w", err))
-			if networkOwnershipPersisted {
-				if cleanupErr := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); cleanupErr != nil {
-					setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted port forwarding after bridge setup failure: %w", cleanupErr))
-				}
+			if cleanupErr := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); cleanupErr != nil {
+				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted network resources after bridge setup failure: %w", cleanupErr))
 			}
 			return abortRuntimeSetupFailure(
 				cmd,
@@ -358,18 +360,16 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 			)
 		}
 
-		if networkOwnershipPersisted {
-			baseBridgeCleanup := bridgeCleanup
-			bridgeCleanup = func() error {
-				var cleanupErr error
-				if baseBridgeCleanup != nil {
-					cleanupErr = baseBridgeCleanup()
-				}
-				if err := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); err != nil {
-					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reconcile persisted port forwarding cleanup: %w", err))
-				}
-				return cleanupErr
+		baseBridgeCleanup := bridgeCleanup
+		bridgeCleanup = func() error {
+			var cleanupErr error
+			if baseBridgeCleanup != nil {
+				cleanupErr = baseBridgeCleanup()
 			}
+			if err := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reconcile persisted network cleanup: %w", err))
+			}
+			return cleanupErr
 		}
 	}
 

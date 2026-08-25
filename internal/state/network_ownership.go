@@ -21,15 +21,16 @@ type PortForwardingOwnership struct {
 	Protocol      string `json:"protocol"`
 }
 
-// NetworkOwnership is durable cleanup proof for generation-owned iptables
-// port-forwarding rules. It is persisted before rule installation starts, so a
-// crash during partial setup still leaves enough information for idempotent
-// recovery. The sidecar survives until every tagged rule has been confirmed
-// absent and the exact ownership record is cleared.
+// NetworkOwnership is durable cleanup proof for host networking resources owned
+// by one exact process generation. VethHost is a generation-scoped interface
+// name whose kernel ifalias carries Owner; Mappings are generation-tagged DNAT
+// rules. The sidecar is persisted before either resource class is mutated and
+// survives until every described resource has been confirmed absent.
 type NetworkOwnership struct {
 	Owner        string                    `json:"owner"`
 	PID          int                       `json:"pid"`
 	PIDStartTime uint64                    `json:"pid_start_time"`
+	VethHost     string                    `json:"veth_host,omitempty"`
 	Mappings     []PortForwardingOwnership `json:"mappings"`
 }
 
@@ -47,6 +48,22 @@ func validateNetworkOwner(owner string) error {
 	for _, r := range owner[len("minicontainer:"):] {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
 			return fmt.Errorf("invalid network owner character %q", r)
+		}
+	}
+	return nil
+}
+
+func validateNetworkVethHost(name string) error {
+	const (
+		linuxInterfaceNameMax = 15
+		ownedVethPrefix       = "vh"
+	)
+	if len(name) != linuxInterfaceNameMax || !strings.HasPrefix(name, ownedVethPrefix) {
+		return fmt.Errorf("invalid network veth host %q", name)
+	}
+	for _, r := range name[len(ownedVethPrefix):] {
+		if !((r >= 'a' && r <= 'z') || (r >= '2' && r <= '7')) {
+			return fmt.Errorf("invalid network veth host %q", name)
 		}
 	}
 	return nil
@@ -72,8 +89,13 @@ func validateNetworkOwnership(o NetworkOwnership) error {
 	if o.PID <= 0 || o.PIDStartTime == 0 {
 		return fmt.Errorf("invalid network process identity %d/%d", o.PID, o.PIDStartTime)
 	}
-	if len(o.Mappings) == 0 {
-		return fmt.Errorf("network ownership has no port mappings")
+	if o.VethHost != "" {
+		if err := validateNetworkVethHost(o.VethHost); err != nil {
+			return err
+		}
+	}
+	if o.VethHost == "" && len(o.Mappings) == 0 {
+		return fmt.Errorf("network ownership has no resources")
 	}
 	if len(o.Mappings) > 256 {
 		return fmt.Errorf("network ownership has too many port mappings: %d", len(o.Mappings))
@@ -146,9 +168,9 @@ func (s *Store) GetNetworkOwnership(id string) (NetworkOwnership, bool, error) {
 	return s.readNetworkOwnershipUnlocked(id)
 }
 
-// MarkNetworkOwnedIfIdentity records cleanup intent before iptables mutation.
-// Repeating the same ownership is idempotent; another generation's pending
-// ownership must be cleaned before new rules can be installed.
+// MarkNetworkOwnedIfIdentity records cleanup intent before host-network
+// mutation. Repeating the same ownership is idempotent; another generation's
+// pending ownership must be cleaned before new resources can be installed.
 func (s *Store) MarkNetworkOwnedIfIdentity(id string, ownership NetworkOwnership) error {
 	if s == nil {
 		return fmt.Errorf("state store is nil")
@@ -189,7 +211,7 @@ func (s *Store) MarkNetworkOwnedIfIdentity(id string, ownership NetworkOwnership
 }
 
 func networkOwnershipEqual(a, b NetworkOwnership) bool {
-	if a.Owner != b.Owner || a.PID != b.PID || a.PIDStartTime != b.PIDStartTime || len(a.Mappings) != len(b.Mappings) {
+	if a.Owner != b.Owner || a.PID != b.PID || a.PIDStartTime != b.PIDStartTime || a.VethHost != b.VethHost || len(a.Mappings) != len(b.Mappings) {
 		return false
 	}
 	for i := range a.Mappings {
