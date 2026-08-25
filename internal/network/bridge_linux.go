@@ -21,6 +21,8 @@ import (
 	"strings"
 )
 
+const maxLinuxInterfaceNameLen = 15
+
 type bridgeCommandRunner func(args ...string) ([]byte, error)
 
 // NetworkInfo describes a custom container network.
@@ -29,6 +31,19 @@ type NetworkInfo struct {
 	Bridge string
 	Subnet string
 	Status string
+}
+
+func bridgeNameForNetwork(netName string) (string, error) {
+	bridgeName := "br-" + netName
+	if len(bridgeName) > maxLinuxInterfaceNameLen {
+		return "", fmt.Errorf(
+			"network name %q is too long: bridge interface %q exceeds Linux %d-byte limit",
+			netName,
+			bridgeName,
+			maxLinuxInterfaceNameLen,
+		)
+	}
+	return bridgeName, nil
 }
 
 // CreateBridge creates a custom Linux bridge interface with the given name and CIDR gateway.
@@ -45,9 +60,9 @@ func createBridgeWith(netName, cidr string, debug bool, run bridgeCommandRunner)
 		return fmt.Errorf("bridge command runner is nil")
 	}
 
-	bridgeName := "br-" + netName
-	if len(bridgeName) > 15 {
-		bridgeName = bridgeName[:15] // Linux IFNAMSIZ = 16 (15 chars + NUL)
+	bridgeName, err := bridgeNameForNetwork(netName)
+	if err != nil {
+		return err
 	}
 
 	if cidr == "" {
@@ -115,12 +130,19 @@ func ListBridges() ([]NetworkInfo, error) {
 
 // DeleteBridge deletes a custom bridge network.
 func DeleteBridge(netName string, debug bool) error {
-	bridgeName := "br-" + netName
-	if len(bridgeName) > 15 {
-		bridgeName = bridgeName[:15]
+	return deleteBridgeWith(netName, debug, runBridgeIPCommand)
+}
+
+func deleteBridgeWith(netName string, debug bool, run bridgeCommandRunner) error {
+	if run == nil {
+		return fmt.Errorf("bridge command runner is nil")
+	}
+	bridgeName, err := bridgeNameForNetwork(netName)
+	if err != nil {
+		return err
 	}
 
-	if out, err := exec.Command("ip", "link", "delete", bridgeName).CombinedOutput(); err != nil {
+	if out, err := run("link", "delete", bridgeName); err != nil {
 		return fmt.Errorf("delete bridge %s: %w\n%s", bridgeName, err, out)
 	}
 
