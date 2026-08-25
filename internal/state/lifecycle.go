@@ -1,7 +1,9 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 )
 
@@ -39,11 +41,11 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	c.FinishedAt = nil
 	c.ExitCode = 0
 
-	data, err := marshalContainer(c)
+	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal container: %w", err)
 	}
-	return atomicWriteFile(s.ctrDir, containerStatePath(s.ctrDir, id), data)
+	return atomicWriteFile(s.ctrDir, filepath.Join(s.ctrDir, id+".json"), data)
 }
 
 // MarkStoppedIfIdentity atomically marks a running container stopped only when
@@ -78,24 +80,12 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 	c.FinishedAt = &finishedAt
 	c.ExitCode = exitCode
 
-	data, err := marshalContainer(c)
+	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("marshal container: %w", err)
 	}
-	if err := atomicWriteFile(s.ctrDir, containerStatePath(s.ctrDir, id), data); err != nil {
+	if err := atomicWriteFile(s.ctrDir, filepath.Join(s.ctrDir, id+".json"), data); err != nil {
 		return false, err
 	}
 	return true, nil
-}
-
-func marshalContainer(c *Container) ([]byte, error) {
-	data, err := jsonMarshalIndent(c)
-	if err != nil {
-		return nil, fmt.Errorf("marshal container: %w", err)
-	}
-	return data, nil
-}
-
-func containerStatePath(dir, id string) string {
-	return filepathJoin(dir, id+".json")
 }
