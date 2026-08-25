@@ -75,24 +75,42 @@ func setupPortForwardingWith(hostPort, containerPort int, containerIP, protocol 
 	return nil
 }
 
-// RemovePortForwarding deletes the iptables DNAT rules when the container stops.
-func RemovePortForwarding(hostPort, containerPort int, containerIP, protocol string, debug bool) {
+// RemovePortForwarding deletes both DNAT rules and reports every failed delete.
+// Both commands are attempted so one stale rule cannot prevent cleanup of the
+// other rule.
+func RemovePortForwarding(hostPort, containerPort int, containerIP, protocol string, debug bool) error {
+	return removePortForwardingWith(hostPort, containerPort, containerIP, protocol, debug, runIPTables)
+}
+
+func removePortForwardingWith(hostPort, containerPort int, containerIP, protocol string, debug bool, run iptablesCommand) error {
+	if run == nil {
+		return fmt.Errorf("iptables command runner is nil")
+	}
 	if protocol == "" {
 		protocol = "tcp"
 	}
 	target := fmt.Sprintf("%s:%d", containerIP, containerPort)
 	portStr := strconv.Itoa(hostPort)
 
-	rule1 := []string{"-t", "nat", "-D", "PREROUTING", "-p", protocol,
+	preroutingDelete := []string{"-t", "nat", "-D", "PREROUTING", "-p", protocol,
 		"--dport", portStr, "-j", "DNAT", "--to-destination", target}
-	rule2 := []string{"-t", "nat", "-D", "OUTPUT", "-p", protocol,
+	outputDelete := []string{"-t", "nat", "-D", "OUTPUT", "-p", protocol,
 		"-m", "addrtype", "--dst-type", "LOCAL",
 		"--dport", portStr, "-j", "DNAT", "--to-destination", target}
 
-	_, _ = runIPTables(rule1...)
-	_, _ = runIPTables(rule2...)
+	var cleanupErrs []error
+	if out, err := run(preroutingDelete...); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("iptables delete PREROUTING DNAT: %w\n%s", err, out))
+	}
+	if out, err := run(outputDelete...); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("iptables delete OUTPUT DNAT: %w\n%s", err, out))
+	}
+	if err := errors.Join(cleanupErrs...); err != nil {
+		return err
+	}
 
 	if debug {
 		fmt.Printf("[parent] cleaned up port mapping: host %s/%d\n", protocol, hostPort)
 	}
+	return nil
 }
