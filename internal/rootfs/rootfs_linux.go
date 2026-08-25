@@ -25,6 +25,7 @@
 package rootfs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,26 @@ import (
 
 type pivotRootFunc func(newRoot string, debug bool) error
 type deviceSetupFunc func(newRoot string, debug bool) error
+
+type pivotRootOps struct {
+	mount   func(source, target, fstype string, flags uintptr, data string) error
+	mkdir   func(path string, mode os.FileMode) error
+	pivot   func(newRoot, putOld string) error
+	chdir   func(path string) error
+	unmount func(target string, flags int) error
+	remove  func(path string) error
+}
+
+func defaultPivotRootOps() pivotRootOps {
+	return pivotRootOps{
+		mount:   syscall.Mount,
+		mkdir:   os.Mkdir,
+		pivot:   syscall.PivotRoot,
+		chdir:   syscall.Chdir,
+		unmount: syscall.Unmount,
+		remove:  os.Remove,
+	}
+}
 
 // Isolate changes the root filesystem of the current process to newRoot.
 // It must be called after the process has entered a new mount namespace
@@ -68,6 +89,14 @@ func isolateWithPivot(newRoot string, debug bool, pivot pivotRootFunc) error {
 // pivotRoot implements filesystem isolation using the pivot_root(2) syscall.
 // This is the technique used by runc and Docker's default runtime.
 func pivotRoot(newRoot string, debug bool) error {
+	return pivotRootWithOps(newRoot, debug, defaultPivotRootOps())
+}
+
+func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr error) {
+	if ops.mount == nil || ops.mkdir == nil || ops.pivot == nil || ops.chdir == nil || ops.unmount == nil || ops.remove == nil {
+		return fmt.Errorf("pivot_root operations are incomplete")
+	}
+
 	// Step 1: bind-mount newRoot onto itself.
 	//
 	// pivot_root(2) requires newRoot to already be a mount point. A plain
@@ -76,42 +105,98 @@ func pivotRoot(newRoot string, debug bool) error {
 	//
 	// MS_REC propagates the bind to all sub-mounts (e.g., /proc and /sys
 	// that ContainerInit mounted inside newRoot before calling us).
-	if err := syscall.Mount(newRoot, newRoot, "",
-		syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+	if err := ops.mount(newRoot, newRoot, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind-mount rootfs onto itself: %w", err)
 	}
-
-	// Step 2: create a temporary directory inside newRoot for the old root.
+	rootBindMounted := true
+	pivoted := false
+	pivotDirOwned := false
+	oldRootDetached := false
 	pivotDir := filepath.Join(newRoot, ".pivot_old")
-	if err := os.MkdirAll(pivotDir, 0700); err != nil {
+
+	// Roll back every resource this generation can prove it created. Before
+	// pivot_root, the self-bind is namespace-local and can be detached directly.
+	// After pivot_root, the runtime-owned put_old directory is visible at
+	// /.pivot_old and must not be left in a shared rootfs when init aborts.
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+
+		if pivoted {
+			cleanupPath := "/.pivot_old"
+			if !oldRootDetached {
+				if err := ops.unmount(cleanupPath, syscall.MNT_DETACH); err != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("rollback detach old root: %w", err))
+				} else {
+					oldRootDetached = true
+				}
+			}
+			if pivotDirOwned && oldRootDetached {
+				if err := ops.remove(cleanupPath); err != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("rollback remove %s: %w", cleanupPath, err))
+				} else {
+					pivotDirOwned = false
+				}
+			}
+			return
+		}
+
+		if pivotDirOwned {
+			if err := ops.remove(pivotDir); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("rollback remove %s: %w", pivotDir, err))
+			} else {
+				pivotDirOwned = false
+			}
+		}
+		if rootBindMounted {
+			if err := ops.unmount(newRoot, syscall.MNT_DETACH); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("rollback rootfs bind mount %s: %w", newRoot, err))
+			} else {
+				rootBindMounted = false
+			}
+		}
+	}()
+
+	// Step 2: create an exclusively owned temporary directory inside newRoot for
+	// the old root. Refuse a pre-existing path instead of borrowing and later
+	// deleting a directory that belongs to the image/user.
+	if err := ops.mkdir(pivotDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir .pivot_old: %w", err)
 	}
+	pivotDirOwned = true
 
 	// Step 3: invoke pivot_root.
 	//   newRoot  → becomes the new "/"
 	//   pivotDir → old "/" is bind-mounted here (visible as /.pivot_old)
-	if err := syscall.PivotRoot(newRoot, pivotDir); err != nil {
+	if err := ops.pivot(newRoot, pivotDir); err != nil {
 		return fmt.Errorf("pivot_root(%s, %s): %w", newRoot, pivotDir, err)
 	}
+	pivoted = true
+	rootBindMounted = false
 
 	// Step 4: update our CWD to the new root.
 	// After pivot_root the process's CWD is still conceptually in the old
 	// root (the kernel hasn't changed it automatically).
-	if err := syscall.Chdir("/"); err != nil {
+	if err := ops.chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
 
 	// Step 5: unmount the old root with MNT_DETACH (lazy unmount).
 	// MNT_DETACH detaches the mount immediately from the filesystem tree
 	// while keeping it accessible to any process that already has it open.
-	if err := syscall.Unmount("/.pivot_old", syscall.MNT_DETACH); err != nil {
+	if err := ops.unmount("/.pivot_old", syscall.MNT_DETACH); err != nil {
 		return fmt.Errorf("unmount old root: %w", err)
 	}
+	oldRootDetached = true
 
-	// Step 6: remove the now-empty directory.
-	if err := os.Remove("/.pivot_old"); err != nil && debug {
-		fmt.Printf("[init] rmdir /.pivot_old: %v (ignored)\n", err)
+	// Step 6: remove the now-empty runtime-owned directory. Failure is a runtime
+	// teardown failure: silently continuing would persist a runtime artifact in
+	// a shared rootfs.
+	if err := ops.remove("/.pivot_old"); err != nil {
+		return fmt.Errorf("remove /.pivot_old: %w", err)
 	}
+	pivotDirOwned = false
 
 	if debug {
 		fmt.Println("[init] pivot_root complete")
