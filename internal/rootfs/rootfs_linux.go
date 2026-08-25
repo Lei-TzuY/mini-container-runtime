@@ -32,16 +32,27 @@ import (
 )
 
 type pivotRootFunc func(newRoot string, debug bool) error
+type deviceSetupFunc func(newRoot string, debug bool) error
 
 // Isolate changes the root filesystem of the current process to newRoot.
 // It must be called after the process has entered a new mount namespace
 // (CLONE_NEWNS), otherwise the bind-mount in step 1 would affect the host.
 //
-// Filesystem isolation is fail-closed: if pivot_root cannot be established we
-// return the failure instead of downgrading to chroot, whose weaker mount-table
-// isolation is not an equivalent container security boundary.
+// Filesystem isolation is fail-closed: a private /dev must be established and
+// pivot_root must succeed. We never exec the payload with the recursively
+// inherited host /dev or downgrade to chroot.
 func Isolate(newRoot string, debug bool) error {
-	return isolateWithPivot(newRoot, debug, pivotRoot)
+	return isolateWithDeviceSetup(newRoot, debug, preparePrivateDevices, pivotRoot)
+}
+
+func isolateWithDeviceSetup(newRoot string, debug bool, setup deviceSetupFunc, pivot pivotRootFunc) error {
+	if setup == nil {
+		return fmt.Errorf("private /dev isolation function is nil")
+	}
+	if err := setup(newRoot, debug); err != nil {
+		return fmt.Errorf("private /dev isolation required: %w", err)
+	}
+	return isolateWithPivot(newRoot, debug, pivot)
 }
 
 func isolateWithPivot(newRoot string, debug bool, pivot pivotRootFunc) error {
