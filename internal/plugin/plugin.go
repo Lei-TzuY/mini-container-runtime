@@ -40,7 +40,28 @@ func validatePluginName(name string) error {
 	return nil
 }
 
+func ensurePluginStateBase() error {
+	base := state.DefaultDir()
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	info, err := os.Lstat(base)
+	if err != nil {
+		return fmt.Errorf("inspect state directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("state directory is not a real directory")
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		return fmt.Errorf("secure state directory permissions: %w", err)
+	}
+	return nil
+}
+
 func ensurePluginsDir() (string, error) {
+	if err := ensurePluginStateBase(); err != nil {
+		return "", err
+	}
 	dir := PluginsDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create plugins directory: %w", err)
