@@ -1,33 +1,66 @@
 package events
 
 import (
-	"bytes"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestPublishAndStream(t *testing.T) {
-	tmpDir := t.TempDir()
-	logFile := filepath.Join(tmpDir, "events.log")
-
-	data := `{"timestamp":"2026-08-03T00:00:00Z","type":"start","container_id":"a3f8b2c1d9e0","message":"started container"}
-`
-	if err := os.WriteFile(logFile, []byte(data), 0644); err != nil {
-		t.Fatalf("write temp log: %v", err)
-	}
-
-	var buf bytes.Buffer
-	f, err := os.Open(logFile)
+func TestEventLogAppendCreatesPrivateRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "events.log")
+	f, err := openEventLogForAppend(path)
 	if err != nil {
-		t.Fatalf("open log: %v", err)
+		t.Fatalf("openEventLogForAppend: %v", err)
 	}
-	defer f.Close()
-
-	if err := StreamEvents(false, &buf); err != nil {
-		// Handled gracefully
+	if _, err := io.WriteString(f, "event\n"); err != nil {
+		f.Close()
+		t.Fatalf("write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 
-	_ = strings.Contains(buf.String(), "a3f8b2c1d9e0")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("mode = %v, want regular file", info.Mode())
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("permissions = %o, want 600", got)
+	}
+
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat directory: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("directory permissions = %o, want 700", got)
+	}
+}
+
+func TestEventLogAppendRepairsLoosePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	if err := os.WriteFile(path, []byte("old\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := openEventLogForAppend(path)
+	if err != nil {
+		t.Fatalf("openEventLogForAppend: %v", err)
+	}
+	f.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("permissions = %o, want 600", got)
+	}
 }
