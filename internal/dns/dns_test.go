@@ -20,7 +20,6 @@ func TestContainerDNS(t *testing.T) {
 	if err := RegisterHost(netName, ctrID1, "web", "172.20.0.2"); err != nil {
 		t.Fatalf("RegisterHost ctr1 error: %v", err)
 	}
-
 	if err := RegisterHost(netName, ctrID2, "db", "172.20.0.3"); err != nil {
 		t.Fatalf("RegisterHost ctr2 error: %v", err)
 	}
@@ -30,21 +29,26 @@ func TestContainerDNS(t *testing.T) {
 		t.Fatalf("Hosts content missing expected entries:\n%s", hostsContent)
 	}
 
-	rootfs := filepath.Join(tmpHome, "rootfs")
-	if err := InjectHostsIntoRootFS(rootfs, netName); err != nil {
-		t.Fatalf("InjectHostsIntoRootFS error: %v", err)
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	etcHosts := filepath.Join(rootfs, "etc", "hosts")
-	data, err := os.ReadFile(etcHosts)
-	if err != nil || !strings.Contains(string(data), "172.20.0.3\tdb") {
-		t.Fatalf("Injected /etc/hosts invalid: %v", err)
+	hostsPath := filepath.Join(rootfs, "etc", "hosts")
+	const sentinel = "ORIGINAL ROOTFS HOSTS\n"
+	if err := os.WriteFile(hostsPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := InjectHostsIntoRootFS(rootfs, netName); err != nil {
+		t.Fatalf("legacy hosts validation error: %v", err)
+	}
+	data, err := os.ReadFile(hostsPath)
+	if err != nil || string(data) != sentinel {
+		t.Fatalf("legacy injection mutated rootfs hosts: data=%q err=%v", data, err)
 	}
 
 	if err := UnregisterHost(netName, ctrID1); err != nil {
 		t.Fatalf("UnregisterHost error: %v", err)
 	}
-
 	updatedContent := GenerateHostsContent(netName)
 	if strings.Contains(updatedContent, "172.20.0.2\tweb") {
 		t.Fatalf("Unregistered web host should not be in content:\n%s", updatedContent)
@@ -130,34 +134,30 @@ func TestInjectHostsInvalidRootFS(t *testing.T) {
 	netName := "test-net"
 	_ = RegisterHost(netName, "c1", "host1", "10.0.0.2")
 
-	// Empty rootfs path
 	if err := InjectHostsIntoRootFS("", netName); err == nil {
 		t.Errorf("InjectHostsIntoRootFS on empty rootfs expected error, got nil")
 	}
 
-	// File instead of directory
 	filePath := filepath.Join(tmpHome, "file.txt")
-	_ = os.WriteFile(filePath, []byte("regular file"), 0644)
+	_ = os.WriteFile(filePath, []byte("regular file"), 0o644)
 	if err := InjectHostsIntoRootFS(filePath, netName); err == nil {
 		t.Errorf("InjectHostsIntoRootFS on regular file expected error, got nil")
 	}
 
-	// Invalid network name
 	if err := InjectHostsIntoRootFS(tmpHome, "../bad-net"); err == nil {
 		t.Errorf("InjectHostsIntoRootFS with traversal network name expected error, got nil")
 	}
+
+	missing := filepath.Join(tmpHome, "missing-rootfs")
+	if err := InjectHostsIntoRootFS(missing, netName); err == nil {
+		t.Errorf("InjectHostsIntoRootFS on missing rootfs expected error, got nil")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("legacy injection created missing rootfs: %v", err)
+	}
 }
 
-func TestInjectHostsRootFSSymlinkDefense(t *testing.T) {
-	if os.Getenv("OS") == "Windows_NT" && os.Getenv("CI") == "" {
-		// Verify symlink creation is allowed or skip if Windows unprivileged
-		testSym := filepath.Join(t.TempDir(), "test_sym")
-		if err := os.Symlink(t.TempDir(), testSym); err != nil {
-			t.Skip("skipping symlink test due to local OS permissions")
-		}
-		_ = os.Remove(testSym)
-	}
-
+func TestInjectHostsNeverMutatesRootFSOrSymlinkTargets(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -168,42 +168,23 @@ func TestInjectHostsRootFSSymlinkDefense(t *testing.T) {
 	rootfs := t.TempDir()
 	outsideDir := t.TempDir()
 	outsideSentinel := filepath.Join(outsideDir, "hosts")
-	if err := os.WriteFile(outsideSentinel, []byte("HOST SENTINEL DATA"), 0644); err != nil {
+	if err := os.WriteFile(outsideSentinel, []byte("HOST SENTINEL DATA"), 0o644); err != nil {
 		t.Fatalf("write sentinel: %v", err)
 	}
 
-	// Scenario 1: rootfs/etc is a symlink pointing to outsideDir
 	etcLink := filepath.Join(rootfs, "etc")
-	if err := os.Symlink(outsideDir, etcLink); err == nil {
-		err := InjectHostsIntoRootFS(rootfs, netName)
-		if err == nil {
-			t.Fatalf("InjectHostsIntoRootFS expected error for escaping /etc symlink, got nil")
-		}
-		// Verify outside sentinel was untouched
-		data, _ := os.ReadFile(outsideSentinel)
-		if string(data) != "HOST SENTINEL DATA" {
-			t.Fatalf("outside sentinel file was overwritten via /etc symlink escape!")
-		}
-		_ = os.Remove(etcLink)
+	if err := os.Symlink(outsideDir, etcLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
 	}
-
-	// Scenario 2: rootfs/etc is a real dir, but rootfs/etc/hosts is a symlink to outsideSentinel
-	_ = os.MkdirAll(etcLink, 0755)
-	hostsLink := filepath.Join(etcLink, "hosts")
-	if err := os.Symlink(outsideSentinel, hostsLink); err == nil {
-		err := InjectHostsIntoRootFS(rootfs, netName)
-		if err != nil {
-			t.Fatalf("InjectHostsIntoRootFS failed on valid rootfs: %v", err)
-		}
-		// Verify outside sentinel was untouched (the symlink was removed before write)
-		data, _ := os.ReadFile(outsideSentinel)
-		if string(data) != "HOST SENTINEL DATA" {
-			t.Fatalf("outside sentinel file was overwritten via /etc/hosts symlink!")
-		}
-		// Verify new hosts file was written inside rootfs/etc/hosts
-		rootfsHosts, err := os.ReadFile(hostsLink)
-		if err != nil || !strings.Contains(string(rootfsHosts), "10.0.0.5\tweb") {
-			t.Fatalf("rootfs hosts missing expected entry: %s", string(rootfsHosts))
-		}
+	if err := InjectHostsIntoRootFS(rootfs, netName); err != nil {
+		t.Fatalf("validation-only injection rejected valid rootfs: %v", err)
+	}
+	data, err := os.ReadFile(outsideSentinel)
+	if err != nil || string(data) != "HOST SENTINEL DATA" {
+		t.Fatalf("outside sentinel changed through /etc symlink: data=%q err=%v", data, err)
+	}
+	fi, err := os.Lstat(etcLink)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("legacy injection replaced /etc symlink: info=%v err=%v", fi, err)
 	}
 }
