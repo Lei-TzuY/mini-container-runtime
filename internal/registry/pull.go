@@ -58,6 +58,9 @@ type authResponse struct {
 // PullImage fetches an image from Docker Hub (e.g. "alpine" or "alpine:3.19") and extracts it to destDir.
 func PullImage(imageRef, destDir string) error {
 	imageName, tag := parseImageRef(imageRef)
+	if err := validateImageReference(imageName, tag); err != nil {
+		return fmt.Errorf("invalid image reference %q: %w", imageRef, err)
+	}
 	fmt.Printf("Pulling image %s:%s from Docker Hub …\n", imageName, tag)
 
 	// Step 1: Obtain Auth Token
@@ -187,9 +190,11 @@ func shortDigest(value string) (string, error) {
 }
 
 func getAuthToken(imageName string) (string, error) {
-	url := fmt.Sprintf("https://%s/token?service=registry.docker.io&scope=repository:%s:pull",
-		defaultAuthHost, imageName)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	endpoint, err := authTokenURL(imageName)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
@@ -211,9 +216,11 @@ func getAuthToken(imageName string) (string, error) {
 }
 
 func getManifest(imageName, tag, token string) (*ManifestV2, error) {
-	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", defaultRegistryHost, imageName, tag)
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	endpoint, err := manifestURL(imageName, tag)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -285,9 +292,11 @@ func downloadBlob(client *http.Client, imageName, digest, token, destPath string
 	if err := validateLayerDescriptor(Descriptor{Digest: digest, Size: expectedSize}); err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://%s/v2/%s/blobs/%s", defaultRegistryHost, imageName, digest)
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	endpoint, err := blobURL(imageName, digest)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
