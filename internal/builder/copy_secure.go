@@ -64,17 +64,15 @@ func copySymlink(src, dstRoot, dstLogical string) error {
 }
 
 // copyTree copies a source tree into dstLogical. When allowSymlinks is true,
-// symlinks are recreated as symlinks and never dereferenced on the host.
+// symlinks inside a directory tree are recreated and never dereferenced on the
+// host. The source root itself must be a real directory/file.
 func copyTree(src, dstRoot, dstLogical string, allowSymlinks bool) error {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 	if srcInfo.Mode()&os.ModeSymlink != 0 {
-		if !allowSymlinks {
-			return fmt.Errorf("COPY source %q is a symlink", src)
-		}
-		return copySymlink(src, dstRoot, dstLogical)
+		return fmt.Errorf("build source root %q must not be a symlink", src)
 	}
 	if !srcInfo.IsDir() {
 		return copyRegularFile(src, dstRoot, dstLogical, srcInfo.Mode())
