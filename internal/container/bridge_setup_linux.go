@@ -13,7 +13,7 @@ type bridgeHostOps struct {
 	setupVeth  func(containerPID int, hostCIDR string, debug bool) error
 	removeVeth func(containerPID int, debug bool) error
 	setupPort  func(hostPort, containerPort int, containerIP, protocol string, debug bool) error
-	removePort func(hostPort, containerPort int, containerIP, protocol string, debug bool)
+	removePort func(hostPort, containerPort int, containerIP, protocol string, debug bool) error
 }
 
 func defaultBridgeHostOps() bridgeHostOps {
@@ -39,19 +39,25 @@ func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mapp
 		return nil, fmt.Errorf("bridge host network operation is nil")
 	}
 
-	rollbackPorts := func(installed []PortMapping) {
+	rollbackPorts := func(installed []PortMapping) error {
+		var rollbackErrs []error
 		for i := len(installed) - 1; i >= 0; i-- {
 			p := installed[i]
-			ops.removePort(p.HostPort, p.ContainerPort, containerIP, p.Protocol, debug)
+			if err := ops.removePort(p.HostPort, p.ContainerPort, containerIP, p.Protocol, debug); err != nil {
+				rollbackErrs = append(rollbackErrs,
+					fmt.Errorf("remove port mapping %d:%d/%s: %w", p.HostPort, p.ContainerPort, normalizedProtocol(p.Protocol), err))
+			}
 		}
+		return errors.Join(rollbackErrs...)
 	}
 
 	cleanup := func(installed []PortMapping) error {
-		rollbackPorts(installed)
+		portErr := rollbackPorts(installed)
+		var vethErr error
 		if err := ops.removeVeth(containerPID, debug); err != nil {
-			return fmt.Errorf("remove host veth during bridge cleanup: %w", err)
+			vethErr = fmt.Errorf("remove host veth during bridge cleanup: %w", err)
 		}
-		return nil
+		return errors.Join(portErr, vethErr)
 	}
 
 	if err := ops.setupVeth(containerPID, hostCIDR, debug); err != nil {
