@@ -111,13 +111,13 @@ func (s *Store) removeImageMetadataUnlocked(img *Image) error {
 		filepath.Join(s.imgDir, imageMetadataFilename(key)),
 		filepath.Join(s.imgDir, legacyImageMetadataFilename(key)),
 	}
-	seen := make(map[string]bool, len(paths))
+	seenPaths := make(map[string]bool, len(paths))
 	var errs []error
 	for _, path := range paths {
-		if seen[path] {
+		if seenPaths[path] {
 			continue
 		}
-		seen[path] = true
+		seenPaths[path] = true
 		owned, err := imageMetadataOwnedBy(path, key)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("inspect image metadata %q: %w", filepath.Base(path), err))
@@ -133,20 +133,49 @@ func (s *Store) removeImageMetadataUnlocked(img *Image) error {
 	return errors.Join(errs...)
 }
 
-// appendUniqueImageMetadata de-duplicates identical old/new copies left by a
-// crash between writing the new file and deleting the legacy file. Conflicting
-// duplicates for one logical key are treated as corruption and fail closed.
-func appendUniqueImageMetadata(out []*Image, seen map[string]*Image, img *Image) ([]*Image, error) {
+type seenImageMetadata struct {
+	img     *Image
+	current bool
+	index   int
+}
+
+func isCurrentImageMetadataPath(path, key string) bool {
+	return filepath.Base(path) == imageMetadataFilename(key)
+}
+
+// appendUniqueImageMetadata handles the migration window where both the old
+// sanitized file and the new hash-keyed file can coexist. A correctly named new
+// file is authoritative for that logical key; this prevents readers from
+// failing during an update between the durable new write and legacy cleanup.
+// Conflicting non-current duplicates remain corruption and fail closed.
+func appendUniqueImageMetadata(out []*Image, seen map[string]seenImageMetadata, img *Image, path string) ([]*Image, error) {
 	key, err := imageStorageKey(img)
 	if err != nil {
 		return nil, err
 	}
-	if previous, ok := seen[key]; ok {
-		if !reflect.DeepEqual(previous, img) {
+	current := isCurrentImageMetadataPath(path, key)
+	previous, ok := seen[key]
+	if !ok {
+		seen[key] = seenImageMetadata{img: img, current: current, index: len(out)}
+		return append(out, img), nil
+	}
+
+	switch {
+	case previous.current && current:
+		if !reflect.DeepEqual(previous.img, img) {
+			return nil, fmt.Errorf("conflicting current image metadata for %q", key)
+		}
+		return out, nil
+	case previous.current && !current:
+		return out, nil
+	case !previous.current && current:
+		out[previous.index] = img
+		seen[key] = seenImageMetadata{img: img, current: true, index: previous.index}
+		return out, nil
+	default:
+		if !reflect.DeepEqual(previous.img, img) {
 			return nil, fmt.Errorf("conflicting duplicate image metadata for %q", key)
 		}
 		return out, nil
 	}
-	seen[key] = img
-	return append(out, img), nil
 }
