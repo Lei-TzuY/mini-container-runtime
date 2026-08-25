@@ -67,6 +67,7 @@ func TestValidateResourceValues(t *testing.T) {
 		{"negative CPUs", 0, 0, -0.1, 0},
 		{"NaN CPUs", 0, 0, math.NaN(), 0},
 		{"infinite CPUs", 0, 0, math.Inf(1), 0},
+		{"overflowing CPUs", 0, 0, math.MaxFloat64, 0},
 		{"negative pids", 0, 0, 0, -1},
 	}
 	for _, tc := range invalid {
