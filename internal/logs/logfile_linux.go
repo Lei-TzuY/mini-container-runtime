@@ -11,17 +11,19 @@ import (
 )
 
 func openContainerLogForAppend(path string) (*os.File, error) {
-	return openContainerLog(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600)
+	return openContainerLog(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600, true)
 }
 
 func openContainerLogForRead(path string) (*os.File, error) {
-	return openContainerLog(path, unix.O_RDONLY, 0)
+	return openContainerLog(path, unix.O_RDONLY, 0, false)
 }
 
-func openContainerLog(path string, flags int, mode uint32) (*os.File, error) {
+func openContainerLog(path string, flags int, mode uint32, createDir bool) (*os.File, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create container log directory: %w", err)
+	if createDir {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create container log directory: %w", err)
+		}
 	}
 
 	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
