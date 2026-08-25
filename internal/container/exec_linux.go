@@ -4,104 +4,87 @@
 //
 // `minictl exec` — Enter an Existing Container
 // ─────────────────────────────────────────────
-// Once a container is running, you can execute additional processes inside
-// its namespaces without re-doing all the setup.  This is what `docker exec`
-// does under the hood.
-//
-// The mechanism: setns(2)
-// ────────────────────────
-// setns(2) attaches the calling thread/process to an already-existing
-// namespace identified by a file descriptor opened from the namespace's
-// /proc/<pid>/ns/<type> entry.
-//
-//   For a running container with host PID = 4321, its namespaces live at:
-//     /proc/4321/ns/pid    ← PID namespace
-//     /proc/4321/ns/uts    ← UTS namespace
-//     /proc/4321/ns/mnt    ← mount namespace
-//     /proc/4321/ns/net    ← network namespace
-//     /proc/4321/ns/ipc    ← IPC namespace
-//
-//   We open each one, call setns() with the appropriate CLONE_NEW* flag,
-//   then chroot into the container's rootfs (which is already set up).
-//
-// Why must exec re-enter the user namespace last?
-// ─────────────────────────────────────────────────
-// The user namespace controls the capability set.  When running as root we
-// skip re-entering it.  When running unprivileged we must enter it first
-// (because other namespaces require capabilities inside the user namespace)
-// — but the user namespace file is typically unreadable without privilege.
-// For simplicity this implementation re-enters all namespaces with the
-// effective UID of the caller.
-//
-// Why is exec harder than run?
-// ─────────────────────────────
-// The Go runtime uses multiple OS threads. setns() affects only one thread.
-// If the Go scheduler moves the goroutine to a different thread, the setns()
-// effect is lost.  The standard solution is to use a C constructor (init_)
-// that runs setns() before the Go runtime starts — exactly what runc does.
-// We sidestep this by re-exec'ing ourselves with MINICONTAINER_EXEC=1 and
-// using runtime.LockOSThread() to pin the goroutine to its OS thread.
+// setns(CLONE_NEWPID) changes only the PID namespace used for subsequently
+// created children; it does not move the calling process itself. Therefore the
+// exec-init helper must join namespaces first and then spawn the payload as a
+// child. Directly calling execve after PID setns would leave the payload in the
+// caller's original PID namespace.
 
 package container
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-// ExecConfig describes a command to be run inside an existing container.
 type ExecConfig struct {
-	// ContainerPID is the host PID of the container's init process.
 	ContainerPID int
-
-	// RootFS is the container's root directory (for chroot after setns).
-	RootFS string
-
-	// Command is the argv to exec inside the container.
-	Command []string
-
-	// Debug enables verbose logging.
-	Debug bool
+	RootFS       string
+	Command      []string
+	Debug        bool
 }
 
-// execSentinelEnv is set on the re-exec child to trigger Exec init.
-const execSentinelEnv = "MINICONTAINER_EXEC=1"
+const (
+	execSentinelKey = "MINICONTAINER_EXEC"
+	execSentinelEnv = execSentinelKey + "=1"
+)
 
-// Exec re-execs the current binary as a child, enters the running container's
-// namespaces via setns(2), and then execve(2)s the requested command.
-//
-// This is safe because we re-exec ourselves: the child binary will detect
-// execSentinelEnv and call ExecInit() before Go's scheduler can interfere.
+type execNamespaceTarget struct {
+	name string
+	flag int
+	fd   int
+}
+
+type execTargets struct {
+	rootFD    int
+	startTime uint64
+	ns        []execNamespaceTarget
+}
+
+func (t *execTargets) close() {
+	if t == nil {
+		return
+	}
+	if t.rootFD >= 0 {
+		_ = unix.Close(t.rootFD)
+		t.rootFD = -1
+	}
+	for i := range t.ns {
+		if t.ns[i].fd >= 0 {
+			_ = unix.Close(t.ns[i].fd)
+			t.ns[i].fd = -1
+		}
+	}
+}
+
 func Exec(cfg ExecConfig) error {
+	if cfg.ContainerPID <= 0 {
+		return fmt.Errorf("invalid container PID %d", cfg.ContainerPID)
+	}
+	if len(cfg.Command) == 0 || cfg.Command[0] == "" {
+		return fmt.Errorf("exec command is empty")
+	}
 	if cfg.Debug {
 		fmt.Printf("[exec] entering namespaces of PID %d\n", cfg.ContainerPID)
 	}
-
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
-
-	// Pass the config to the child via environment variables + args.
-	// Arg0 = "exec" (subcommand), Arg1 = pid, Arg2... = command.
-	childArgs := append(
-		[]string{"exec", strconv.Itoa(cfg.ContainerPID), cfg.RootFS},
-		cfg.Command...,
-	)
+	childArgs := append([]string{"exec", strconv.Itoa(cfg.ContainerPID), cfg.RootFS}, cfg.Command...)
 	cmd := exec.Command(self, childArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), execSentinelEnv)
-
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
@@ -111,90 +94,125 @@ func Exec(cfg ExecConfig) error {
 	return nil
 }
 
-// ExecInit is the child side of Exec.  It is called when the binary detects
-// execSentinelEnv.  It runs with runtime.LockOSThread() to ensure setns()
-// affects the correct OS thread throughout.
-func ExecInit(containerPID int, rootfs string, command []string, debug bool) error {
-	// Pin this goroutine permanently to its OS thread.
-	// setns(2) operates on the calling thread; Go's M:N scheduler would
-	// otherwise move us to a different thread that hasn't called setns().
-	runtime.LockOSThread()
+func openExecTargets(containerPID int) (*execTargets, error) {
+	if containerPID <= 0 {
+		return nil, fmt.Errorf("invalid container PID %d", containerPID)
+	}
+	startTime, err := ProcessStartTime(containerPID)
+	if err != nil {
+		return nil, fmt.Errorf("capture exec target identity for PID %d: %w", containerPID, err)
+	}
+	targets := &execTargets{rootFD: -1, startTime: startTime}
+	fail := func(err error) (*execTargets, error) {
+		targets.close()
+		return nil, err
+	}
+	rootPath := fmt.Sprintf("/proc/%d/root", containerPID)
+	rootFD, err := unix.Open(rootPath, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fail(fmt.Errorf("open %s: %w", rootPath, err))
+	}
+	targets.rootFD = rootFD
+	nsSpecs := []struct {
+		name string
+		flag int
+	}{
+		{"net", unix.CLONE_NEWNET},
+		{"ipc", unix.CLONE_NEWIPC},
+		{"uts", unix.CLONE_NEWUTS},
+		{"pid", unix.CLONE_NEWPID},
+		{"mnt", unix.CLONE_NEWNS},
+	}
+	for _, spec := range nsSpecs {
+		nsPath := fmt.Sprintf("/proc/%d/ns/%s", containerPID, spec.name)
+		fd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			if err == unix.EACCES || err == unix.EPERM {
+				return fail(fmt.Errorf("cannot open %s: permission denied; run exec with sufficient namespace privileges", nsPath))
+			}
+			return fail(fmt.Errorf("open %s: %w (is the container still running?)", nsPath, err))
+		}
+		targets.ns = append(targets.ns, execNamespaceTarget{name: spec.name, flag: spec.flag, fd: fd})
+	}
+	endStartTime, err := ProcessStartTime(containerPID)
+	if err != nil {
+		return fail(fmt.Errorf("recheck exec target identity for PID %d: %w", containerPID, err))
+	}
+	if endStartTime != startTime {
+		return fail(fmt.Errorf("exec target PID %d changed identity during namespace capture", containerPID))
+	}
+	return targets, nil
+}
 
+func ExecInit(containerPID int, _ string, command []string, debug bool) error {
+	if len(command) == 0 || command[0] == "" {
+		return fmt.Errorf("exec command is empty")
+	}
+	runtime.LockOSThread()
+	if err := prepareExecThread(); err != nil {
+		return err
+	}
 	if debug {
 		fmt.Printf("[exec-init] attaching to namespaces of host PID %d\n", containerPID)
 	}
-
-	// The namespaces we want to enter, in order.
-	// Order matters: mnt must come after pid so /proc can be resolved.
-	// net and ipc are independent and can be done in any order.
-	nsTypes := []struct {
-		name string
-		flag uintptr
-	}{
-		{"net", syscall.CLONE_NEWNET},
-		{"ipc", syscall.CLONE_NEWIPC},
-		{"uts", syscall.CLONE_NEWUTS},
-		{"pid", syscall.CLONE_NEWPID},
-		{"mnt", syscall.CLONE_NEWNS},
+	targets, err := openExecTargets(containerPID)
+	if err != nil {
+		return err
 	}
-
-	for _, ns := range nsTypes {
-		nsPath := fmt.Sprintf("/proc/%d/ns/%s", containerPID, ns.name)
-		fd, err := os.Open(nsPath)
-		if err != nil {
-			if os.IsPermission(err) {
-				return fmt.Errorf("cannot open %s: permission denied\n"+
-					"  Hint: run 'minictl exec' as root (sudo) when not using user namespaces", nsPath)
-			}
-			// Namespace file not found — process may have exited.
-			return fmt.Errorf("open %s: %w (is the container still running?)", nsPath, err)
-		}
-
-		// setns(fd, nstype) — attaches the current thread to the namespace.
-		// nstype is a CLONE_NEW* flag that validates the fd's type.
-		// Using 0 as nstype would work too but the flag makes the code explicit.
-		if err := unix.Setns(int(fd.Fd()), int(ns.flag)); err != nil {
-			fd.Close()
+	defer targets.close()
+	for _, ns := range targets.ns {
+		if err := unix.Setns(ns.fd, ns.flag); err != nil {
 			return fmt.Errorf("setns(%s): %w", ns.name, err)
 		}
-		fd.Close()
-
 		if debug {
 			fmt.Printf("[exec-init] joined %s namespace\n", ns.name)
 		}
 	}
-
-	// After joining the mount namespace we are inside the container's view
-	// of the filesystem, but the CWD and root are still the host's.
-	// We need to chroot into the container's rootfs to resolve binaries.
-	if err := syscall.Chroot(rootfs); err != nil {
-		return fmt.Errorf("chroot %s: %w", rootfs, err)
+	if err := unix.Fchdir(targets.rootFD); err != nil {
+		return fmt.Errorf("fchdir container root: %w", err)
 	}
-	if err := syscall.Chdir("/"); err != nil {
+	if err := unix.Chroot("."); err != nil {
+		return fmt.Errorf("chroot container root: %w", err)
+	}
+	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
-
 	if debug {
-		fmt.Printf("[exec-init] chroot'd into %s, exec'ing %v\n", rootfs, command)
+		fmt.Printf("[exec-init] spawning payload in target PID namespace: %v\n", command)
 	}
-
-	// Resolve the binary in the new root.
-	binary, err := exec.LookPath(command[0])
-	if err != nil {
-		binary = command[0]
+	err = runExecPayload(command, payloadEnvironment(os.Environ()), os.Stdin, os.Stdout, os.Stderr)
+	if err == nil {
+		return nil
 	}
-
-	// Replace the current process image.  The exec'd process lives inside
-	// the container's namespaces and sees the container's filesystem.
-	if err := syscall.Exec(binary, command, os.Environ()); err != nil {
-		return fmt.Errorf("exec %s: %w", binary, err)
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		os.Exit(exitErr.ExitCode())
 	}
-	return nil // unreachable
+	return fmt.Errorf("start exec payload: %w", err)
 }
 
-// IsRunning checks whether the process with the given host PID is still alive.
-// It reads /proc/<pid>/status rather than sending a signal, so it doesn't
-// inadvertently affect the process.
+func runExecPayload(command, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(command) == 0 || command[0] == "" {
+		return fmt.Errorf("exec command is empty")
+	}
+	cmd := exec.Command(command[0], command[1:]...)
+	cmd.Env = env
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func payloadEnvironment(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, execSentinelKey+"=") || strings.HasPrefix(entry, "MINICONTAINER_INIT=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func IsRunning(pid int) bool {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
@@ -202,16 +220,12 @@ func IsRunning(pid int) bool {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "State:") {
-			// State values: R (running), S (sleeping), D (disk-wait),
-			//               T (stopped), Z (zombie), X (dead)
 			return !strings.Contains(line, "Z") && !strings.Contains(line, "X")
 		}
 	}
 	return true
 }
 
-// ContainerCwd returns the working directory of the container init process.
-// This is read from /proc/<pid>/cwd, which is a symlink to the CWD.
 func ContainerCwd(pid int) string {
 	cwd, err := filepath.EvalSymlinks(fmt.Sprintf("/proc/%d/cwd", pid))
 	if err != nil {
