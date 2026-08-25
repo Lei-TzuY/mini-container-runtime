@@ -13,7 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const volumeTargetResolveFlags = unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
+const volumeTargetResolveFlags = unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS
+
+var errVolumeTargetCrossMount = errors.New("volume target creation crosses rootfs mount boundary")
 
 // normalizeVolumeContainerPath converts an absolute container path to a path
 // relative to the rootfs dirfd. Traversal components are rejected rather than
@@ -45,8 +47,9 @@ func normalizeVolumeContainerPath(containerPath string) (string, error) {
 
 // openVolumeTarget opens (and, when necessary, creates) a directory mount
 // target inside rootfs and returns an O_PATH fd referring to the exact target
-// inode. Resolution is confined to the rootfs mount itself: it cannot traverse
-// into proc/sys/dev or another pre-existing mount below the rootfs.
+// inode. The fd remains stable if pathname components are renamed or replaced.
+// Existing directories on submounts are allowed for compatibility, but missing
+// directories are never created after crossing away from the rootfs mount.
 func openVolumeTarget(rootfs, containerPath string) (int, error) {
 	rel, err := normalizeVolumeContainerPath(containerPath)
 	if err != nil {
@@ -69,9 +72,8 @@ func openVolumeTarget(rootfs, containerPath string) (int, error) {
 
 	// Linux < 5.6 lacks openat2. Keep compatibility without falling back to
 	// pathname joins: walk one component at a time from stable dirfds with
-	// O_NOFOLLOW and verify every fd stays on the rootfs mount. This path
-	// intentionally rejects symlinks because openat(2) cannot safely provide
-	// RESOLVE_IN_ROOT semantics.
+	// O_NOFOLLOW. This older-kernel path intentionally rejects symlinks because
+	// openat(2) cannot safely provide RESOLVE_IN_ROOT semantics.
 	fd, err = openOrCreateVolumeTargetNoSymlink(rootFD, rel)
 	if err != nil {
 		return -1, fmt.Errorf("secure volume target fallback: %w", err)
@@ -86,6 +88,11 @@ func openOrCreateVolumeTargetOpenat2(rootFD int, rel string) (int, error) {
 		return -1, err
 	} else if !errors.Is(err, unix.ENOENT) {
 		return -1, fmt.Errorf("resolve volume target %q: %w", rel, err)
+	}
+
+	rootMountID, err := fdMountID(rootFD)
+	if err != nil {
+		return -1, fmt.Errorf("read rootfs mount identity: %w", err)
 	}
 
 	components := strings.Split(rel, "/")
@@ -116,6 +123,9 @@ func openOrCreateVolumeTargetOpenat2(rootFD int, rel string) (int, error) {
 		mkdirParent := rootFD
 		if parentFD >= 0 {
 			mkdirParent = parentFD
+		}
+		if err := requireMountID(mkdirParent, rootMountID, prefix); err != nil {
+			return -1, err
 		}
 		if err := unix.Mkdirat(mkdirParent, component, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
 			return -1, fmt.Errorf("create volume target component %q: %w", prefix, err)
@@ -157,10 +167,6 @@ func openOrCreateVolumeTargetNoSymlink(rootFD int, rel string) (int, error) {
 	if err != nil {
 		return -1, fmt.Errorf("open rootfs fd: %w", err)
 	}
-	if err := requireMountID(currentFD, rootMountID, "."); err != nil {
-		_ = unix.Close(currentFD)
-		return -1, err
-	}
 	if rel == "." {
 		return currentFD, nil
 	}
@@ -168,6 +174,10 @@ func openOrCreateVolumeTargetNoSymlink(rootFD int, rel string) (int, error) {
 	for _, component := range strings.Split(rel, "/") {
 		nextFD, err := unix.Openat(currentFD, component, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		if errors.Is(err, unix.ENOENT) {
+			if mountErr := requireMountID(currentFD, rootMountID, component); mountErr != nil {
+				_ = unix.Close(currentFD)
+				return -1, mountErr
+			}
 			if mkdirErr := unix.Mkdirat(currentFD, component, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
 				_ = unix.Close(currentFD)
 				return -1, fmt.Errorf("create component %q: %w", component, mkdirErr)
@@ -177,11 +187,6 @@ func openOrCreateVolumeTargetNoSymlink(rootFD int, rel string) (int, error) {
 		if err != nil {
 			_ = unix.Close(currentFD)
 			return -1, fmt.Errorf("open component %q without symlink traversal: %w", component, err)
-		}
-		if err := requireMountID(nextFD, rootMountID, component); err != nil {
-			_ = unix.Close(nextFD)
-			_ = unix.Close(currentFD)
-			return -1, err
 		}
 		_ = unix.Close(currentFD)
 		currentFD = nextFD
@@ -195,7 +200,7 @@ func requireMountID(fd int, expected uint64, component string) error {
 		return fmt.Errorf("read mount identity for %q: %w", component, err)
 	}
 	if actual != expected {
-		return fmt.Errorf("volume target component %q crosses mount boundary (%d -> %d)", component, expected, actual)
+		return fmt.Errorf("%w at %q (%d -> %d)", errVolumeTargetCrossMount, component, expected, actual)
 	}
 	return nil
 }
