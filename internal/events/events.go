@@ -48,7 +48,9 @@ func LogPath() string {
 	return filepath.Join(state.DefaultDir(), "events.log")
 }
 
-// Publish records a new event to the global event log file.
+// Publish records a new event to the global log. The file helper opens the
+// audit log without following symlinks and with private permissions so a
+// compromised state path cannot redirect privileged append operations.
 func Publish(evtType EventType, containerID, image, message string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -66,25 +68,25 @@ func Publish(evtType EventType, containerID, image, message string) error {
 		return err
 	}
 
-	logFile := LogPath()
-	if err := os.MkdirAll(filepath.Dir(logFile), 0755); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := openEventLogForAppend(LogPath())
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	_, err = fmt.Fprintln(f, string(data))
-	return err
+	if _, err := fmt.Fprintln(f, string(data)); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync event log: %w", err)
+	}
+	return nil
 }
 
 // StreamEvents reads and outputs historical and real-time events to w.
 func StreamEvents(follow bool, w io.Writer) error {
 	logFile := LogPath()
-	f, err := os.Open(logFile)
+	f, err := openEventLogForRead(logFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -104,9 +106,8 @@ func StreamEvents(follow bool, w io.Writer) error {
 				time.Sleep(200 * time.Millisecond)
 				continue
 			}
-			break
+			return fmt.Errorf("decode event log: %w", err)
 		}
-
 		shortID := evt.ContainerID
 		if len(shortID) > 12 {
 			shortID = shortID[:12]
