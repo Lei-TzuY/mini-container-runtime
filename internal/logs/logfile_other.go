@@ -21,6 +21,11 @@ func openContainerLogPortable(path string, flags int, mode os.FileMode) (*os.Fil
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create container log directory: %w", err)
 	}
+	if info, err := os.Lstat(dir); err != nil {
+		return nil, fmt.Errorf("inspect container log directory: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("container log directory is not a real directory")
+	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("secure container log directory: %w", err)
 	}
@@ -46,11 +51,9 @@ func openContainerLogPortable(path string, flags int, mode os.FileMode) (*os.Fil
 		f.Close()
 		return nil, fmt.Errorf("container log is not a regular file")
 	}
-	if flags&os.O_WRONLY != 0 {
-		if err := f.Chmod(0o600); err != nil {
-			f.Close()
-			return nil, fmt.Errorf("secure container log permissions: %w", err)
-		}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("secure container log permissions: %w", err)
 	}
 	return f, nil
 }
