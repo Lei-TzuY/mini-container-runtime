@@ -51,6 +51,12 @@ type Container struct {
 	// ID is a short random hex string used as a human-readable handle.
 	ID string `json:"id"`
 
+	// Revision is an optimistic concurrency token. Every successful container
+	// state write increments it; Save rejects snapshots whose revision no longer
+	// matches disk, preventing stale read-modify-write callers from overwriting
+	// newer runtime lifecycle state.
+	Revision uint64 `json:"revision,omitempty"`
+
 	// PID is the host PID of the container's init process.
 	PID int `json:"pid"`
 
@@ -105,12 +111,14 @@ type Image struct {
 	ExposedPorts []string  `json:"exposed_ports,omitempty"`
 }
 
-// Store handles thread-safe persistence to disk under dir.
+// Store handles process-local serialization plus a Linux cross-process lock for
+// mutations under one state directory.
 type Store struct {
-	mu     sync.Mutex
-	dir    string
-	ctrDir string
-	imgDir string
+	mu       sync.Mutex
+	dir      string
+	ctrDir   string
+	imgDir   string
+	lockFile *os.File
 }
 
 func Open(dir string) (*Store, error) {
@@ -124,10 +132,16 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("create image state dir: %w", err)
 	}
 
+	lockFile, err := openStateLock(filepath.Join(dir, ".state.lock"))
+	if err != nil {
+		return nil, err
+	}
+
 	return &Store{
-		dir:    dir,
-		ctrDir: ctrDir,
-		imgDir: imgDir,
+		dir:      dir,
+		ctrDir:   ctrDir,
+		imgDir:   imgDir,
+		lockFile: lockFile,
 	}, nil
 }
 
@@ -185,20 +199,21 @@ func atomicWriteFile(dir, target string, data []byte) error {
 }
 
 func (s *Store) Save(c *Container) error {
+	if c == nil {
+		return fmt.Errorf("container state is nil")
+	}
 	if err := validateID(c.ID); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal container: %w", err)
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
 	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	target := filepath.Join(s.ctrDir, c.ID+".json")
-	return atomicWriteFile(s.ctrDir, target, data)
+	return s.saveContainerCASUnlocked(c)
 }
 
 func (s *Store) Get(id string) (*Container, error) {
@@ -302,6 +317,10 @@ func (s *Store) Delete(id string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	file := filepath.Join(s.ctrDir, id+".json")
 	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
@@ -313,6 +332,10 @@ func (s *Store) Delete(id string) error {
 func (s *Store) SaveImage(img *Image) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	data, err := json.MarshalIndent(img, "", "  ")
 	if err != nil {
@@ -351,6 +374,10 @@ func (s *Store) GetImage(nameOrID string) (*Image, error) {
 func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return nil, err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
 
 	img, err := s.GetImageUnlocked(nameOrID)
 	if err != nil {
