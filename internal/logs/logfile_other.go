@@ -16,6 +16,10 @@ func openContainerLogForRead(path string) (*os.File, error) {
 	return openContainerLogPortable(path, os.O_RDONLY, 0, false)
 }
 
+func openContainerLogForRotate(path string) (*os.File, error) {
+	return openContainerLogPortable(path, os.O_RDWR, 0, false)
+}
+
 func openContainerLogPortable(path string, flags int, mode os.FileMode, createDir bool) (*os.File, error) {
 	dir := filepath.Dir(path)
 	if createDir {
