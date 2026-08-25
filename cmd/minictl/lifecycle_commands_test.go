@@ -48,8 +48,8 @@ func TestParseKillCommandArgsSupportsAliases(t *testing.T) {
 		want string
 	}{
 		{name: "default", args: []string{"ctr"}, want: "SIGKILL"},
-		{name: "short", args: []string{"-s", "SIGUSR1", "ctr"}, want: "SIGUSR1"},
-		{name: "long", args: []string{"--signal", "SIGCONT", "ctr"}, want: "SIGCONT"},
+		{name: "short", args: []string{"-s", "SIGTERM", "ctr"}, want: "SIGTERM"},
+		{name: "long", args: []string{"--signal", "SIGINT", "ctr"}, want: "SIGINT"},
 		{name: "numeric", args: []string{"--signal=15", "ctr"}, want: "15"},
 	}
 	for _, tt := range tests {
