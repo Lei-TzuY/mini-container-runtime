@@ -43,7 +43,7 @@ func TestStateStorageUsesPrivateModesAndNoTempArtifacts(t *testing.T) {
 
 	for _, path := range []string{
 		filepath.Join(root, "containers", "private-ctr.json"),
-		filepath.Join(root, "images", "private_image.json"),
+		filepath.Join(root, "images", imageMetadataFilename("private:image")),
 		filepath.Join(root, ".state.lock"),
 	} {
 		info, err := os.Stat(path)

@@ -339,15 +339,8 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) SaveImage(img *Image) error {
-	if img == nil {
-		return fmt.Errorf("image state is nil")
-	}
-	key := img.Name
-	if key == "" {
-		key = img.ID
-	}
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("image name or ID cannot be empty")
+	if _, err := imageStorageKey(img); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
@@ -361,10 +354,7 @@ func (s *Store) SaveImage(img *Image) error {
 	if err != nil {
 		return fmt.Errorf("marshal image: %w", err)
 	}
-
-	filename := sanitizeImageFilename(key)
-	target := filepath.Join(s.imgDir, filename+".json")
-	return atomicWriteFile(s.imgDir, target, data)
+	return s.saveImageMetadataUnlocked(img, data)
 }
 
 func (s *Store) GetImage(nameOrID string) (*Image, error) {
@@ -407,13 +397,7 @@ func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	key := img.Name
-	if key == "" {
-		key = img.ID
-	}
-	file := filepath.Join(s.imgDir, sanitizeImageFilename(key)+".json")
-	if err := removeStateFileDurable(s.imgDir, file, "image metadata"); err != nil {
+	if err := s.removeImageMetadataUnlocked(img); err != nil {
 		return nil, err
 	}
 	return img, nil
@@ -453,20 +437,20 @@ func (s *Store) listImagesUnlocked() ([]*Image, error) {
 	}
 
 	var out []*Image
+	seen := make(map[string]seenImageMetadata)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		path := filepath.Join(s.imgDir, entry.Name())
-		data, err := readRegularStateFile(path, "image state")
+		img, err := readImageMetadata(path)
 		if err != nil {
 			return nil, fmt.Errorf("read image state %q: %w", entry.Name(), err)
 		}
-		var img Image
-		if err := json.Unmarshal(data, &img); err != nil {
-			return nil, fmt.Errorf("unmarshal image state %q: %w", entry.Name(), err)
+		out, err = appendUniqueImageMetadata(out, seen, img, path)
+		if err != nil {
+			return nil, fmt.Errorf("image state %q: %w", entry.Name(), err)
 		}
-		out = append(out, &img)
 	}
 	return out, nil
 }
