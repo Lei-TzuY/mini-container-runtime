@@ -36,8 +36,13 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 		}
 		switch {
 		case errors.Is(err, container.ErrProcessNotFound):
-			// No process currently owns the persisted identity. Deleting stale
-			// state cannot orphan or signal a live process.
+			// The persisted generation is gone. Reconcile it and clean its exact
+			// generation cgroup before deleting the state record so cleanup can be
+			// retried instead of losing the identity needed to address it.
+			if _, finalizeErr := container.FinalizeStoppedGeneration(s.store, c, -1, time.Now()); finalizeErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": finalizeErr.Error()})
+				return
+			}
 		case errors.Is(err, container.ErrProcessIdentityMismatch):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID now belongs to a different process; refusing deletion until state is reconciled"})
 			return
@@ -84,8 +89,8 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID has been reused by another process; refusing to signal it"})
 			return
 		case errors.Is(err, container.ErrProcessNotFound):
-			if _, stateErr := s.store.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); stateErr != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": stateErr.Error()})
+			if _, finalizeErr := container.FinalizeStoppedGeneration(s.store, c, -1, time.Now()); finalizeErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": finalizeErr.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "id": c.ID, "already_exited": true})
@@ -137,11 +142,17 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if current.Status == state.StatusRunning && current.PID == c.PID && current.PIDStartTime == c.PIDStartTime {
-		if _, err := s.store.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
+
+	exitCode := -1
+	if current.Status == state.StatusStopped {
+		exitCode = current.ExitCode
+	}
+	// Finalize the exact generation captured before signaling. If the parent
+	// already stopped it or a restart has installed a new PID/start-time pair,
+	// the CAS is a no-op while cleanup still targets only the old cgroup.
+	if _, err := container.FinalizeStoppedGeneration(s.store, c, exitCode, time.Now()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
