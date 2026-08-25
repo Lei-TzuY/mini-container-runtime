@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"minicontainer/internal/cgroups"
 	"minicontainer/internal/state"
 )
 
@@ -33,6 +34,31 @@ func TestResourceLimitsRequested(t *testing.T) {
 				t.Fatalf("resourceLimitsRequested(%+v)=%v, want %v", tt.cfg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRuntimeCgroupNameUsesFullManagedIdentity(t *testing.T) {
+	managed, err := runtimeCgroupName("ctr", 42, 99, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantManaged, err := cgroups.NameForContainerProcess("ctr", 42, 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed != wantManaged {
+		t.Fatalf("managed cgroup=%q, want %q", managed, wantManaged)
+	}
+
+	unmanaged, err := runtimeCgroupName("", 42, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unmanaged != "minicontainer-42" {
+		t.Fatalf("unmanaged cgroup=%q, want minicontainer-42", unmanaged)
+	}
+	if _, err := runtimeCgroupName("", 0, 0, false); err == nil {
+		t.Fatal("invalid unmanaged PID accepted")
 	}
 }
 
