@@ -32,6 +32,7 @@ func TestCreateBridgeJoinsAddressSetupAndRollbackFailures(t *testing.T) {
 	var calls [][]string
 	run := scriptedBridgeRunner(t, []bridgeCommandResult{
 		{},
+		{},
 		{out: []byte("addr output"), err: addrErr},
 		{out: []byte("delete output"), err: rollbackErr},
 	}, &calls)
@@ -45,7 +46,32 @@ func TestCreateBridgeJoinsAddressSetupAndRollbackFailures(t *testing.T) {
 	}
 	want := [][]string{
 		{"link", "add", "br-demo", "type", "bridge"},
+		{"link", "set", "dev", "br-demo", "alias", "minicontainer-network:demo"},
 		{"addr", "add", "172.28.0.1/24", "dev", "br-demo"},
+		{"link", "delete", "br-demo"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls=%v, want %v", calls, want)
+	}
+}
+
+func TestCreateBridgeJoinsOwnershipTagAndRollbackFailures(t *testing.T) {
+	tagErr := errors.New("alias failed")
+	rollbackErr := errors.New("bridge delete failed")
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{
+		{},
+		{out: []byte("alias output"), err: tagErr},
+		{out: []byte("delete output"), err: rollbackErr},
+	}, &calls)
+
+	err := createBridgeWith("demo", "172.28.0.1/24", false, run)
+	if !errors.Is(err, tagErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("error=%v, want tag and rollback causes", err)
+	}
+	want := [][]string{
+		{"link", "add", "br-demo", "type", "bridge"},
+		{"link", "set", "dev", "br-demo", "alias", "minicontainer-network:demo"},
 		{"link", "delete", "br-demo"},
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -60,6 +86,7 @@ func TestCreateBridgeJoinsLinkUpAndRollbackFailures(t *testing.T) {
 	run := scriptedBridgeRunner(t, []bridgeCommandResult{
 		{},
 		{},
+		{},
 		{out: []byte("up output"), err: upErr},
 		{out: []byte("delete output"), err: rollbackErr},
 	}, &calls)
@@ -70,6 +97,7 @@ func TestCreateBridgeJoinsLinkUpAndRollbackFailures(t *testing.T) {
 	}
 	want := [][]string{
 		{"link", "add", "br-demo", "type", "bridge"},
+		{"link", "set", "dev", "br-demo", "alias", "minicontainer-network:demo"},
 		{"addr", "add", "172.28.0.1/24", "dev", "br-demo"},
 		{"link", "set", "br-demo", "up"},
 		{"link", "delete", "br-demo"},
@@ -83,6 +111,7 @@ func TestCreateBridgePreservesSetupFailureWhenRollbackSucceeds(t *testing.T) {
 	setupErr := errors.New("address setup failed")
 	var calls [][]string
 	run := scriptedBridgeRunner(t, []bridgeCommandResult{
+		{},
 		{},
 		{err: setupErr},
 		{},
@@ -146,14 +175,97 @@ func TestDeleteBridgeRejectsOverlongAliasBeforeHostMutation(t *testing.T) {
 	}
 }
 
-func TestDeleteBridgeUsesExactCanonicalName(t *testing.T) {
+func TestDeleteBridgeRefusesForeignSameNamedBridge(t *testing.T) {
 	var calls [][]string
-	run := scriptedBridgeRunner(t, []bridgeCommandResult{{}}, &calls)
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{
+		{out: []byte(`[{"ifname":"br-demo","ifalias":"some-other-owner"}]`)},
+	}, &calls)
+
+	err := deleteBridgeWith("demo", false, run)
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("error=%v, want ownership refusal", err)
+	}
+	want := [][]string{{"-j", "link", "show", "dev", "br-demo"}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls=%v, want inspection only %v", calls, want)
+	}
+}
+
+func TestDeleteBridgeFailsClosedWhenOwnershipInspectionFails(t *testing.T) {
+	inspectErr := errors.New("ip failed")
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{
+		{out: []byte("inspect output"), err: inspectErr},
+	}, &calls)
+
+	err := deleteBridgeWith("demo", false, run)
+	if !errors.Is(err, inspectErr) || !strings.Contains(err.Error(), "inspect output") {
+		t.Fatalf("error=%v, want inspection failure and output", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls=%v, want no delete after inspection failure", calls)
+	}
+}
+
+func TestDeleteBridgeUsesExactCanonicalOwnedName(t *testing.T) {
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{
+		{out: []byte(`[{"ifname":"br-abcdefghijkl","ifalias":"minicontainer-network:abcdefghijkl"}]`)},
+		{},
+	}, &calls)
 	if err := deleteBridgeWith("abcdefghijkl", false, run); err != nil {
 		t.Fatalf("delete canonical bridge: %v", err)
 	}
-	want := [][]string{{"link", "delete", "br-abcdefghijkl"}}
+	want := [][]string{
+		{"-j", "link", "show", "dev", "br-abcdefghijkl"},
+		{"link", "delete", "br-abcdefghijkl"},
+	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v, want %v", calls, want)
+	}
+}
+
+func TestListBridgesReturnsOnlyExactlyOwnedInterfaces(t *testing.T) {
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{{out: []byte(`[
+		{"ifname":"br-demo","ifalias":"minicontainer-network:demo"},
+		{"ifname":"br-foreign","ifalias":""},
+		{"ifname":"br-other","ifalias":"someone-else"},
+		{"ifname":"docker0","ifalias":"minicontainer-network:docker0"}
+	]`)}}, &calls)
+
+	nets, err := listBridgesWith(run)
+	if err != nil {
+		t.Fatalf("list bridges: %v", err)
+	}
+	want := []NetworkInfo{{Name: "demo", Bridge: "br-demo", Status: "UP"}}
+	if !reflect.DeepEqual(nets, want) {
+		t.Fatalf("networks=%+v, want %+v", nets, want)
+	}
+	wantCalls := [][]string{{"-j", "link", "show", "type", "bridge"}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("calls=%v, want %v", calls, wantCalls)
+	}
+}
+
+func TestListBridgesDoesNotTreatCommandFailureAsEmptyState(t *testing.T) {
+	cause := errors.New("ip unavailable")
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{{out: []byte("query output"), err: cause}}, &calls)
+
+	nets, err := listBridgesWith(run)
+	if nets != nil {
+		t.Fatalf("networks=%v, want nil on inspection failure", nets)
+	}
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "query output") {
+		t.Fatalf("error=%v, want command cause and output", err)
+	}
+}
+
+func TestListBridgesRejectsMalformedOwnershipMetadata(t *testing.T) {
+	var calls [][]string
+	run := scriptedBridgeRunner(t, []bridgeCommandResult{{out: []byte("not-json")}}, &calls)
+	if _, err := listBridgesWith(run); err == nil || !strings.Contains(err.Error(), "decode ip link JSON") {
+		t.Fatalf("error=%v, want JSON decode failure", err)
 	}
 }
