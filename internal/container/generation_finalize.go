@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"minicontainer/internal/cgroups"
 	"minicontainer/internal/state"
 )
 
@@ -17,9 +18,101 @@ type generationCleanupFunc func(containerID string, pid int, pidStartTime uint64
 //
 // State reconciliation and cgroup cleanup are deliberately independent: a
 // cleanup failure must not leave a dead process recorded as running, while a
-// concurrent restart must not prevent cleanup of the old generation.
+// concurrent lifecycle actor must not redirect cleanup to another generation.
+// Cgroup deletion additionally requires a durable ownership sidecar written by
+// the runtime after successful cgroup admission; a derivable name alone is not
+// ownership proof.
 func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int, finishedAt time.Time) (bool, error) {
 	return finalizeStoppedGenerationWithCleanup(st, c, exitCode, finishedAt, cleanupContainerProcessGeneration)
+}
+
+func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
+	expected, err := cgroups.NameForContainerProcess(containerID, ownership.PID, ownership.PIDStartTime)
+	if err != nil {
+		return fmt.Errorf("derive expected owned cgroup name: %w", err)
+	}
+	if ownership.Name != expected {
+		return fmt.Errorf("persisted cgroup ownership name %q does not match expected generation name %q", ownership.Name, expected)
+	}
+	return nil
+}
+
+func clearOwnedGenerationAfterCleanup(st *state.Store, containerID string, ownership state.CgroupOwnership) error {
+	cleared, err := st.ClearCgroupOwnershipIfMatch(containerID, ownership)
+	if err != nil {
+		return err
+	}
+	if cleared {
+		return nil
+	}
+
+	current, ok, err := st.GetCgroupOwnership(containerID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// Another lifecycle actor may have completed the same cleanup first.
+		return nil
+	}
+	if current != ownership {
+		return fmt.Errorf("cgroup ownership changed while clearing cleaned generation: now %s (%d/%d)", current.Name, current.PID, current.PIDStartTime)
+	}
+	return fmt.Errorf("cgroup ownership remained after successful cleanup")
+}
+
+func cleanupOwnedGenerationWith(
+	st *state.Store,
+	containerID string,
+	ownership state.CgroupOwnership,
+	cleanup generationCleanupFunc,
+) error {
+	if cleanup == nil {
+		return fmt.Errorf("generation cleanup function is nil")
+	}
+	if err := validateOwnedGenerationName(containerID, ownership); err != nil {
+		return err
+	}
+	if err := cleanup(containerID, ownership.PID, ownership.PIDStartTime); err != nil {
+		return err
+	}
+	if err := clearOwnedGenerationAfterCleanup(st, containerID, ownership); err != nil {
+		return fmt.Errorf("clear cgroup ownership after cleanup: %w", err)
+	}
+	return nil
+}
+
+// CleanupStoppedCgroup retries cleanup for a stopped container whose durable
+// ownership sidecar survived an earlier cleanup failure. Legacy/unowned stopped
+// containers have no sidecar and are a no-op.
+func CleanupStoppedCgroup(st *state.Store, c *state.Container) error {
+	return cleanupStoppedCgroupWithCleanup(st, c, cleanupContainerProcessGeneration)
+}
+
+func cleanupStoppedCgroupWithCleanup(st *state.Store, c *state.Container, cleanup generationCleanupFunc) error {
+	if st == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	if c == nil {
+		return fmt.Errorf("container snapshot is nil")
+	}
+	if c.ID == "" {
+		return fmt.Errorf("container ID is empty")
+	}
+	if c.Status != state.StatusStopped {
+		return fmt.Errorf("container %s is %s; cgroup cleanup retry requires stopped state", c.ID, c.Status)
+	}
+
+	ownership, ok, err := st.GetCgroupOwnership(c.ID)
+	if err != nil {
+		return fmt.Errorf("read cgroup ownership for stopped container %s: %w", c.ID, err)
+	}
+	if !ok {
+		return nil
+	}
+	if err := cleanupOwnedGenerationWith(st, c.ID, ownership, cleanup); err != nil {
+		return fmt.Errorf("cleanup persisted cgroup for stopped container %s: %w", c.ID, err)
+	}
+	return nil
 }
 
 func finalizeStoppedGenerationWithCleanup(
@@ -47,10 +140,23 @@ func finalizeStoppedGenerationWithCleanup(
 		stateErr = fmt.Errorf("persist stopped state for container %s: %w", c.ID, stateErr)
 	}
 
-	cleanupErr := cleanup(c.ID, c.PID, c.PIDStartTime)
-	if cleanupErr != nil {
-		cleanupErr = fmt.Errorf("cleanup stopped process generation for container %s: %w", c.ID, cleanupErr)
+	ownership, ok, ownershipErr := st.GetCgroupOwnership(c.ID)
+	if ownershipErr != nil {
+		ownershipErr = fmt.Errorf("read cgroup ownership for container %s: %w", c.ID, ownershipErr)
+	} else if ok {
+		if ownership.PID != c.PID || ownership.PIDStartTime != c.PIDStartTime {
+			ownershipErr = fmt.Errorf(
+				"cgroup ownership for container %s belongs to process %d/%d, not finalized generation %d/%d",
+				c.ID,
+				ownership.PID,
+				ownership.PIDStartTime,
+				c.PID,
+				c.PIDStartTime,
+			)
+		} else if err := cleanupOwnedGenerationWith(st, c.ID, ownership, cleanup); err != nil {
+			ownershipErr = fmt.Errorf("cleanup stopped process generation for container %s: %w", c.ID, err)
+		}
 	}
 
-	return changed, errors.Join(stateErr, cleanupErr)
+	return changed, errors.Join(stateErr, ownershipErr)
 }

@@ -14,8 +14,9 @@ const waitStateRefresh = 250 * time.Millisecond
 // stopped state and returns its persisted exit code. For a running record it
 // binds to the exact PID/start-time identity with a pidfd instead of polling a
 // numeric PID. If the persisted identity is already gone or has been reused,
-// the stale running record is reconciled to stopped with an unknown exit code
-// and the old process generation's cgroup is removed.
+// the stale running record is reconciled to stopped. Cgroup cleanup is attempted
+// only when a durable ownership sidecar proves which exact generation the
+// runtime owns; stopped records retain that proof until cleanup succeeds.
 func WaitContainer(st *state.Store, containerID string) (int, error) {
 	if st == nil {
 		return -1, fmt.Errorf("state store is nil")
@@ -27,6 +28,9 @@ func WaitContainer(st *state.Store, containerID string) (int, error) {
 			return -1, fmt.Errorf("resolve container: %w", err)
 		}
 		if c.Status == state.StatusStopped {
+			if err := CleanupStoppedCgroup(st, c); err != nil {
+				return c.ExitCode, fmt.Errorf("cleanup pending cgroup for stopped container %s: %w", c.ID, err)
+			}
 			return c.ExitCode, nil
 		}
 		if c.Status != state.StatusRunning {

@@ -232,6 +232,18 @@ func runOnce(cfg Config, lifecycleStore *state.Store) error {
 		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", err)
 	} else {
 		cgroupApplied = true
+		if err := persistAppliedCgroupOwnership(
+			cmd,
+			writePipe,
+			lifecycleStore,
+			cfg.ContainerID,
+			childPID,
+			childStartTime,
+			cgCfg.Name,
+			cfg.Debug,
+		); err != nil {
+			return err
+		}
 	}
 
 	const (
