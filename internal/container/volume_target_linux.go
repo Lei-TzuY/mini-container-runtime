@@ -5,6 +5,7 @@ package container
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const volumeTargetResolveFlags = unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS
+const volumeTargetResolveFlags = unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
 
 // normalizeVolumeContainerPath converts an absolute container path to a path
 // relative to the rootfs dirfd. Traversal components are rejected rather than
@@ -44,8 +45,8 @@ func normalizeVolumeContainerPath(containerPath string) (string, error) {
 
 // openVolumeTarget opens (and, when necessary, creates) a directory mount
 // target inside rootfs and returns an O_PATH fd referring to the exact target
-// inode. The returned fd remains stable even if pathname components are renamed
-// or replaced before mount(2) executes.
+// inode. Resolution is confined to the rootfs mount itself: it cannot traverse
+// into proc/sys/dev or another pre-existing mount below the rootfs.
 func openVolumeTarget(rootfs, containerPath string) (int, error) {
 	rel, err := normalizeVolumeContainerPath(containerPath)
 	if err != nil {
@@ -68,8 +69,9 @@ func openVolumeTarget(rootfs, containerPath string) (int, error) {
 
 	// Linux < 5.6 lacks openat2. Keep compatibility without falling back to
 	// pathname joins: walk one component at a time from stable dirfds with
-	// O_NOFOLLOW. This older-kernel path intentionally rejects symlinks because
-	// openat(2) cannot safely provide RESOLVE_IN_ROOT semantics.
+	// O_NOFOLLOW and verify every fd stays on the rootfs mount. This path
+	// intentionally rejects symlinks because openat(2) cannot safely provide
+	// RESOLVE_IN_ROOT semantics.
 	fd, err = openOrCreateVolumeTargetNoSymlink(rootFD, rel)
 	if err != nil {
 		return -1, fmt.Errorf("secure volume target fallback: %w", err)
@@ -146,9 +148,18 @@ func openVolumeDirInRoot(rootFD int, rel string) (int, error) {
 }
 
 func openOrCreateVolumeTargetNoSymlink(rootFD int, rel string) (int, error) {
+	rootMountID, err := fdMountID(rootFD)
+	if err != nil {
+		return -1, fmt.Errorf("read rootfs mount identity: %w", err)
+	}
+
 	currentFD, err := unix.Openat(rootFD, ".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open rootfs fd: %w", err)
+	}
+	if err := requireMountID(currentFD, rootMountID, "."); err != nil {
+		_ = unix.Close(currentFD)
+		return -1, err
 	}
 	if rel == "." {
 		return currentFD, nil
@@ -167,10 +178,51 @@ func openOrCreateVolumeTargetNoSymlink(rootFD int, rel string) (int, error) {
 			_ = unix.Close(currentFD)
 			return -1, fmt.Errorf("open component %q without symlink traversal: %w", component, err)
 		}
+		if err := requireMountID(nextFD, rootMountID, component); err != nil {
+			_ = unix.Close(nextFD)
+			_ = unix.Close(currentFD)
+			return -1, err
+		}
 		_ = unix.Close(currentFD)
 		currentFD = nextFD
 	}
 	return currentFD, nil
+}
+
+func requireMountID(fd int, expected uint64, component string) error {
+	actual, err := fdMountID(fd)
+	if err != nil {
+		return fmt.Errorf("read mount identity for %q: %w", component, err)
+	}
+	if actual != expected {
+		return fmt.Errorf("volume target component %q crosses mount boundary (%d -> %d)", component, expected, actual)
+	}
+	return nil
+}
+
+func fdMountID(fd int) (uint64, error) {
+	if fd < 0 {
+		return 0, fmt.Errorf("invalid fd %d", fd)
+	}
+	data, err := os.ReadFile("/proc/self/fdinfo/" + strconv.Itoa(fd))
+	if err != nil {
+		return 0, fmt.Errorf("read fdinfo: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "mnt_id:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "mnt_id:"))
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse mnt_id %q: %w", raw, err)
+		}
+		if id == 0 {
+			return 0, fmt.Errorf("invalid zero mnt_id")
+		}
+		return id, nil
+	}
+	return 0, fmt.Errorf("mnt_id missing from fdinfo")
 }
 
 func volumeTargetFDPath(fd int) string {
