@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -52,7 +53,11 @@ func saveStoppedOwnedGeneration(t *testing.T, st *state.Store, id string, pid in
 }
 
 func TestStopContainerUsesVerifiedPidfdAndEscalates(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "trap '' TERM; while :; do :; done")
+	cmd := exec.Command("sh", "-c", "trap '' TERM; printf R; while :; do :; done")
+	readyPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("create readiness pipe: %v", err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child: %v", err)
 	}
@@ -62,6 +67,17 @@ func TestStopContainerUsesVerifiedPidfdAndEscalates(t *testing.T) {
 		}
 		_ = cmd.Wait()
 	}()
+
+	// cmd.Start only proves that the shell process exists. Wait until the child
+	// explicitly reports that its SIGTERM-ignore trap has been installed before
+	// exercising timeout escalation; otherwise SIGTERM can win the setup race.
+	ready := make([]byte, 1)
+	if _, err := io.ReadFull(readyPipe, ready); err != nil {
+		t.Fatalf("wait for child signal readiness: %v", err)
+	}
+	if ready[0] != 'R' {
+		t.Fatalf("unexpected child readiness byte %#x", ready[0])
+	}
 
 	start, err := container.ProcessStartTime(cmd.Process.Pid)
 	if err != nil {
