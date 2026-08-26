@@ -114,12 +114,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		return writeRegularSecure(target, destDir, hdr, r)
 
 	case tar.TypeSymlink:
-		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove existing node before symlink %s: %w", target, err)
-		}
-		if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
-			return fmt.Errorf("symlink %s → %s: %w", target, hdr.Linkname, err)
-		}
+		return createSymlinkSecure(target, destDir, hdr.Linkname)
 
 	case tar.TypeLink:
 		linkTarget, err := safePath(destDir, hdr.Linkname)
