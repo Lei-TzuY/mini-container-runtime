@@ -13,6 +13,9 @@ import (
 // veth ownership and published-port DNAT ownership both require a managed state
 // store so a later lifecycle actor can safely recover after a parent crash.
 func requireDurableNetworkOwnership(cfg Config, lifecycleStore *state.Store) error {
+	if len(cfg.PortMappings) > 0 && !cfg.BridgeNetwork {
+		return &runtimeSetupError{err: fmt.Errorf("published ports require bridge networking")}
+	}
 	if !cfg.BridgeNetwork && len(cfg.PortMappings) == 0 {
 		return nil
 	}
