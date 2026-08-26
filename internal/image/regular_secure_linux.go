@@ -56,6 +56,12 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 		_ = out.Close()
 		return fmt.Errorf("write %s: %w", target, err)
 	}
+	// chown may clear setuid/setgid bits, so ownership must be restored before
+	// the final chmod pass.
+	if err := restoreOwnershipFD(fd, target, hdr.Uid, hdr.Gid); err != nil {
+		_ = out.Close()
+		return err
+	}
 	if err := unix.Fchmod(fd, uint32(hdr.FileInfo().Mode().Perm())); err != nil {
 		_ = out.Close()
 		return fmt.Errorf("restore mode on %s: %w", target, err)
