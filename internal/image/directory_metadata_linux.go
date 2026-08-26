@@ -25,6 +25,7 @@ func finalizeDirectoryMetadata(destDir string, dirs []directoryMetadata) error {
 		if err != nil { return fmt.Errorf("open directory for metadata %s: %w", meta.target, err) }
 		if err := restoreOwnershipFD(fd, meta.target, meta.uid, meta.gid); err != nil { _ = unix.Close(fd); return err }
 		if err := unix.Fchmod(fd, tarUnixMode(meta.mode)); err != nil { _ = unix.Close(fd); return fmt.Errorf("chmod directory %s: %w", meta.target, err) }
+		if err := restoreXattrsFD(fd, meta.target, meta.xattrs); err != nil { _ = unix.Close(fd); return err }
 		if !meta.modTime.IsZero() {
 			tv := unix.NsecToTimeval(meta.modTime.UnixNano())
 			if err := unix.Futimes(fd, []unix.Timeval{tv, tv}); err != nil { _ = unix.Close(fd); return fmt.Errorf("restore directory mtime %s: %w", meta.target, err) }
