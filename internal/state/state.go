@@ -20,6 +20,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -261,7 +262,7 @@ func (s *Store) getUnlocked(id string) (*Container, error) {
 	data, err := readRegularStateFile(file, "container state")
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("container %q not found", id)
+			return nil, fmt.Errorf("container %q not found: %w", id, err)
 		}
 		return nil, fmt.Errorf("read container state: %w", err)
 	}
@@ -284,8 +285,12 @@ func (s *Store) Resolve(idOrPrefix string) (*Container, error) {
 		return nil, ErrStoreClosed
 	}
 
-	if c, err := s.getUnlocked(idOrPrefix); err == nil {
+	c, exactErr := s.getUnlocked(idOrPrefix)
+	if exactErr == nil {
 		return c, nil
+	}
+	if !errors.Is(exactErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("resolve exact container %q: %w", idOrPrefix, exactErr)
 	}
 
 	entries, err := os.ReadDir(s.ctrDir)
