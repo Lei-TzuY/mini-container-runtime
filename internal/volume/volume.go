@@ -192,20 +192,7 @@ func CreateVolume(name string) (*Volume, error) {
 	if err := ValidateVolumeName(name); err != nil {
 		return nil, err
 	}
-	root, err := volumeRoot(true)
-	if err != nil {
-		return nil, err
-	}
-	volDir, dataPath, err := ensureVolumeLayout(root, name, true)
-	if err != nil {
-		return nil, err
-	}
-
-	vol := &Volume{Name: name, MountPath: dataPath, CreatedAt: time.Now()}
-	if err := writeVolumeMetadata(volDir, vol); err != nil {
-		return nil, err
-	}
-	return vol, nil
+	return createVolume(name, time.Now())
 }
 
 // GetVolume retrieves volume details by name.
