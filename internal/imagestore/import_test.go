@@ -3,7 +3,6 @@ package imagestore
 import (
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +32,15 @@ func TestImportRawRootFS(t *testing.T) {
 	if err := image.ExportDir(srcDir, tarPath); err != nil {
 		t.Fatalf("ExportDir error: %v", err)
 	}
+	archiveBytes, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("ReadFile archive: %v", err)
+	}
+	archiveSum := sha256.Sum256(archiveBytes)
+	expectedID, err := rawRootFSContentID(archiveSum[:])
+	if err != nil {
+		t.Fatalf("derive expected image ID: %v", err)
+	}
 
 	rec, err := ImportRawRootFS(st, tarPath, "imported:latest")
 	if err != nil {
@@ -41,6 +49,12 @@ func TestImportRawRootFS(t *testing.T) {
 
 	if rec.Tag != "imported:latest" {
 		t.Fatalf("Image tag = %s, want imported:latest", rec.Tag)
+	}
+	if rec.ID != expectedID || len(rec.ID) != sha256.Size*2 {
+		t.Fatalf("Image ID = %q, want full SHA-256 %q", rec.ID, expectedID)
+	}
+	if got := filepath.Base(filepath.Dir(rec.RootFS)); got != expectedID {
+		t.Fatalf("RootFS parent = %q, want full content ID %q", got, expectedID)
 	}
 	if _, err := os.Stat(filepath.Join(rec.RootFS, "test.txt")); err != nil {
 		t.Fatalf("published rootfs missing content: %v", err)
@@ -64,7 +78,11 @@ func TestImportRawRootFSFailureDoesNotPublishPartialImage(t *testing.T) {
 		t.Fatal("malformed archive import unexpectedly succeeded")
 	}
 
-	sum := fmt.Sprintf("%x", sha256.Sum256(bad))[:12]
+	digest := sha256.Sum256(bad)
+	sum, err := rawRootFSContentID(digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(filepath.Join(st.Dir(), "images", sum)); !os.IsNotExist(err) {
 		t.Fatalf("failed import published image directory: err=%v", err)
 	}
