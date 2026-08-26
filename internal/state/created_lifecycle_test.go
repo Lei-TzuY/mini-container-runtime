@@ -184,6 +184,51 @@ func TestMarkStoppedIfCreatedRejectsPendingCgroupOwnership(t *testing.T) {
 	}
 }
 
+func TestMarkStoppedIfCreatedRejectsPendingNetworkOwnership(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Container{ID: "created-network-owned", Status: StatusCreated}
+	if err := st.Save(c); err != nil {
+		t.Fatal(err)
+	}
+	ownership := NetworkOwnership{
+		Owner:        "minicontainer:created-network-owned-7272-112",
+		PID:          7272,
+		PIDStartTime: 112,
+		VethHost:     "vh2345672345672",
+	}
+	st.mu.Lock()
+	err = st.writeNetworkOwnershipUnlocked(c.ID, ownership)
+	st.mu.Unlock()
+	if err != nil {
+		t.Fatalf("write adversarial network ownership: %v", err)
+	}
+
+	changed, err := st.MarkStoppedIfCreated(c.ID, 1, time.Unix(65, 0))
+	if err == nil || !strings.Contains(err.Error(), "network ownership") {
+		t.Fatalf("error=%v, want network ownership refusal", err)
+	}
+	if changed {
+		t.Fatal("created record with network ownership proof was modified")
+	}
+	got, getErr := st.Get(c.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != StatusCreated {
+		t.Fatalf("created state changed: %+v", got)
+	}
+	persisted, ok, getErr := st.GetNetworkOwnership(c.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if !ok || !networkOwnershipEqual(persisted, ownership) {
+		t.Fatalf("network ownership changed: ok=%v ownership=%+v", ok, persisted)
+	}
+}
+
 func TestMarkStoppedIfCreatedRejectsExitedGenerationProof(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
