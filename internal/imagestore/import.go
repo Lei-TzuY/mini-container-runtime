@@ -45,18 +45,25 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 		return nil, fmt.Errorf("close tarball after hashing: %w", closeErr)
 	}
 
-	sum := fmt.Sprintf("%x", h.Sum(nil))[:12]
-	imagesDir := filepath.Join(st.Dir(), "images")
-	imgDir := filepath.Join(imagesDir, sum)
-	rootFS := filepath.Join(imgDir, "rootfs")
-
-	if err := os.MkdirAll(imagesDir, 0755); err != nil {
-		return nil, fmt.Errorf("create image store: %w", err)
+	lease, err := st.AcquireImageStorage()
+	if err != nil {
+		return nil, fmt.Errorf("acquire image storage generation: %w", err)
 	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close image storage lease: %w", err))
+		}
+	}()
 
-	// Build the rootfs out-of-place so a malformed/truncated archive can never
-	// publish a half-extracted image directory. The temporary directory lives in
-	// the same parent so the final rename is atomic on a single filesystem.
+	sum := fmt.Sprintf("%x", h.Sum(nil))[:12]
+	imagesDir := lease.Path()
+	durableImagesDir := lease.DurablePath()
+	imgDir := filepath.Join(imagesDir, sum)
+	rootFS := filepath.Join(durableImagesDir, sum, "rootfs")
+
+	// Build the rootfs out-of-place inside the exact image-directory generation
+	// pinned by Store.Open. A replaced configured state pathname can therefore
+	// never redirect extraction or publication into another filesystem tree.
 	tmpDir, err := os.MkdirTemp(imagesDir, ".import-"+sum+"-")
 	if err != nil {
 		return nil, fmt.Errorf("create temporary image directory: %w", err)
@@ -90,6 +97,7 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 		return nil, fmt.Errorf("unpack rootfs: %w", err)
 	}
 
+	publishedOwned := false
 	if err := os.Rename(tmpDir, imgDir); err != nil {
 		if _, statErr := os.Stat(imgDir); statErr != nil {
 			return nil, fmt.Errorf("publish image rootfs: %w", err)
@@ -103,8 +111,24 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 		}
 	} else {
 		// tmpDir has moved to imgDir, so there is no staging pathname left for
-		// this call to clean up.
+		// this call to clean up. This call exclusively owns the published path
+		// until its image metadata is committed.
 		cleanupPending = false
+		publishedOwned = true
+	}
+
+	// RootFS metadata uses the configured durable path, not /proc/self/fd. Prove
+	// immediately before metadata publication that the configured root/images
+	// path still names this exact leased generation. If the pathname changed
+	// while extraction was running, remove only content published by this call.
+	if err := lease.ValidateConfiguredGeneration(); err != nil {
+		boundaryErr := fmt.Errorf("validate image storage generation before metadata publication: %w", err)
+		if publishedOwned {
+			if cleanupErr := removeAll(imgDir); cleanupErr != nil {
+				boundaryErr = errors.Join(boundaryErr, fmt.Errorf("rollback unpublished image rootfs %q: %w", imgDir, cleanupErr))
+			}
+		}
+		return nil, boundaryErr
 	}
 
 	imgRec := &state.Image{
