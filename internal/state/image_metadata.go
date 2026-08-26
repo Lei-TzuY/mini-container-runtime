@@ -76,6 +76,9 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := s.ensureImageNotPendingCleanupUnlocked(img); err != nil {
+		return fmt.Errorf("refuse image metadata publication during pending cleanup: %w", err)
+	}
 	newPath := filepath.Join(s.imgDir, imageMetadataFilename(key))
 	legacyPath := filepath.Join(s.imgDir, legacyImageMetadataFilename(key))
 
