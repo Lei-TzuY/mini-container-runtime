@@ -63,12 +63,133 @@ func validateHostAndIP(hostname, ipAddr string) error {
 	return nil
 }
 
-// RegisterHost records a container IP mapping in a network.
+func validateEntries(networkName string, entries []HostEntry) error {
+	seenContainers := make(map[string]struct{}, len(entries))
+	seenHostnames := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		if strings.TrimSpace(entry.ContainerID) == "" {
+			return fmt.Errorf("DNS registry %q entry %d has empty container ID", networkName, i)
+		}
+		if err := validateHostAndIP(entry.Hostname, entry.IP); err != nil {
+			return fmt.Errorf("DNS registry %q entry %d is invalid: %w", networkName, i, err)
+		}
+		if _, ok := seenContainers[entry.ContainerID]; ok {
+			return fmt.Errorf("DNS registry %q has duplicate container ID %q", networkName, entry.ContainerID)
+		}
+		if _, ok := seenHostnames[entry.Hostname]; ok {
+			return fmt.Errorf("DNS registry %q has duplicate hostname %q", networkName, entry.Hostname)
+		}
+		seenContainers[entry.ContainerID] = struct{}{}
+		seenHostnames[entry.Hostname] = struct{}{}
+	}
+	return nil
+}
+
+func ensureDNSDir() (string, error) {
+	dir := DefaultDNSDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create DNS registry directory %q: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", fmt.Errorf("inspect DNS registry directory %q: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("DNS registry path %q must be a real directory", dir)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("chmod DNS registry directory %q: %w", dir, err)
+	}
+	return dir, nil
+}
+
+func loadEntriesChecked(path, networkName string) ([]HostEntry, bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("inspect DNS registry %q: %w", networkName, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("DNS registry %q must be a regular file", networkName)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("read DNS registry %q: %w", networkName, err)
+	}
+	var entries []HostEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, false, fmt.Errorf("parse DNS registry %q: %w", networkName, err)
+	}
+	if err := validateEntries(networkName, entries); err != nil {
+		return nil, false, err
+	}
+	return entries, true, nil
+}
+
+func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error {
+	if err := validateEntries(networkName, entries); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal DNS registry %q: %w", networkName, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+networkName+".json.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create DNS registry temp file %q: %w", networkName, err)
+	}
+	tmpName := tmp.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("chmod DNS registry temp file %q: %w", networkName, err)
+	}
+	n, err := tmp.Write(data)
+	if err != nil {
+		return fmt.Errorf("write DNS registry temp file %q: %w", networkName, err)
+	}
+	if n != len(data) {
+		return fmt.Errorf("write DNS registry temp file %q: short write %d/%d", networkName, n, len(data))
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync DNS registry temp file %q: %w", networkName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close DNS registry temp file %q: %w", networkName, err)
+	}
+	closed = true
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("publish DNS registry %q: %w", networkName, err)
+	}
+
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open DNS registry directory for sync: %w", err)
+	}
+	defer dirFile.Close()
+	if err := dirFile.Sync(); err != nil {
+		return fmt.Errorf("sync DNS registry directory: %w", err)
+	}
+	return nil
+}
+
+// RegisterHost records a container IP mapping in a network. The complete
+// read-modify-write transaction is serialized across minictl processes and the
+// replacement file is published atomically only after its contents are synced.
 func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
 	}
-	if containerID == "" {
+	if strings.TrimSpace(containerID) == "" {
 		return fmt.Errorf("container ID cannot be empty")
 	}
 	if err := validateHostAndIP(hostname, ipAddr); err != nil {
@@ -77,85 +198,113 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 
 	dnsMu.Lock()
 	defer dnsMu.Unlock()
-
-	dir := DefaultDNSDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	dir, err := ensureDNSDir()
+	if err != nil {
 		return err
 	}
-
-	netFile := filepath.Join(dir, networkName+".json")
-	entries := loadEntries(netFile)
-
-	// Filter out old entry for same containerID or hostname
-	var updated []HostEntry
-	for _, e := range entries {
-		if e.ContainerID != containerID && e.Hostname != hostname {
-			updated = append(updated, e)
+	return withDNSNetworkLock(dir, networkName, func() error {
+		netFile := filepath.Join(dir, networkName+".json")
+		entries, _, err := loadEntriesChecked(netFile, networkName)
+		if err != nil {
+			return err
 		}
-	}
-
-	updated = append(updated, HostEntry{
-		ContainerID: containerID,
-		Hostname:    hostname,
-		IP:          ipAddr,
+		updated := make([]HostEntry, 0, len(entries)+1)
+		for _, entry := range entries {
+			if entry.ContainerID != containerID && entry.Hostname != hostname {
+				updated = append(updated, entry)
+			}
+		}
+		updated = append(updated, HostEntry{ContainerID: containerID, Hostname: hostname, IP: ipAddr})
+		return saveEntriesAtomic(dir, netFile, networkName, updated)
 	})
-
-	return saveEntries(netFile, updated)
 }
 
-// UnregisterHost removes a container host entry.
+// UnregisterHost removes a container host entry. Missing registries and missing
+// container IDs are idempotent success; malformed registries fail closed and are
+// never overwritten with an empty replacement.
 func UnregisterHost(networkName, containerID string) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
 	}
+	if strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("container ID cannot be empty")
+	}
 
 	dnsMu.Lock()
 	defer dnsMu.Unlock()
-
-	netFile := filepath.Join(DefaultDNSDir(), networkName+".json")
-	entries := loadEntries(netFile)
-
-	var updated []HostEntry
-	for _, e := range entries {
-		if e.ContainerID != containerID {
-			updated = append(updated, e)
-		}
+	dir, err := ensureDNSDir()
+	if err != nil {
+		return err
 	}
-
-	return saveEntries(netFile, updated)
+	return withDNSNetworkLock(dir, networkName, func() error {
+		netFile := filepath.Join(dir, networkName+".json")
+		entries, exists, err := loadEntriesChecked(netFile, networkName)
+		if err != nil || !exists {
+			return err
+		}
+		updated := make([]HostEntry, 0, len(entries))
+		found := false
+		for _, entry := range entries {
+			if entry.ContainerID == containerID {
+				found = true
+				continue
+			}
+			updated = append(updated, entry)
+		}
+		if !found {
+			return nil
+		}
+		return saveEntriesAtomic(dir, netFile, networkName, updated)
+	})
 }
 
-// GenerateHostsContent formats hosts mapping lines.
-func GenerateHostsContent(networkName string) string {
+// GenerateHostsContentChecked returns a consistent snapshot of one registry.
+// Corrupt, symlinked, or unreadable registry state is reported to callers so
+// runtime setup can fail closed instead of silently losing service discovery.
+func GenerateHostsContentChecked(networkName string) (string, error) {
 	if err := validateNetworkName(networkName); err != nil {
-		return ""
+		return "", err
 	}
 
 	dnsMu.Lock()
 	defer dnsMu.Unlock()
-
-	netFile := filepath.Join(DefaultDNSDir(), networkName+".json")
-	entries := loadEntries(netFile)
-
-	var lines []string
-	lines = append(lines, "127.0.0.1\tlocalhost")
-	lines = append(lines, "::1\tlocalhost ip6-localhost ip6-loopback")
-	lines = append(lines, "# Mini Docker Network Service Discovery ("+networkName+")")
-
-	for _, e := range entries {
-		if e.IP != "" && e.Hostname != "" {
-			lines = append(lines, fmt.Sprintf("%s\t%s", e.IP, e.Hostname))
-		}
+	dir, err := ensureDNSDir()
+	if err != nil {
+		return "", err
+	}
+	var entries []HostEntry
+	if err := withDNSNetworkLock(dir, networkName, func() error {
+		var loadErr error
+		entries, _, loadErr = loadEntriesChecked(filepath.Join(dir, networkName+".json"), networkName)
+		return loadErr
+	}); err != nil {
+		return "", err
 	}
 
-	return strings.Join(lines, "\n") + "\n"
+	lines := []string{
+		"127.0.0.1\tlocalhost",
+		"::1\tlocalhost ip6-localhost ip6-loopback",
+		"# Mini Docker Network Service Discovery (" + networkName + ")",
+	}
+	for _, entry := range entries {
+		lines = append(lines, fmt.Sprintf("%s\t%s", entry.IP, entry.Hostname))
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// GenerateHostsContent preserves the historical string-only API. New runtime
+// paths should use GenerateHostsContentChecked so storage failures are visible.
+func GenerateHostsContent(networkName string) string {
+	content, err := GenerateHostsContentChecked(networkName)
+	if err != nil {
+		return ""
+	}
+	return content
 }
 
 // InjectHostsIntoRootFS is retained for API compatibility, but direct rootfs
 // mutation is intentionally disabled. Container runs now bind-mount an
 // anonymous generated hosts file inside the child mount namespace instead.
-// This function validates the legacy arguments without creating or modifying
-// any path beneath rootfsPath.
 func InjectHostsIntoRootFS(rootfsPath, networkName string) error {
 	if rootfsPath == "" {
 		return fmt.Errorf("rootfs path cannot be empty")
@@ -188,22 +337,4 @@ func isSubDir(base, target string) bool {
 		return false
 	}
 	return true
-}
-
-func loadEntries(path string) []HostEntry {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return []HostEntry{}
-	}
-	var entries []HostEntry
-	_ = json.Unmarshal(data, &entries)
-	return entries
-}
-
-func saveEntries(path string, entries []HostEntry) error {
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
 }

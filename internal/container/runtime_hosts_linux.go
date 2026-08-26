@@ -31,7 +31,10 @@ func createRuntimeHostsFile(enabled bool) (*os.File, error) {
 	if !enabled {
 		return nil, nil
 	}
-	content := dns.GenerateHostsContent(bridgeDNSNetworkName)
+	content, err := dns.GenerateHostsContentChecked(bridgeDNSNetworkName)
+	if err != nil {
+		return nil, &runtimeSetupError{err: fmt.Errorf("read bridge DNS registry: %w", err)}
+	}
 	return createRuntimeHostsFileWith(content, os.CreateTemp, os.Remove)
 }
 
