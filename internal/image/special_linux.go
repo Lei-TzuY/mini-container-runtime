@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -23,65 +22,27 @@ func makeSpecialSecure(target, destDir string, hdr *tar.Header) error {
 }
 
 func makeSpecialSecureWithHook(target, destDir string, hdr *tar.Header, beforeCreate func()) error {
-	destAbs, err := filepath.Abs(destDir)
+	root, err := openExtractionRoot(destDir)
 	if err != nil {
-		return fmt.Errorf("resolve extraction root: %w", err)
+		return err
 	}
-	targetAbs, err := filepath.Abs(target)
+	defer root.Close()
+	parent, err := root.openParent(target, "special", true)
 	if err != nil {
-		return fmt.Errorf("resolve special target: %w", err)
+		return err
 	}
-	rel, err := filepath.Rel(destAbs, targetAbs)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path traversal detected: %q escapes %q", target, destDir)
-	}
-
-	rootFD, err := unix.Open(destAbs, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("open extraction root %s: %w", destAbs, err)
-	}
-	defer unix.Close(rootFD)
-
-	parentFD, ownedParentFD := rootFD, -1
-	parts := strings.Split(rel, string(filepath.Separator))
-	for _, part := range parts[:len(parts)-1] {
-		if part == "" || part == "." || part == ".." {
-			return fmt.Errorf("invalid special extraction path component %q", part)
-		}
-		fd, openErr := unix.Openat(parentFD, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-		if errors.Is(openErr, unix.ENOENT) {
-			if mkdirErr := unix.Mkdirat(parentFD, part, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
-				return fmt.Errorf("mkdir extraction parent %q: %w", part, mkdirErr)
-			}
-			fd, openErr = unix.Openat(parentFD, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-		}
-		if openErr != nil {
-			return fmt.Errorf("open extraction parent %q without symlinks: %w", part, openErr)
-		}
-		if ownedParentFD >= 0 {
-			_ = unix.Close(ownedParentFD)
-		}
-		ownedParentFD, parentFD = fd, fd
-	}
-	if ownedParentFD >= 0 {
-		defer unix.Close(ownedParentFD)
-	}
-
-	leaf := parts[len(parts)-1]
-	if leaf == "" || leaf == "." || leaf == ".." {
-		return fmt.Errorf("invalid special extraction leaf %q", leaf)
-	}
+	defer parent.Close()
 	if beforeCreate != nil {
 		beforeCreate()
 	}
 
 	var st unix.Stat_t
-	statErr := unix.Fstatat(parentFD, leaf, &st, unix.AT_SYMLINK_NOFOLLOW)
+	statErr := unix.Fstatat(parent.fd, parent.leaf, &st, unix.AT_SYMLINK_NOFOLLOW)
 	if statErr == nil {
 		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
 			return fmt.Errorf("refuse to replace directory %s with special node", target)
 		}
-		if err := unix.Unlinkat(parentFD, leaf, 0); err != nil {
+		if err := unix.Unlinkat(parent.fd, parent.leaf, 0); err != nil {
 			return fmt.Errorf("unlink existing special target %s: %w", target, err)
 		}
 	} else if !errors.Is(statErr, unix.ENOENT) {
@@ -92,7 +53,7 @@ func makeSpecialSecureWithHook(target, destDir string, hdr *tar.Header, beforeCr
 	if err != nil {
 		return err
 	}
-	if err := unix.Mknodat(parentFD, leaf, mode, int(dev)); err != nil {
+	if err := unix.Mknodat(parent.fd, parent.leaf, mode, int(dev)); err != nil {
 		return err
 	}
 	return nil
