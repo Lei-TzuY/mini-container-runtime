@@ -397,6 +397,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 
 	initStatusErr := awaitPayloadExec(initStatusReadPipe)
 	_ = initStatusReadPipe.Close()
+
 	waitErr := cmd.Wait()
 
 	var bridgeCleanupErr error
@@ -645,6 +646,14 @@ func mountVolume(v Volume, rootfs string, debug bool) error {
 		return fmt.Errorf("host path %q must be absolute", v.HostPath)
 	}
 
+	source, sourceFile, err := resolveVolumeMountSource(v.HostPath)
+	if err != nil {
+		return fmt.Errorf("secure mount source: %w", err)
+	}
+	if sourceFile != nil {
+		defer sourceFile.Close()
+	}
+
 	targetFD, err := openVolumeTarget(rootfs, v.ContainerPath)
 	if err != nil {
 		return fmt.Errorf("secure mount target: %w", err)
@@ -652,7 +661,7 @@ func mountVolume(v Volume, rootfs string, debug bool) error {
 	defer syscall.Close(targetFD)
 	target := volumeTargetFDPath(targetFD)
 
-	if err := syscall.Mount(v.HostPath, target, "",
+	if err := syscall.Mount(source, target, "",
 		syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind mount: %w", err)
 	}
