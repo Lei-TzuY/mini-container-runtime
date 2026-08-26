@@ -52,6 +52,9 @@ func ParseRepositoryTag(imageName string) (string, string) {
 
 // TagImage creates an alias tag for an existing image.
 func TagImage(st *state.Store, source, target string) (*state.Image, error) {
+	if st == nil {
+		return nil, fmt.Errorf("state store is nil")
+	}
 	img, err := st.GetImage(source)
 	if err != nil {
 		return nil, fmt.Errorf("source image %q not found: %w", source, err)
@@ -63,7 +66,7 @@ func TagImage(st *state.Store, source, target string) (*state.Image, error) {
 	newImg.Repository = repo
 	newImg.Tag = tag
 
-	if err := st.PublishImage(&newImg); err != nil {
+	if err := st.PublishImageIfSourceMatch(source, img, &newImg); err != nil {
 		return nil, fmt.Errorf("save tagged image %q: %w", target, err)
 	}
 	return &newImg, nil

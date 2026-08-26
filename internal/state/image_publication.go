@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 )
 
 func sameImagePayload(a, b *Image) bool {
@@ -77,33 +78,8 @@ func validateExistingPayloadAliases(images []*Image, existing *Image) (bool, err
 	return hasOtherReference, nil
 }
 
-// PublishImage saves image metadata while preserving the payload displaced by a
-// tag/key replacement. Ordinary metadata updates for the same ID/rootfs remain
-// in-place. When one logical key moves from payload A to payload B and A has no
-// other metadata reference, A is first durably converted into a dangling image
-// record keyed by its ID. Only then is the requested key overwritten.
-//
-// This ordering is crash-safe: a failure after the dangling write leaves an
-// extra safe reference, while a successful overwrite never makes the old
-// payload unreachable to prune. Callers that merely update fields on the same
-// payload may continue using SaveImage directly.
-func (s *Store) PublishImage(img *Image) error {
-	if s == nil {
-		return fmt.Errorf("state store is nil")
-	}
+func (s *Store) publishImageUnlocked(images []*Image, img *Image) error {
 	key, err := imageStorageKey(img)
-	if err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := lockStateFile(s.lockFile); err != nil {
-		return err
-	}
-	defer func() { _ = unlockStateFile(s.lockFile) }()
-
-	images, err := s.listImagesUnlocked()
 	if err != nil {
 		return err
 	}
@@ -167,4 +143,85 @@ func (s *Store) PublishImage(img *Image) error {
 		return fmt.Errorf("marshal image: %w", err)
 	}
 	return s.saveImageMetadataUnlocked(img, data)
+}
+
+// PublishImage saves image metadata while preserving the payload displaced by a
+// tag/key replacement. Ordinary metadata updates for the same ID/rootfs remain
+// in-place. When one logical key moves from payload A to payload B and A has no
+// other metadata reference, A is first durably converted into a dangling image
+// record keyed by its ID. Only then is the requested key overwritten.
+//
+// This ordering is crash-safe: a failure after the dangling write leaves an
+// extra safe reference, while a successful overwrite never makes the old
+// payload unreachable to prune. Callers that merely update fields on the same
+// payload may continue using SaveImage directly.
+func (s *Store) PublishImage(img *Image) error {
+	if s == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	if _, err := imageStorageKey(img); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return err
+	}
+	return s.publishImageUnlocked(images, img)
+}
+
+// PublishImageIfSourceMatch publishes an image alias only while source still
+// resolves to the exact durable snapshot the caller previously observed. The
+// source proof and target publication share one process/file lock, preventing a
+// stale source snapshot from resurrecting metadata after its payload was
+// concurrently removed.
+func (s *Store) PublishImageIfSourceMatch(source string, expectedSource, published *Image) error {
+	if s == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	if err := validateImageSelector(source); err != nil {
+		return err
+	}
+	if expectedSource == nil {
+		return fmt.Errorf("expected source image is nil")
+	}
+	if published == nil {
+		return fmt.Errorf("published image is nil")
+	}
+	if _, err := imageStorageKey(published); err != nil {
+		return err
+	}
+	if !sameImagePayload(expectedSource, published) {
+		return fmt.Errorf("published image does not alias the expected source payload")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return err
+	}
+	current, err := resolveImageForRead(images, source)
+	if err != nil {
+		return fmt.Errorf("source image %q changed before tag publication: %w", source, err)
+	}
+	if !reflect.DeepEqual(current, expectedSource) {
+		return fmt.Errorf("source image %q changed before tag publication", source)
+	}
+	if !sameImagePayload(current, published) {
+		return fmt.Errorf("published image does not alias the current source payload")
+	}
+	return s.publishImageUnlocked(images, published)
 }
