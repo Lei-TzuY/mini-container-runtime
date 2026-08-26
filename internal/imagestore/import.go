@@ -145,7 +145,7 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 		LoadedAt: time.Now(),
 	}
 
-	if err := st.SaveImage(imgRec); err != nil {
+	if err := st.PublishImage(imgRec); err != nil {
 		saveErr := error(fmt.Errorf("save image record: %w", err))
 		if publishedOwned {
 			referenced, proofErr := rawRootFSPayloadHasCommittedReference(st, rootFS, sum)
@@ -153,9 +153,9 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 			case proofErr != nil:
 				saveErr = errors.Join(saveErr, fmt.Errorf("preserve newly published image payload because metadata absence is unproven: %w", proofErr))
 			case referenced:
-				// SaveImage can report a post-commit maintenance failure, such as a
-				// legacy-metadata cleanup error. The durable reference proves that
-				// deleting the payload here would create dangling metadata.
+				// PublishImage can report a post-commit maintenance failure. A
+				// durable reference proves that deleting the payload would create
+				// dangling metadata.
 			default:
 				if cleanupErr := removeAll(imgDir); cleanupErr != nil {
 					saveErr = errors.Join(saveErr, fmt.Errorf("rollback image payload after metadata failure %q: %w", imgDir, cleanupErr))

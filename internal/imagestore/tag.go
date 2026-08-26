@@ -31,7 +31,7 @@ func CreateTagAlias(st *state.Store, srcTag, targetTag string) (*state.Image, er
 		ExposedPorts: src.ExposedPorts,
 	}
 
-	if err := st.SaveImage(newImg); err != nil {
+	if err := st.PublishImage(newImg); err != nil {
 		return nil, fmt.Errorf("save tagged image: %w", err)
 	}
 
