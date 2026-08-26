@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"minicontainer/internal/cgroups"
 	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
@@ -100,5 +99,3 @@ func cleanupRuntimeGenerationResources(st *state.Store, containerID string, pid 
 		network.RemoveVethHostOwned,
 	)
 }
-
-var _ = cgroups.NameForContainerProcess
