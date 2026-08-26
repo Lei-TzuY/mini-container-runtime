@@ -37,6 +37,7 @@ func TestSendSignalUsesPersistedProcessIdentity(t *testing.T) {
 		Status:       state.StatusRunning,
 		PID:          cmd.Process.Pid,
 		PIDStartTime: start,
+		RootFS:       "/rootfs-signal-proof",
 		CreatedAt:    time.Now(),
 	}
 	if err := st.Save(c); err != nil {
@@ -45,8 +46,16 @@ func TestSendSignalUsesPersistedProcessIdentity(t *testing.T) {
 
 	// SIGCONT is observable through the pidfd send path but does not terminate
 	// an ordinary sleeping process, keeping the test deterministic.
+	resolved, err := SendSignalResolved(st, "ctr-sig", "SIGCONT")
+	if err != nil {
+		t.Fatalf("SendSignalResolved error: %v", err)
+	}
+	if resolved.ID != c.ID || resolved.PID != c.PID || resolved.PIDStartTime != start || resolved.RootFS != c.RootFS {
+		t.Fatalf("resolved snapshot=%+v, want exact persisted signal target %+v", resolved, c)
+	}
+	// Preserve the original API contract for callers that only need an error.
 	if err := SendSignal(st, c.ID, "SIGCONT"); err != nil {
-		t.Fatalf("SendSignal error: %v", err)
+		t.Fatalf("SendSignal wrapper error: %v", err)
 	}
 	ok, err := ProcessIdentityMatches(c.PID, start)
 	if err != nil || !ok {
