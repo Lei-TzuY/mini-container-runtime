@@ -121,15 +121,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		if err != nil {
 			return err
 		}
-		if err := ensureSafeParentDirs(linkTarget, destDir); err != nil {
-			return err
-		}
-		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove existing node before link %s: %w", target, err)
-		}
-		if err := os.Link(linkTarget, target); err != nil {
-			return fmt.Errorf("hardlink %s → %s: %w", target, linkTarget, err)
-		}
+		return createHardlinkSecure(target, destDir, linkTarget)
 
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
