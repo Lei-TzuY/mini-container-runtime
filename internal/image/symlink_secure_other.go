@@ -3,6 +3,7 @@
 package image
 
 import (
+	"archive/tar"
 	"fmt"
 	"os"
 )
@@ -16,4 +17,11 @@ func createSymlinkSecure(target, destDir, linkname string) error {
 		return fmt.Errorf("symlink %s → %s: %w", target, linkname, err)
 	}
 	return nil
+}
+
+func createTarSymlinkSecure(target, destDir string, hdr *tar.Header) error {
+	if hdr == nil {
+		return fmt.Errorf("symlink tar header is nil")
+	}
+	return createSymlinkSecure(target, destDir, hdr.Linkname)
 }
