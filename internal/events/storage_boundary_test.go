@@ -52,7 +52,8 @@ func TestManagedEventStorageRejectsSymlinkedStateRoot(t *testing.T) {
 func TestManagedEventStorageCreatesPrivateRealFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	const containerID = "evt-private"
+	const containerID = "abcdef0123456789"
+	persistCreateGuardContainer(t, containerID)
 
 	if err := Publish(EventCreate, containerID, "image", "created"); err != nil {
 		t.Fatalf("Publish: %v", err)
@@ -82,7 +83,7 @@ func TestManagedEventStorageCreatesPrivateRealFiles(t *testing.T) {
 	if err := StreamEvents(false, &out); err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
-	if !strings.Contains(out.String(), containerID) {
-		t.Fatalf("event stream missing container ID: %q", out.String())
+	if !strings.Contains(out.String(), containerID[:12]) {
+		t.Fatalf("event stream missing shortened container ID: %q", out.String())
 	}
 }
