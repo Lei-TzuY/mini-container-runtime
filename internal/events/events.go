@@ -49,20 +49,23 @@ func LogPath() string {
 	return filepath.Join(state.DefaultDir(), "events.log")
 }
 
-// Publish records a new event to the global log. Start is the one exception:
-// cmdRun announces its intent before runtime setup, so start is staged until the
-// parent successfully delivers the explicit readiness byte. A die event is only
-// persisted when this process has a committed start proof for the same container,
-// preventing pre-release setup failures from producing false start/die pairs.
+// Publish records a new event to the global log. Runtime-admission events are
+// staged when the CLI announces intent before the operation can prove success:
+// start is committed at the container readiness byte and exec is committed only
+// after the exec payload process itself starts. A die event is persisted only
+// when this process has a committed start proof for the same container.
 func Publish(evtType EventType, containerID, image, message string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if evtType == EventStart {
+	if evtType == EventStart || evtType == EventExec {
 		if err := validateEventStagingStorage(); err != nil {
 			return err
 		}
-		return stageStartEvent(containerID, image, message)
+		if evtType == EventStart {
+			return stageStartEvent(containerID, image, message)
+		}
+		return stageExecEvent(containerID, image, message)
 	}
 	if evtType == EventDie && !consumeDieProof(containerID) {
 		return nil
