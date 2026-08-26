@@ -3,36 +3,12 @@
 package image
 
 import (
-	"archive/tar"
 	"fmt"
 	"sort"
 	"strings"
 
 	"golang.org/x/sys/unix"
 )
-
-const paxSchilyXattrPrefix = "SCHILY.xattr."
-
-func tarXattrs(hdr *tar.Header) map[string][]byte {
-	if hdr == nil || len(hdr.PAXRecords) == 0 {
-		return nil
-	}
-	out := make(map[string][]byte)
-	for key, value := range hdr.PAXRecords {
-		if !strings.HasPrefix(key, paxSchilyXattrPrefix) {
-			continue
-		}
-		name := strings.TrimPrefix(key, paxSchilyXattrPrefix)
-		if name == "" {
-			continue
-		}
-		out[name] = []byte(value)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
 
 func restoreXattrsFD(fd int, target string, xattrs map[string][]byte) error {
 	if len(xattrs) == 0 {
