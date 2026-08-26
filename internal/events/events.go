@@ -49,12 +49,24 @@ func LogPath() string {
 	return filepath.Join(state.DefaultDir(), "events.log")
 }
 
-// Publish records a new event to the global log. The file helper opens the
-// audit log without following symlinks and with private permissions so a
-// compromised state path cannot redirect privileged append operations.
+// Publish records a new event to the global log. Start is the one exception:
+// cmdRun announces its intent before runtime setup, so start is staged until the
+// parent successfully delivers the explicit readiness byte. A die event is only
+// persisted when this process has a committed start proof for the same container,
+// preventing pre-release setup failures from producing false start/die pairs.
 func Publish(evtType EventType, containerID, image, message string) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	if evtType == EventStart {
+		if err := validateEventStagingStorage(); err != nil {
+			return err
+		}
+		return stageStartEvent(containerID, image, message)
+	}
+	if evtType == EventDie && !consumeDieProof(containerID) {
+		return nil
+	}
 
 	evt := Event{
 		Timestamp:   time.Now(),
@@ -63,7 +75,16 @@ func Publish(evtType EventType, containerID, image, message string) error {
 		Image:       image,
 		Message:     message,
 	}
+	if err := appendEventUnlocked(evt); err != nil {
+		return err
+	}
+	if evtType == EventDie {
+		finishDieProof(containerID)
+	}
+	return nil
+}
 
+func appendEventUnlocked(evt Event) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return err
