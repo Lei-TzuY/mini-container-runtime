@@ -45,6 +45,7 @@ func Unpack(tarPath, destDir string) error {
 
 	tr := tar.NewReader(reader)
 	var extracted int
+	var directoryMetadataToFinalize []directoryMetadata
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -60,9 +61,19 @@ func Unpack(tarPath, destDir string) error {
 		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
 			return err
 		}
+		if hdr.Typeflag == tar.TypeDir {
+			directoryMetadataToFinalize = append(directoryMetadataToFinalize, directoryMetadata{
+				target:  target,
+				mode:    hdr.FileInfo().Mode(),
+				modTime: hdr.ModTime,
+			})
+		}
 		extracted++
 	}
 
+	if err := finalizeDirectoryMetadata(destDir, directoryMetadataToFinalize); err != nil {
+		return fmt.Errorf("finalize directory metadata: %w", err)
+	}
 	fmt.Printf("Extracted %d entries → %s\n", extracted, destDir)
 	return nil
 }
