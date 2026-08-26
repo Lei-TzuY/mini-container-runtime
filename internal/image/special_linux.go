@@ -23,44 +23,28 @@ func makeSpecialSecure(target, destDir string, hdr *tar.Header) error {
 
 func makeSpecialSecureWithHook(target, destDir string, hdr *tar.Header, beforeCreate func()) error {
 	root, err := openExtractionRoot(destDir)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	defer root.Close()
 	parent, err := root.openParent(target, "special", true)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	defer parent.Close()
-	if beforeCreate != nil {
-		beforeCreate()
-	}
+	if beforeCreate != nil { beforeCreate() }
 
 	var st unix.Stat_t
 	statErr := unix.Fstatat(parent.fd, parent.leaf, &st, unix.AT_SYMLINK_NOFOLLOW)
 	if statErr == nil {
-		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
-			return fmt.Errorf("refuse to replace directory %s with special node", target)
-		}
-		if err := unix.Unlinkat(parent.fd, parent.leaf, 0); err != nil {
-			return fmt.Errorf("unlink existing special target %s: %w", target, err)
-		}
-	} else if !errors.Is(statErr, unix.ENOENT) {
-		return fmt.Errorf("inspect special target %s: %w", target, statErr)
-	}
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR { return fmt.Errorf("refuse to replace directory %s with special node", target) }
+		if err := unix.Unlinkat(parent.fd, parent.leaf, 0); err != nil { return fmt.Errorf("unlink existing special target %s: %w", target, err) }
+	} else if !errors.Is(statErr, unix.ENOENT) { return fmt.Errorf("inspect special target %s: %w", target, statErr) }
 
 	mode, dev, err := specialModeDevice(hdr)
-	if err != nil {
-		return err
-	}
-	if err := unix.Mknodat(parent.fd, parent.leaf, mode, int(dev)); err != nil {
-		return err
-	}
+	if err != nil { return err }
+	if err := unix.Mknodat(parent.fd, parent.leaf, mode, int(dev)); err != nil { return err }
 	return nil
 }
 
 func specialModeDevice(hdr *tar.Header) (uint32, uint64, error) {
-	mode := uint32(hdr.FileInfo().Mode().Perm())
+	mode := tarUnixMode(hdr.FileInfo().Mode())
 	var dev uint64
 	switch hdr.Typeflag {
 	case tar.TypeChar:
@@ -80,14 +64,10 @@ func specialModeDevice(hdr *tar.Header) (uint32, uint64, error) {
 // makeSpecial remains available as the portable pathname primitive for callers
 // outside archive extraction. Production tar extraction uses makeSpecialSecure.
 func makeSpecial(target string, hdr *tar.Header) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { return err }
 	_ = os.Remove(target)
 	mode, dev, err := specialModeDevice(hdr)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	return syscall.Mknod(target, mode, int(dev))
 }
 
