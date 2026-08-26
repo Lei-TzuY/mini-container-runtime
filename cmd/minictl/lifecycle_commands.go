@@ -103,18 +103,14 @@ func cmdKillSafe(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := container.SendSignal(store, opts.containerID, opts.signal); err != nil {
+	rec, err := container.SendSignalResolved(store, opts.containerID, opts.signal)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "kill error: %v\n", err)
 		os.Exit(1)
 	}
 
-	rec, err := store.Resolve(opts.containerID)
-	if err == nil {
-		_ = events.Publish(events.EventSignal, rec.ID, rec.RootFS, fmt.Sprintf("sent signal %s", opts.signal))
-		fmt.Printf("%s\n", shortContainerID(rec.ID))
-		return
-	}
-	fmt.Printf("%s\n", opts.containerID)
+	_ = events.Publish(events.EventSignal, rec.ID, rec.RootFS, fmt.Sprintf("sent signal %s", opts.signal))
+	fmt.Printf("%s\n", shortContainerID(rec.ID))
 }
 
 func shortContainerID(id string) string {
