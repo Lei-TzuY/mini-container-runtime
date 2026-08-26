@@ -52,12 +52,18 @@ func LogPath() string {
 // Publish records a new event to the global log. Runtime-admission events are
 // staged when the CLI announces intent before the operation can prove success:
 // start is committed at the container readiness byte and exec is committed only
-// after the exec payload process itself starts. A die event is persisted only
-// when this process has a committed start proof for the same container.
+// after the exec payload process itself starts. Create is persisted only after
+// the exact durable container record exists. A die event is persisted only when
+// this process has a committed start proof for the same container.
 func Publish(evtType EventType, containerID, image, message string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if evtType == EventCreate {
+		if err := validatePersistedCreate(containerID); err != nil {
+			return err
+		}
+	}
 	if evtType == EventStart || evtType == EventExec {
 		if err := validateEventStagingStorage(); err != nil {
 			return err
