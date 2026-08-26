@@ -89,7 +89,7 @@ func TestRestoreXattrsPinnedFDStaysBoundAcrossLeafReplacement(t *testing.T) {
 	if got := readXattr(t, pinned, "user.minicontainer.pinned"); got != "owned-xattr" {
 		t.Fatalf("pinned xattr=%q, want owned-xattr", got)
 	}
-	if _, err := unix.Getxattr(target, "user.minicontainer.pinned", nil); !errors.Is(err, unix.ENODATA) && !errors.Is(err, unix.ENOATTR) {
+	if _, err := unix.Getxattr(target, "user.minicontainer.pinned", nil); !errors.Is(err, unix.ENODATA) {
 		t.Fatalf("foreign replacement received pinned xattr: %v", err)
 	}
 }
