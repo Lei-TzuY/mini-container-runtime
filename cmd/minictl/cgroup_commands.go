@@ -62,12 +62,8 @@ func cmdUpdateSafe(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	rec, err := store.Resolve(opts.containerID)
+	rec, err := container.UpdateContainerResourcesResolved(store, opts.containerID, opts.config, os.Getenv("MINICONTAINER_DEBUG") == "1")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	if err := container.UpdateContainerResources(store, rec.ID, opts.config, os.Getenv("MINICONTAINER_DEBUG") == "1"); err != nil {
 		fmt.Fprintf(os.Stderr, "update error: %v\n", err)
 		os.Exit(1)
 	}
@@ -79,8 +75,13 @@ func cmdPauseSafe(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: minictl pause <id>")
 		os.Exit(1)
 	}
-	store, rec := resolveCgroupCommandContainer(args[0])
-	if err := container.FreezeContainer(store, rec.ID); err != nil {
+	store, err := openStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	rec, err := container.FreezeContainerResolved(store, args[0])
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "pause error: %v\n", err)
 		os.Exit(1)
 	}
@@ -93,27 +94,18 @@ func cmdUnpauseSafe(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: minictl unpause <id>")
 		os.Exit(1)
 	}
-	store, rec := resolveCgroupCommandContainer(args[0])
-	if err := container.ThawContainer(store, rec.ID); err != nil {
-		fmt.Fprintf(os.Stderr, "unpause error: %v\n", err)
-		os.Exit(1)
-	}
-	_ = events.Publish(events.EventUnpause, rec.ID, rec.RootFS, "unpaused container process generation")
-	fmt.Printf("%s\n", shortContainerID(rec.ID))
-}
-
-func resolveCgroupCommandContainer(id string) (*state.Store, *state.Container) {
 	store, err := openStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	rec, err := store.Resolve(id)
+	rec, err := container.ThawContainerResolved(store, args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "unpause error: %v\n", err)
 		os.Exit(1)
 	}
-	return store, rec
+	_ = events.Publish(events.EventUnpause, rec.ID, rec.RootFS, "unpaused container process generation")
+	fmt.Printf("%s\n", shortContainerID(rec.ID))
 }
 
 func cmdStatsSafe(args []string) {
