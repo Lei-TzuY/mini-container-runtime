@@ -223,7 +223,7 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 	img.Size = sz
 
 	if opts.Store != nil {
-		if err := opts.Store.SaveImage(img); err != nil {
+		if err := opts.Store.PublishImage(img); err != nil {
 			return nil, fmt.Errorf("save image state: %w", err)
 		}
 	}

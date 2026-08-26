@@ -63,7 +63,7 @@ func TagImage(st *state.Store, source, target string) (*state.Image, error) {
 	newImg.Repository = repo
 	newImg.Tag = tag
 
-	if err := st.SaveImage(&newImg); err != nil {
+	if err := st.PublishImage(&newImg); err != nil {
 		return nil, fmt.Errorf("save tagged image %q: %w", target, err)
 	}
 	return &newImg, nil

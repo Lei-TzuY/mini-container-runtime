@@ -98,7 +98,7 @@ func CommitContainer(st *state.Store, containerID, targetTag string) (result *st
 		LoadedAt: time.Now(),
 	}
 
-	if err := st.SaveImage(img); err != nil {
+	if err := st.PublishImage(img); err != nil {
 		saveErr := error(fmt.Errorf("save image record: %w", err))
 		if publishedOwned {
 			referenced, proofErr := committedImagePayloadHasReference(st, imgID, rootFS)
@@ -106,7 +106,7 @@ func CommitContainer(st *state.Store, containerID, targetTag string) (result *st
 			case proofErr != nil:
 				saveErr = errors.Join(saveErr, fmt.Errorf("preserve newly published committed image because metadata absence is unproven: %w", proofErr))
 			case referenced:
-				// SaveImage may have committed the record before reporting a later
+				// PublishImage may have committed the record before reporting a later
 				// metadata-maintenance error. A durable reference makes deletion unsafe.
 			default:
 				if cleanupErr := os.RemoveAll(imgDir); cleanupErr != nil {
