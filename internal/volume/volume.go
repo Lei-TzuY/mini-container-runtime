@@ -270,8 +270,7 @@ func RemoveVolume(name string) error {
 		}
 		return err
 	}
-	volDir, _, err := ensureVolumeLayout(root, name, false)
-	if err != nil {
+	if _, _, err := ensureVolumeLayout(root, name, false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("volume %q not found", name)
 		}
@@ -281,25 +280,40 @@ func RemoveVolume(name string) error {
 	if _, err := readVolume(root, name); err != nil {
 		return fmt.Errorf("validate volume before removal: %w", err)
 	}
-	if err := os.RemoveAll(volDir); err != nil {
+	if err := removeVolumeDir(root, name); err != nil {
 		return fmt.Errorf("remove volume %q: %w", name, err)
 	}
 	return nil
 }
 
-// PruneVolumes removes all volumes.
+// PruneVolumes removes every valid-name entry in the managed volume root and
+// reports every failed removal instead of silently filtering corrupt state.
 func PruneVolumes() (int, error) {
-	vols, err := ListVolumes()
+	root, err := volumeRoot(false)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
 		return 0, err
 	}
-	count := 0
-	for _, v := range vols {
-		if err := RemoveVolume(v.Name); err == nil {
-			count++
-		}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, fmt.Errorf("read volume storage directory for prune: %w", err)
 	}
-	return count, nil
+	count := 0
+	var removeErrs []error
+	for _, entry := range entries {
+		name := entry.Name()
+		if err := ValidateVolumeName(name); err != nil {
+			continue
+		}
+		if err := RemoveVolume(name); err != nil {
+			removeErrs = append(removeErrs, fmt.Errorf("remove volume %q during prune: %w", name, err))
+			continue
+		}
+		count++
+	}
+	return count, errors.Join(removeErrs...)
 }
 
 // ResolveVolumePath returns the host directory path for a volume name or host path.
