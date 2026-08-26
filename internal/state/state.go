@@ -254,6 +254,9 @@ func (s *Store) Load(id string) (*Container, error) {
 }
 
 func (s *Store) getUnlocked(id string) (*Container, error) {
+	if s.lockFile == nil {
+		return nil, ErrStoreClosed
+	}
 	file := filepath.Join(s.ctrDir, id+".json")
 	data, err := readRegularStateFile(file, "container state")
 	if err != nil {
@@ -277,6 +280,9 @@ func (s *Store) Resolve(idOrPrefix string) (*Container, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return nil, ErrStoreClosed
+	}
 
 	if c, err := s.getUnlocked(idOrPrefix); err == nil {
 		return c, nil
@@ -312,6 +318,9 @@ func (s *Store) Resolve(idOrPrefix string) (*Container, error) {
 func (s *Store) List() ([]*Container, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return nil, ErrStoreClosed
+	}
 
 	entries, err := os.ReadDir(s.ctrDir)
 	if err != nil {
@@ -437,10 +446,16 @@ func (s *Store) DeleteImage(nameOrID string) (*Image, error) {
 	return img, nil
 }
 
+// GetImageUnlocked is retained for compatibility with image-store callers, but
+// now serializes with Close so it cannot race pinned-directory teardown.
 func (s *Store) GetImageUnlocked(nameOrID string) (*Image, error) {
 	if err := validateImageSelector(nameOrID); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	images, err := s.listImagesUnlocked()
 	if err != nil {
 		return nil, err
@@ -456,6 +471,9 @@ func (s *Store) ListImages() ([]*Image, error) {
 }
 
 func (s *Store) listImagesUnlocked() ([]*Image, error) {
+	if s.lockFile == nil {
+		return nil, ErrStoreClosed
+	}
 	entries, err := os.ReadDir(s.imgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read image state dir: %w", err)
