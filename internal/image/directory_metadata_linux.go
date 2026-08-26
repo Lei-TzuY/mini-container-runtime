@@ -33,6 +33,10 @@ func finalizeDirectoryMetadata(destDir string, dirs []directoryMetadata) error {
 		if err != nil {
 			return fmt.Errorf("open directory for metadata %s: %w", meta.target, err)
 		}
+		if err := restoreOwnershipFD(fd, meta.target, meta.uid, meta.gid); err != nil {
+			_ = unix.Close(fd)
+			return err
+		}
 		if err := unix.Fchmod(fd, uint32(meta.mode.Perm())); err != nil {
 			_ = unix.Close(fd)
 			return fmt.Errorf("chmod directory %s: %w", meta.target, err)
