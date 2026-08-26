@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -54,6 +55,20 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	if _, err := io.Copy(out, r); err != nil {
 		_ = out.Close()
 		return fmt.Errorf("write %s: %w", target, err)
+	}
+	if err := unix.Fchmod(fd, uint32(hdr.FileInfo().Mode().Perm())); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("restore mode on %s: %w", target, err)
+	}
+	if !hdr.ModTime.IsZero() {
+		times := []unix.Timeval{
+			unix.NsecToTimeval(time.Now().UnixNano()),
+			unix.NsecToTimeval(hdr.ModTime.UnixNano()),
+		}
+		if err := unix.Futimes(fd, times); err != nil {
+			_ = out.Close()
+			return fmt.Errorf("restore mtime on %s: %w", target, err)
+		}
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", target, err)
