@@ -50,6 +50,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open state store: %w", err)
 	}
+	storeOwned := true
+	defer func() {
+		if storeOwned {
+			_ = st.Close()
+		}
+	}()
 
 	network, listenPath, err := resolveListenAddress(cfg.ListenAddr)
 	if err != nil {
@@ -119,6 +125,7 @@ func NewServer(cfg Config) (*Server, error) {
 		MaxHeaderBytes:    64 << 10,
 	}
 
+	storeOwned = false
 	return srv, nil
 }
 
@@ -195,7 +202,8 @@ func (s *Server) Start() error {
 	return err
 }
 
-// Stop gracefully shuts down daemon server.
+// Stop gracefully shuts down daemon server and releases all resources owned by
+// the Server, including the state Store opened by NewServer.
 func (s *Server) Stop(ctx context.Context) error {
 	shutdownErr := s.httpServer.Shutdown(ctx)
 	listenerErr := s.listener.Close()
@@ -207,7 +215,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.network == "unix" {
 		socketErr = removeUnixSocketIfSame(s.addr, s.socketInfo)
 	}
-	return errors.Join(shutdownErr, listenerErr, socketErr)
+	storeErr := s.store.Close()
+	return errors.Join(shutdownErr, listenerErr, socketErr, storeErr)
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
