@@ -41,6 +41,9 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if lifecycleStore != nil {
+		defer lifecycleStore.Close()
+	}
 	if err := requireDurableNetworkOwnership(cfg, lifecycleStore); err != nil {
 		return err
 	}
