@@ -96,7 +96,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 	case tar.TypeReg, tar.TypeRegA:
 		return writeRegularSecure(target, destDir, hdr, r)
 	case tar.TypeSymlink:
-		return createSymlinkSecure(target, destDir, hdr.Linkname)
+		return createTarSymlinkSecure(target, destDir, hdr)
 	case tar.TypeLink:
 		linkTarget, err := safePath(destDir, hdr.Linkname)
 		if err != nil {
