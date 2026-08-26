@@ -88,7 +88,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		return createDirectorySecure(target, destDir, hdr.FileInfo().Mode()|0111)
+		return createDirectorySecure(target, destDir, hdr.FileInfo().Mode()|0700)
 	case tar.TypeReg, tar.TypeRegA:
 		return writeRegularSecure(target, destDir, hdr, r)
 	case tar.TypeSymlink:
