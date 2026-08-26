@@ -20,9 +20,11 @@ var (
 )
 
 type HostEntry struct {
-	ContainerID string `json:"container_id"`
-	Hostname    string `json:"hostname"`
-	IP          string `json:"ip"`
+	ContainerID    string `json:"container_id"`
+	Hostname       string `json:"hostname"`
+	IP             string `json:"ip"`
+	OwnerPID       int    `json:"owner_pid,omitempty"`
+	OwnerStartTime uint64 `json:"owner_start_time,omitempty"`
 }
 
 type NetworkDNS struct {
@@ -63,6 +65,17 @@ func validateHostAndIP(hostname, ipAddr string) error {
 	return nil
 }
 
+func validateHostEntryOwner(entry HostEntry) error {
+	legacy := entry.OwnerPID == 0 && entry.OwnerStartTime == 0
+	if legacy {
+		return nil
+	}
+	if entry.OwnerPID <= 0 || entry.OwnerStartTime == 0 {
+		return fmt.Errorf("incomplete registrar process identity %d/%d", entry.OwnerPID, entry.OwnerStartTime)
+	}
+	return nil
+}
+
 func validateEntries(networkName string, entries []HostEntry) error {
 	seenContainers := make(map[string]struct{}, len(entries))
 	seenHostnames := make(map[string]struct{}, len(entries))
@@ -72,6 +85,9 @@ func validateEntries(networkName string, entries []HostEntry) error {
 		}
 		if err := validateHostAndIP(entry.Hostname, entry.IP); err != nil {
 			return fmt.Errorf("DNS registry %q entry %d is invalid: %w", networkName, i, err)
+		}
+		if err := validateHostEntryOwner(entry); err != nil {
+			return fmt.Errorf("DNS registry %q entry %d has invalid ownership: %w", networkName, i, err)
 		}
 		if _, ok := seenContainers[entry.ContainerID]; ok {
 			return fmt.Errorf("DNS registry %q has duplicate container ID %q", networkName, entry.ContainerID)
@@ -83,6 +99,34 @@ func validateEntries(networkName string, entries []HostEntry) error {
 		seenHostnames[entry.Hostname] = struct{}{}
 	}
 	return nil
+}
+
+// pruneStaleOwnedEntries removes only entries whose registrar process generation
+// is authoritatively gone and whose container generation is not still running.
+// Legacy entries lack generation proof and are deliberately retained rather
+// than guessed stale.
+func pruneStaleOwnedEntries(entries []HostEntry) ([]HostEntry, bool, error) {
+	if len(entries) == 0 {
+		return entries, false, nil
+	}
+	kept := make([]HostEntry, 0, len(entries))
+	changed := false
+	for _, entry := range entries {
+		if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
+			kept = append(kept, entry)
+			continue
+		}
+		active, err := hostEntryOwnerActive(entry)
+		if err != nil {
+			return nil, false, fmt.Errorf("resolve DNS ownership for container %s: %w", entry.ContainerID, err)
+		}
+		if active {
+			kept = append(kept, entry)
+			continue
+		}
+		changed = true
+	}
+	return kept, changed, nil
 }
 
 func ensureDNSDir() (string, error) {
@@ -182,9 +226,11 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 	return nil
 }
 
-// RegisterHost records a container IP mapping in a network. The complete
-// read-modify-write transaction is serialized across minictl processes and the
-// replacement file is published atomically only after its contents are synced.
+// RegisterHost records a container IP mapping in a network. The registration is
+// owned by the exact minictl parent process generation so an os.Exit, kill, or
+// crash cannot leave it permanently authoritative. If the registrar disappears
+// while its container remains alive, the committed child generation adopts the
+// entry until that generation exits.
 func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
@@ -193,6 +239,10 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 		return fmt.Errorf("container ID cannot be empty")
 	}
 	if err := validateHostAndIP(hostname, ipAddr); err != nil {
+		return err
+	}
+	owner, err := currentRegistrarIdentity()
+	if err != nil {
 		return err
 	}
 
@@ -208,13 +258,23 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 		if err != nil {
 			return err
 		}
+		entries, _, err = pruneStaleOwnedEntries(entries)
+		if err != nil {
+			return err
+		}
 		updated := make([]HostEntry, 0, len(entries)+1)
 		for _, entry := range entries {
 			if entry.ContainerID != containerID && entry.Hostname != hostname {
 				updated = append(updated, entry)
 			}
 		}
-		updated = append(updated, HostEntry{ContainerID: containerID, Hostname: hostname, IP: ipAddr})
+		updated = append(updated, HostEntry{
+			ContainerID:    containerID,
+			Hostname:       hostname,
+			IP:             ipAddr,
+			OwnerPID:       owner.PID,
+			OwnerStartTime: owner.StartTime,
+		})
 		return saveEntriesAtomic(dir, netFile, networkName, updated)
 	})
 }
@@ -242,6 +302,10 @@ func UnregisterHost(networkName, containerID string) error {
 		if err != nil || !exists {
 			return err
 		}
+		entries, pruned, err := pruneStaleOwnedEntries(entries)
+		if err != nil {
+			return err
+		}
 		updated := make([]HostEntry, 0, len(entries))
 		found := false
 		for _, entry := range entries {
@@ -251,7 +315,7 @@ func UnregisterHost(networkName, containerID string) error {
 			}
 			updated = append(updated, entry)
 		}
-		if !found {
+		if !found && !pruned {
 			return nil
 		}
 		return saveEntriesAtomic(dir, netFile, networkName, updated)
@@ -259,8 +323,9 @@ func UnregisterHost(networkName, containerID string) error {
 }
 
 // GenerateHostsContentChecked returns a consistent snapshot of one registry.
-// Corrupt, symlinked, or unreadable registry state is reported to callers so
-// runtime setup can fail closed instead of silently losing service discovery.
+// Dead process-owned entries are garbage-collected transactionally before the
+// snapshot is formatted. Corrupt, symlinked, unreadable, or unprobeable state is
+// reported so runtime setup can fail closed instead of using stale discovery.
 func GenerateHostsContentChecked(networkName string) (string, error) {
 	if err := validateNetworkName(networkName); err != nil {
 		return "", err
@@ -274,9 +339,22 @@ func GenerateHostsContentChecked(networkName string) (string, error) {
 	}
 	var entries []HostEntry
 	if err := withDNSNetworkLock(dir, networkName, func() error {
+		netFile := filepath.Join(dir, networkName+".json")
+		var exists bool
 		var loadErr error
-		entries, _, loadErr = loadEntriesChecked(filepath.Join(dir, networkName+".json"), networkName)
-		return loadErr
+		entries, exists, loadErr = loadEntriesChecked(netFile, networkName)
+		if loadErr != nil || !exists {
+			return loadErr
+		}
+		var changed bool
+		entries, changed, loadErr = pruneStaleOwnedEntries(entries)
+		if loadErr != nil {
+			return loadErr
+		}
+		if changed {
+			return saveEntriesAtomic(dir, netFile, networkName, entries)
+		}
+		return nil
 	}); err != nil {
 		return "", err
 	}
