@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"minicontainer/internal/events"
 )
 
 const runtimeReadyByte byte = 0xa5
@@ -17,7 +19,8 @@ const runtimeReadyByte byte = 0xa5
 //
 // Once the byte has been written, the child may already be running. A later
 // Close error cannot safely revoke that commit, so successful delivery of the
-// byte is the only success criterion.
+// byte is the only success criterion. Event publication is therefore best
+// effort after delivery: observability failure cannot revoke runtime readiness.
 func releaseBlockedChild(writePipe *os.File) error {
 	if writePipe == nil {
 		return fmt.Errorf("runtime sync writer is nil")
@@ -26,6 +29,7 @@ func releaseBlockedChild(writePipe *os.File) error {
 	n, err := writePipe.Write([]byte{runtimeReadyByte})
 	if n == 1 {
 		_ = writePipe.Close()
+		_ = events.CommitPendingStart()
 		return nil
 	}
 	_ = writePipe.Close()
