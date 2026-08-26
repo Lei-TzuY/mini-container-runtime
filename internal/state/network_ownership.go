@@ -165,6 +165,9 @@ func (s *Store) GetNetworkOwnership(id string) (NetworkOwnership, bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return NetworkOwnership{}, false, ErrStoreClosed
+	}
 	return s.readNetworkOwnershipUnlocked(id)
 }
 
