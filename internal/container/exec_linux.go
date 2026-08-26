@@ -53,7 +53,7 @@ func Exec(cfg ExecConfig) error {
 	childArgs := append([]string{"exec", strconv.Itoa(cfg.ContainerPID), cfg.RootFS}, cfg.Command...)
 	cmd := exec.Command(self, childArgs...); cmd.Stdin = os.Stdin; cmd.Stdout = os.Stdout; cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime))
-	if err := cmd.Run(); err != nil { if exitErr, ok := err.(*exec.ExitError); ok { os.Exit(exitErr.ExitCode()) }; return err }; return nil
+	if err := runExecInitCommand(cmd); err != nil { if exitErr, ok := err.(*exec.ExitError); ok { os.Exit(exitErr.ExitCode()) }; return err }; return nil
 }
 
 func persistedExecStartTime(containerPID int, rootFS string) (uint64, error) {
@@ -83,15 +83,16 @@ func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, 
 func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if len(command) == 0 || command[0] == "" { return fmt.Errorf("exec command is empty") }
 	expectedRaw := os.Getenv(execStartTimeKey); expectedStartTime, err := strconv.ParseUint(expectedRaw, 10, 64); if err != nil || expectedStartTime == 0 { return fmt.Errorf("invalid internal exec target identity %q", expectedRaw) }
+	startWriter, err := execPayloadStartWriterFromEnv(); if err != nil { return err }; defer startWriter.Close()
 	runtime.LockOSThread(); if err := prepareExecThread(); err != nil { return err }; if debug { fmt.Printf("[exec-init] attaching to namespaces of host PID %d\n", containerPID) }
 	targets, err := openExecTargets(containerPID, expectedStartTime); if err != nil { return err }; defer targets.close()
 	for _, ns := range targets.ns { if err := unix.Setns(ns.fd, ns.flag); err != nil { return fmt.Errorf("setns(%s): %w", ns.name, err) }; if debug { fmt.Printf("[exec-init] joined %s namespace\n", ns.name) } }
 	if err := unix.Fchdir(targets.rootFD); err != nil { return fmt.Errorf("fchdir container root: %w", err) }; if err := unix.Chroot("."); err != nil { return fmt.Errorf("chroot container root: %w", err) }; if err := unix.Chdir("/"); err != nil { return fmt.Errorf("chdir /: %w", err) }
 	if debug { fmt.Printf("[exec-init] spawning payload in target PID namespace: %v\n", command) }
-	err = runExecPayload(command, payloadEnvironment(os.Environ()), os.Stdin, os.Stdout, os.Stderr); if err == nil { return nil }; if exitErr, ok := err.(*exec.ExitError); ok { os.Exit(exitErr.ExitCode()) }; return fmt.Errorf("start exec payload: %w", err)
+	err = runExecPayloadWithStartSignal(command, payloadEnvironment(os.Environ()), os.Stdin, os.Stdout, os.Stderr, startWriter); if err == nil { return nil }; if exitErr, ok := err.(*exec.ExitError); ok { os.Exit(exitErr.ExitCode()) }; return fmt.Errorf("start exec payload: %w", err)
 }
 
-func runExecPayload(command, env []string, stdin io.Reader, stdout, stderr io.Writer) error { if len(command) == 0 || command[0] == "" { return fmt.Errorf("exec command is empty") }; cmd := exec.Command(command[0], command[1:]...); cmd.Env = env; cmd.Stdin = stdin; cmd.Stdout = stdout; cmd.Stderr = stderr; return cmd.Run() }
-func payloadEnvironment(env []string) []string { out := make([]string, 0, len(env)); for _, entry := range env { if strings.HasPrefix(entry, execSentinelKey+"=") || strings.HasPrefix(entry, execStartTimeKey+"=") || strings.HasPrefix(entry, "MINICONTAINER_INIT=") { continue }; out = append(out, entry) }; return out }
+func runExecPayload(command, env []string, stdin io.Reader, stdout, stderr io.Writer) error { return runExecPayloadWithStartSignal(command, env, stdin, stdout, stderr, nil) }
+func payloadEnvironment(env []string) []string { out := make([]string, 0, len(env)); for _, entry := range env { if strings.HasPrefix(entry, execSentinelKey+"=") || strings.HasPrefix(entry, execStartTimeKey+"=") || strings.HasPrefix(entry, execStartedFDKey+"=") || strings.HasPrefix(entry, "MINICONTAINER_INIT=") { continue }; out = append(out, entry) }; return out }
 func IsRunning(pid int) bool { data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); if err != nil { return false }; for _, line := range strings.Split(string(data), "\n") { if strings.HasPrefix(line, "State:") { return !strings.Contains(line, "Z") && !strings.Contains(line, "X") } }; return true }
 func ContainerCwd(pid int) string { cwd, err := filepath.EvalSymlinks(fmt.Sprintf("/proc/%d/cwd", pid)); if err != nil { return "/" }; return cwd }
