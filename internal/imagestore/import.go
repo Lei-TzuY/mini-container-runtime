@@ -55,7 +55,10 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 		}
 	}()
 
-	sum := fmt.Sprintf("%x", h.Sum(nil))[:12]
+	sum, err := rawRootFSContentID(h.Sum(nil))
+	if err != nil {
+		return nil, fmt.Errorf("derive raw rootfs content identity: %w", err)
+	}
 	imagesDir := lease.Path()
 	durableImagesDir := lease.DurablePath()
 	imgDir := filepath.Join(imagesDir, sum)
@@ -99,13 +102,15 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 
 	publishedOwned := false
 	if err := os.Rename(tmpDir, imgDir); err != nil {
-		if _, statErr := os.Stat(imgDir); statErr != nil {
-			return nil, fmt.Errorf("publish image rootfs: %w", err)
+		if proofErr := verifyReusableRawRootFSPayload(st, imgDir, rootFS, sum); proofErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("publish image rootfs: %w", err),
+				fmt.Errorf("refuse unproven existing image payload: %w", proofErr),
+			)
 		}
-		// Identical content may already have been imported concurrently or by an
-		// earlier run. Before writing another metadata record, the private staging
-		// directory must actually be gone; otherwise a successful import would
-		// silently leave durable garbage behind.
+		// A previously committed exact full-digest payload may be reused. Before
+		// writing another tag record, the private staging directory must actually
+		// be gone; otherwise a successful import would leave durable garbage.
 		if cleanupErr := cleanupStaging("discard duplicate import staging"); cleanupErr != nil {
 			return nil, cleanupErr
 		}
@@ -141,7 +146,23 @@ func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, remov
 	}
 
 	if err := st.SaveImage(imgRec); err != nil {
-		return nil, fmt.Errorf("save image record: %w", err)
+		saveErr := error(fmt.Errorf("save image record: %w", err))
+		if publishedOwned {
+			referenced, proofErr := rawRootFSPayloadHasCommittedReference(st, rootFS, sum)
+			switch {
+			case proofErr != nil:
+				saveErr = errors.Join(saveErr, fmt.Errorf("preserve newly published image payload because metadata absence is unproven: %w", proofErr))
+			case referenced:
+				// SaveImage can report a post-commit maintenance failure, such as a
+				// legacy-metadata cleanup error. The durable reference proves that
+				// deleting the payload here would create dangling metadata.
+			default:
+				if cleanupErr := removeAll(imgDir); cleanupErr != nil {
+					saveErr = errors.Join(saveErr, fmt.Errorf("rollback image payload after metadata failure %q: %w", imgDir, cleanupErr))
+				}
+			}
+		}
+		return nil, saveErr
 	}
 
 	return imgRec, nil
