@@ -60,8 +60,6 @@ type dockerManifest struct {
 //
 // The archive may be a plain .tar or a .tar.gz.
 func LoadDockerSave(tarPath, destDir string) error {
-	// Extract the outer docker-save tar into a temp directory.
-	// Unpack handles both plain and gzipped archives.
 	tmpDir, err := os.MkdirTemp("", "minicontainer-load-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -100,7 +98,6 @@ func LoadDockerSave(tarPath, destDir string) error {
 	}
 
 	for i, rel := range m.Layers {
-		// Layer paths in manifest.json must not escape tmpDir.
 		layerPath, err := safePath(tmpDir, rel)
 		if err != nil {
 			return fmt.Errorf("layer %d has invalid path %q: %w", i+1, rel, err)
@@ -136,42 +133,34 @@ func applyLayer(layerPath, destDir string) error {
 		base := filepath.Base(hdr.Name)
 		dir := filepath.Dir(hdr.Name)
 
-		// ── Opaque whiteout ────────────────────────────────────────────────
-		// .wh..wh..opq: this directory is fully replaced by this layer.
-		// Remove everything the earlier layers put here before applying new
-		// contents.
+		// .wh..wh..opq removes all lower-layer children while preserving the
+		// directory itself. Linux uses pinned dirfds so a parent replacement
+		// cannot redirect recursive deletion outside the extraction root.
 		if base == whiteoutOpaque {
 			targetDir, err := safePath(destDir, dir)
 			if err != nil {
 				return fmt.Errorf("opaque whiteout invalid path %q: %w", dir, err)
 			}
-			if err := ensureSafeParentDirs(targetDir, destDir); err != nil {
-				return fmt.Errorf("opaque whiteout unsafe parent %q: %w", targetDir, err)
-			}
-			if entries, err := os.ReadDir(targetDir); err == nil {
-				for _, e := range entries {
-					_ = os.RemoveAll(filepath.Join(targetDir, e.Name()))
-				}
+			if err := clearOpaqueWhiteoutSecure(targetDir, destDir); err != nil {
+				return fmt.Errorf("opaque whiteout cleanup %q: %w", targetDir, err)
 			}
 			continue
 		}
 
-		// ── Regular whiteout ───────────────────────────────────────────────
-		// .wh.<name>: delete one specific file or directory.
+		// .wh.<name> recursively removes the lower-layer path. Linux resolves
+		// and removes it relative to a pinned extraction-root generation.
 		if strings.HasPrefix(base, whiteoutPrefix) {
 			deleted := strings.TrimPrefix(base, whiteoutPrefix)
 			target, err := safePath(destDir, filepath.Join(dir, deleted))
 			if err != nil {
 				return fmt.Errorf("whiteout invalid path %q: %w", filepath.Join(dir, deleted), err)
 			}
-			if err := ensureSafeParentDirs(target, destDir); err != nil {
-				return fmt.Errorf("whiteout unsafe parent %q: %w", target, err)
+			if err := removeWhiteoutSecure(target, destDir); err != nil {
+				return fmt.Errorf("whiteout cleanup %q: %w", target, err)
 			}
-			_ = os.RemoveAll(target)
 			continue
 		}
 
-		// ── Normal entry ───────────────────────────────────────────────────
 		target, err := safePath(destDir, hdr.Name)
 		if err != nil {
 			return err
@@ -183,20 +172,17 @@ func applyLayer(layerPath, destDir string) error {
 	return nil
 }
 
-// openMaybeGzip opens path and returns a ReadCloser.  If the first two bytes
-// are the gzip magic number (0x1f 0x8b) it wraps the file in a gzip reader;
-// otherwise it returns the raw file.  The caller must Close the result.
+// openMaybeGzip opens path and returns a ReadCloser. If the first two bytes are
+// the gzip magic number it wraps the file in a gzip reader.
 func openMaybeGzip(path string) (io.ReadCloser, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Peek at the first two bytes without consuming them.
 	br := bufio.NewReaderSize(f, 512)
 	magic, err := br.Peek(2)
 	if err != nil {
-		// File is too short or empty — return as-is (tar will handle it).
 		return &plainFile{Reader: br, f: f}, nil
 	}
 
@@ -212,16 +198,13 @@ func openMaybeGzip(path string) (io.ReadCloser, error) {
 	return &plainFile{Reader: br, f: f}, nil
 }
 
-// plainFile wraps a bufio.Reader (with peeked bytes) + the underlying *os.File.
 type plainFile struct {
-	io.Reader // bufio.Reader — preserves peeked bytes
-	f         *os.File
+	io.Reader
+	f *os.File
 }
 
 func (p *plainFile) Close() error { return p.f.Close() }
 
-// gzipFile wraps a gzip.Reader over a bufio.Reader over an *os.File,
-// closing both the gzip stream and the underlying file on Close.
 type gzipFile struct {
 	*gzip.Reader
 	f *os.File
