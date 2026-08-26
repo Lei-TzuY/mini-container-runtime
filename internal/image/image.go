@@ -2,30 +2,8 @@
 //
 // Container Image Unpacking
 // ──────────────────────────
-// A container image is, at its core, a layered tar archive.  OCI images
-// consist of one or more "layers" (each a tar.gz) stacked via overlayfs.
-// For this educational runtime we support a single-layer rootfs: either
-// a plain .tar or a .tar.gz archive, as produced by:
-//
-//   • Alpine Linux minirootfs downloads  (alpine-minirootfs-*.tar.gz)
-//   • Docker export:  docker export <cid> > rootfs.tar
-//   • docker save + manual layer extraction
-//
-// Security note
-// ─────────────
-// Tar archives can contain path components like "../../../etc/passwd" that
-// would escape the destination directory (a "zip-slip" / tar-slip attack).
-// safePath() rejects any entry whose resolved path falls outside destDir.
-//
-// Entry types handled
-// ───────────────────
-//   TypeReg      regular file
-//   TypeDir      directory
-//   TypeSymlink  symbolic link (linkname is stored in the archive header)
-//   TypeLink     hard link     (linkname points to another archive entry)
-//   TypeChar     character device node (Linux only, requires root)
-//   TypeBlock    block device node     (Linux only, requires root)
-//   TypeFifo     named pipe            (Linux only)
+// A container image is, at its core, a layered tar archive. OCI images
+// consist of one or more layers stacked into a root filesystem.
 
 package image
 
@@ -41,7 +19,7 @@ import (
 )
 
 // Unpack extracts a tar or tar.gz archive to destDir, creating destDir if
-// needed.  It prints a summary line on completion.
+// needed. It prints a summary line on completion.
 func Unpack(tarPath, destDir string) error {
 	f, err := os.Open(tarPath)
 	if err != nil {
@@ -90,34 +68,26 @@ func Unpack(tarPath, destDir string) error {
 }
 
 // applyTarEntry writes a single tar entry to the filesystem under destDir.
-// It is shared by Unpack (plain tar) and applyLayer (OCI image layers).
-// Device-node and FIFO entries that cannot be created are skipped silently.
+// Linux entry implementations traverse from pinned dirfds; non-Linux keeps the
+// legacy pathname parent preparation through prepareTarEntryParent.
 func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) error {
-	if err := ensureSafeParentDirs(target, destDir); err != nil {
+	if err := prepareTarEntryParent(target, destDir); err != nil {
 		return err
 	}
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		return createDirectorySecure(target, destDir, hdr.FileInfo().Mode()|0111)
-
 	case tar.TypeReg, tar.TypeRegA:
-		// Linux writes re-traverse from a pinned extraction-root dirfd with
-		// O_NOFOLLOW and perform leaf unlink/create relative to the pinned parent.
-		// This keeps a concurrent parent rename/symlink replacement from turning
-		// the pathname safety check above into an out-of-root write.
 		return writeRegularSecure(target, destDir, hdr, r)
-
 	case tar.TypeSymlink:
 		return createSymlinkSecure(target, destDir, hdr.Linkname)
-
 	case tar.TypeLink:
 		linkTarget, err := safePath(destDir, hdr.Linkname)
 		if err != nil {
 			return err
 		}
 		return createHardlinkSecure(target, destDir, linkTarget)
-
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		if err := makeSpecialSecure(target, destDir, hdr); err != nil {
 			if !strings.Contains(err.Error(), "not supported") {
@@ -128,8 +98,9 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 	return nil
 }
 
-// ensureSafeParentDirs verifies that all ancestor directory components of target
-// within destDir exist and do not point outside destDir via symlinks.
+// ensureSafeParentDirs is the portable pathname fallback. Linux production tar
+// extraction intentionally does not call it because each entry-specific helper
+// pins and traverses the extraction tree with *at operations and O_NOFOLLOW.
 func ensureSafeParentDirs(target, destDir string) error {
 	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
@@ -184,8 +155,7 @@ func isSubDir(base, target string) bool {
 	return true
 }
 
-// safePath joins base and name, and returns an error if the result escapes base.
-// This prevents tar-slip (directory traversal) attacks.
+// safePath joins base and name, rejecting tar-slip and Windows-drive escapes.
 func safePath(base, name string) (string, error) {
 	baseAbs, err := filepath.Abs(base)
 	if err != nil {
