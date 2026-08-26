@@ -37,7 +37,7 @@ func openStateLock(path string) (*os.File, error) {
 
 func lockStateFile(file *os.File) error {
 	if file == nil {
-		return fmt.Errorf("state lock file is nil")
+		return ErrStoreClosed
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("lock state store: %w", err)
