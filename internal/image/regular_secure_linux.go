@@ -40,7 +40,7 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	// must precede final mode and xattr restoration.
 	if err := restoreOwnershipFD(fd, target, hdr.Uid, hdr.Gid); err != nil { _ = out.Close(); return err }
 	if err := unix.Fchmod(fd, tarUnixMode(hdr.FileInfo().Mode())); err != nil { _ = out.Close(); return fmt.Errorf("restore mode on %s: %w", target, err) }
-	if err := restoreXattrsFD(fd, target, tarXattrs(hdr)); err != nil { _ = out.Close(); return err }
+	if err := restoreXattrsFD(fd, target, tarXattrsPortable(hdr)); err != nil { _ = out.Close(); return err }
 	if !hdr.ModTime.IsZero() {
 		times := []unix.Timeval{unix.NsecToTimeval(time.Now().UnixNano()), unix.NsecToTimeval(hdr.ModTime.UnixNano())}
 		if err := unix.Futimes(fd, times); err != nil { _ = out.Close(); return fmt.Errorf("restore mtime on %s: %w", target, err) }
