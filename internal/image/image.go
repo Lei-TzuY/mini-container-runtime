@@ -99,12 +99,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		if fi, err := os.Lstat(target); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
-			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove existing symlink before mkdir %s: %w", target, err)
-			}
-		}
-		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
+		return createDirectorySecure(target, destDir, hdr.FileInfo().Mode()|0111)
 
 	case tar.TypeReg, tar.TypeRegA:
 		// Linux writes re-traverse from a pinned extraction-root dirfd with
