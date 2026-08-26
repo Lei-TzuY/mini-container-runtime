@@ -69,6 +69,28 @@ func abortRuntimeSetupFailure(
 	childStartTime uint64,
 	cause error,
 ) error {
+	return abortRuntimeSetupFailureWithAbort(
+		cmd,
+		writePipe,
+		lifecycleStore,
+		containerID,
+		childPID,
+		childStartTime,
+		cause,
+		abortBlockedChildChecked,
+	)
+}
+
+func abortRuntimeSetupFailureWithAbort(
+	cmd *exec.Cmd,
+	writePipe *os.File,
+	lifecycleStore *state.Store,
+	containerID string,
+	childPID int,
+	childStartTime uint64,
+	cause error,
+	abort blockedChildAborter,
+) error {
 	setupErr := &runtimeSetupError{err: cause}
 	resultErr := error(setupErr)
 
@@ -85,7 +107,16 @@ func abortRuntimeSetupFailure(
 		}
 	}
 
-	abortBlockedChild(cmd, writePipe)
+	if abort == nil {
+		return errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("blocked child abort operation is nil; preserving running lifecycle and resource ownership")})
+	}
+	reaped, abortErr := abort(cmd, writePipe)
+	if abortErr != nil {
+		resultErr = errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("abort blocked child: %w", abortErr)})
+	}
+	if !reaped {
+		return errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("blocked child was not confirmed reaped; preserving running lifecycle and resource ownership")})
+	}
 
 	if ownedCgroups != nil && !ownedCgroups.Empty() {
 		if err := ownedCgroups.Remove(false); err != nil {

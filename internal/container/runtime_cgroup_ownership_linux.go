@@ -29,6 +29,30 @@ func persistAppliedCgroupOwnership(
 	cgroupName string,
 	debug bool,
 ) error {
+	return persistAppliedCgroupOwnershipWithAbort(
+		cmd,
+		writePipe,
+		st,
+		containerID,
+		pid,
+		pidStartTime,
+		cgroupName,
+		debug,
+		abortBlockedChildChecked,
+	)
+}
+
+func persistAppliedCgroupOwnershipWithAbort(
+	cmd *exec.Cmd,
+	writePipe *os.File,
+	st *state.Store,
+	containerID string,
+	pid int,
+	pidStartTime uint64,
+	cgroupName string,
+	debug bool,
+	abort blockedChildAborter,
+) error {
 	if st == nil {
 		return nil
 	}
@@ -36,9 +60,19 @@ func persistAppliedCgroupOwnership(
 		return nil
 	} else {
 		persistErr := err
-		abortBlockedChild(cmd, writePipe)
-
 		resultErr := error(&runtimeStateError{err: fmt.Errorf("persist cgroup ownership for container %s: %w", containerID, persistErr)})
+
+		if abort == nil {
+			return errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("blocked child abort operation is nil; preserving running lifecycle and owned cgroup %s", cgroupName)})
+		}
+		reaped, abortErr := abort(cmd, writePipe)
+		if abortErr != nil {
+			resultErr = errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("abort blocked child after cgroup ownership persistence failure: %w", abortErr)})
+		}
+		if !reaped {
+			return errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("blocked child was not confirmed reaped; preserving running lifecycle and owned cgroup %s", cgroupName)})
+		}
+
 		if _, stateErr := st.MarkStoppedIfIdentity(containerID, pid, pidStartTime, -1, time.Now()); stateErr != nil {
 			resultErr = errors.Join(resultErr, &runtimeStateError{err: fmt.Errorf("persist stopped state after cgroup ownership failure for container %s: %w", containerID, stateErr)})
 		}

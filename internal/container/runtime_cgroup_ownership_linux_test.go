@@ -3,7 +3,9 @@
 package container
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +41,7 @@ func TestPersistAppliedCgroupOwnershipDurableBeforeRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer st.Close()
 	const (
 		id    = "ctr-applied-ownership"
 		pid   = 4242
@@ -60,12 +63,13 @@ func TestPersistAppliedCgroupOwnershipDurableBeforeRelease(t *testing.T) {
 	}
 }
 
-func TestPersistAppliedCgroupOwnershipFailureStopsGeneration(t *testing.T) {
+func TestPersistAppliedCgroupOwnershipFailureStopsConfirmedReapedGeneration(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer st.Close()
 	const (
 		id    = "ctr-applied-persist-fail"
 		pid   = 5252
@@ -75,14 +79,24 @@ func TestPersistAppliedCgroupOwnershipFailureStopsGeneration(t *testing.T) {
 
 	// Block the sidecar target with a directory. atomic rename cannot replace a
 	// directory, forcing ownership persistence to fail after Apply would have
-	// succeeded. The fail-closed path must still reconcile lifecycle state and
-	// report a runtime-control failure rather than releasing the payload.
+	// succeeded. Once abort has authoritatively reaped the child, lifecycle state
+	// may transition to stopped and the known-owned cgroup may be removed.
 	sidecar := filepath.Join(dir, "containers", id+".cgroup")
 	if err := os.Mkdir(sidecar, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	err = persistAppliedCgroupOwnership(nil, nil, st, id, pid, start, name, false)
+	err = persistAppliedCgroupOwnershipWithAbort(
+		nil,
+		nil,
+		st,
+		id,
+		pid,
+		start,
+		name,
+		false,
+		func(_ *exec.Cmd, _ *os.File) (bool, error) { return true, nil },
+	)
 	if err == nil {
 		t.Fatal("ownership persistence failure unexpectedly succeeded")
 	}
@@ -98,6 +112,62 @@ func TestPersistAppliedCgroupOwnershipFailureStopsGeneration(t *testing.T) {
 		t.Fatal(getErr)
 	}
 	if current.Status != state.StatusStopped || current.PID != 0 || current.PIDStartTime != 0 {
-		t.Fatalf("generation not stopped after ownership persistence failure: %+v", current)
+		t.Fatalf("confirmed-reaped generation not stopped after ownership persistence failure: %+v", current)
+	}
+}
+
+func TestPersistAppliedCgroupOwnershipFailurePreservesRunningWithoutReapProof(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	const (
+		id    = "ctr-applied-unreaped"
+		pid   = 6262
+		start = uint64(88)
+	)
+	name := saveOwnershipTestRunning(t, st, id, pid, start)
+
+	sidecar := filepath.Join(dir, "containers", id+".cgroup")
+	if err := os.Mkdir(sidecar, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	abortErr := errors.New("kill denied")
+	err = persistAppliedCgroupOwnershipWithAbort(
+		nil,
+		nil,
+		st,
+		id,
+		pid,
+		start,
+		name,
+		false,
+		func(_ *exec.Cmd, _ *os.File) (bool, error) { return false, abortErr },
+	)
+	if err == nil {
+		t.Fatal("unreaped ownership persistence failure unexpectedly succeeded")
+	}
+	if !errors.Is(err, abortErr) {
+		t.Fatalf("error=%v, want abort cause", err)
+	}
+	if !strings.Contains(err.Error(), "not confirmed reaped") {
+		t.Fatalf("error=%v, want explicit reap-proof failure", err)
+	}
+	if !isRuntimeControlError(err) {
+		t.Fatalf("unreaped failure not classified runtime-control: %v", err)
+	}
+
+	current, getErr := st.Get(id)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if current.Status != state.StatusRunning || current.PID != pid || current.PIDStartTime != start {
+		t.Fatalf("unreaped generation lifecycle changed: %+v", current)
+	}
+	if current.FinishedAt != nil {
+		t.Fatalf("unreaped generation gained FinishedAt=%v", current.FinishedAt)
 	}
 }
