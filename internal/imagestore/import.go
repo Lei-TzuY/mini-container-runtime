@@ -2,6 +2,7 @@ package imagestore
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,13 +13,22 @@ import (
 	"minicontainer/internal/state"
 )
 
+type importRemoveAllFunc func(path string) error
+
 // ImportRawRootFS unpacks a raw tarball into imagestore and tags it.
 func ImportRawRootFS(st *state.Store, tarPath, imageTag string) (*state.Image, error) {
+	return importRawRootFSWithCleanup(st, tarPath, imageTag, os.RemoveAll)
+}
+
+func importRawRootFSWithCleanup(st *state.Store, tarPath, imageTag string, removeAll importRemoveAllFunc) (result *state.Image, retErr error) {
 	if st == nil {
 		return nil, fmt.Errorf("state store is nil")
 	}
 	if imageTag == "" {
 		return nil, fmt.Errorf("image tag cannot be empty")
+	}
+	if removeAll == nil {
+		return nil, fmt.Errorf("image staging cleanup operation is nil")
 	}
 
 	f, err := os.Open(tarPath)
@@ -51,10 +61,24 @@ func ImportRawRootFS(st *state.Store, tarPath, imageTag string) (*state.Image, e
 	if err != nil {
 		return nil, fmt.Errorf("create temporary image directory: %w", err)
 	}
-	published := false
+	cleanupPending := true
+	cleanupStaging := func(context string) error {
+		if !cleanupPending {
+			return nil
+		}
+		if err := removeAll(tmpDir); err != nil {
+			return fmt.Errorf("%s %q: %w", context, tmpDir, err)
+		}
+		cleanupPending = false
+		return nil
+	}
 	defer func() {
-		if !published {
-			_ = os.RemoveAll(tmpDir)
+		if !cleanupPending {
+			return
+		}
+		if err := cleanupStaging("remove temporary image directory"); err != nil {
+			result = nil
+			retErr = errors.Join(retErr, err)
 		}
 	}()
 
@@ -71,11 +95,16 @@ func ImportRawRootFS(st *state.Store, tarPath, imageTag string) (*state.Image, e
 			return nil, fmt.Errorf("publish image rootfs: %w", err)
 		}
 		// Identical content may already have been imported concurrently or by an
-		// earlier run. Keep the already-published immutable content and discard our
-		// private staging directory.
-		_ = os.RemoveAll(tmpDir)
+		// earlier run. Before writing another metadata record, the private staging
+		// directory must actually be gone; otherwise a successful import would
+		// silently leave durable garbage behind.
+		if cleanupErr := cleanupStaging("discard duplicate import staging"); cleanupErr != nil {
+			return nil, cleanupErr
+		}
 	} else {
-		published = true
+		// tmpDir has moved to imgDir, so there is no staging pathname left for
+		// this call to clean up.
+		cleanupPending = false
 	}
 
 	imgRec := &state.Image{

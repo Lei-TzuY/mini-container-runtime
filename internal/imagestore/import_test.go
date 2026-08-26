@@ -2,9 +2,11 @@ package imagestore
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"minicontainer/internal/image"
@@ -72,5 +74,87 @@ func TestImportRawRootFSFailureDoesNotPublishPartialImage(t *testing.T) {
 	}
 	if len(staging) != 0 {
 		t.Fatalf("failed import left staging directories: %v", staging)
+	}
+}
+
+func TestImportRawRootFSJoinsUnpackAndCleanupFailures(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	bad := []byte("not a gzip stream")
+	tarPath := filepath.Join(t.TempDir(), "broken-cleanup.tar.gz")
+	if err := os.WriteFile(tarPath, bad, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupErr := errors.New("cleanup denied")
+	cleanupCalls := 0
+	var cleanupPath string
+	_, err = importRawRootFSWithCleanup(st, tarPath, "broken-cleanup:latest", func(path string) error {
+		cleanupCalls++
+		cleanupPath = path
+		return cleanupErr
+	})
+	if err == nil {
+		t.Fatal("import with failed staging cleanup unexpectedly succeeded")
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("error=%v, want cleanup cause", err)
+	}
+	if !strings.Contains(err.Error(), "unpack rootfs") || !strings.Contains(err.Error(), "remove temporary image directory") {
+		t.Fatalf("error=%v, want both unpack and cleanup context", err)
+	}
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls=%d, want 1", cleanupCalls)
+	}
+	if !strings.Contains(filepath.Base(cleanupPath), ".import-") {
+		t.Fatalf("cleanup path=%q, want private import staging directory", cleanupPath)
+	}
+}
+
+func TestImportRawRootFSDuplicateCleanupFailureBlocksMetadata(t *testing.T) {
+	base := t.TempDir()
+	st, err := state.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "payload.txt"), []byte("payload\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tarPath := filepath.Join(base, "rootfs.tar.gz")
+	if err := image.ExportDir(srcDir, tarPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportRawRootFS(st, tarPath, "first:latest"); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	cleanupErr := errors.New("duplicate staging cleanup denied")
+	cleanupCalls := 0
+	_, err = importRawRootFSWithCleanup(st, tarPath, "second:latest", func(string) error {
+		cleanupCalls++
+		return cleanupErr
+	})
+	if err == nil {
+		t.Fatal("duplicate import with failed cleanup unexpectedly succeeded")
+	}
+	if !errors.Is(err, cleanupErr) || !strings.Contains(err.Error(), "discard duplicate import staging") {
+		t.Fatalf("error=%v, want duplicate cleanup failure", err)
+	}
+	if cleanupCalls != 2 {
+		// The immediate cleanup fails and the deferred owner makes one final retry.
+		t.Fatalf("cleanup calls=%d, want 2", cleanupCalls)
+	}
+	if _, lookupErr := st.GetImage("second:latest"); lookupErr == nil {
+		t.Fatal("duplicate cleanup failure still persisted second image metadata")
 	}
 }
