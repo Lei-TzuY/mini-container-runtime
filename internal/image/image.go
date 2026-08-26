@@ -49,7 +49,6 @@ func Unpack(tarPath, destDir string) error {
 	}
 	defer f.Close()
 
-	// Wrap with a gzip reader for .gz / .tgz files.
 	var reader io.Reader = f
 	lower := strings.ToLower(tarPath)
 	if strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz") {
@@ -68,7 +67,6 @@ func Unpack(tarPath, destDir string) error {
 
 	tr := tar.NewReader(reader)
 	var extracted int
-
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -77,12 +75,10 @@ func Unpack(tarPath, destDir string) error {
 		if err != nil {
 			return fmt.Errorf("reading tar entry: %w", err)
 		}
-
 		target, err := safePath(destDir, hdr.Name)
 		if err != nil {
 			return err
 		}
-
 		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
 			return err
 		}
@@ -111,19 +107,11 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		return os.MkdirAll(target, hdr.FileInfo().Mode()|0111)
 
 	case tar.TypeReg, tar.TypeRegA:
-		// Never truncate an existing inode in place. The extraction root may be
-		// pre-populated, and a regular-looking leaf can be a hard link to a file
-		// outside destDir. Unlinking the pathname first preserves the external
-		// inode, while writeRegular's O_EXCL create also fails closed if another
-		// actor races a symlink or hardlink back into the leaf before creation.
-		if _, err := os.Lstat(target); err == nil {
-			if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove existing node before write %s: %w", target, err)
-			}
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect existing node before write %s: %w", target, err)
-		}
-		return writeRegular(target, hdr, r)
+		// Linux writes re-traverse from a pinned extraction-root dirfd with
+		// O_NOFOLLOW and perform leaf unlink/create relative to the pinned parent.
+		// This keeps a concurrent parent rename/symlink replacement from turning
+		// the pathname safety check above into an out-of-root write.
+		return writeRegularSecure(target, destDir, hdr, r)
 
 	case tar.TypeSymlink:
 		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
@@ -217,22 +205,6 @@ func isSubDir(base, target string) bool {
 	return true
 }
 
-// writeRegular creates target exclusively and copies the tar entry into it.
-// The caller must first remove any existing leaf. O_EXCL is a security boundary:
-// if a symlink or hardlink is raced back into place, creation fails instead of
-// following/truncating an inode that may live outside the extraction root.
-func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, hdr.FileInfo().Mode())
-	if err != nil {
-		return fmt.Errorf("create %s exclusively: %w", target, err)
-	}
-	if _, err := io.Copy(out, r); err != nil {
-		out.Close()
-		return fmt.Errorf("write %s: %w", target, err)
-	}
-	return out.Close()
-}
-
 // safePath joins base and name, and returns an error if the result escapes base.
 // This prevents tar-slip (directory traversal) attacks.
 func safePath(base, name string) (string, error) {
@@ -241,8 +213,6 @@ func safePath(base, name string) (string, error) {
 		return "", fmt.Errorf("resolve destination %q: %w", base, err)
 	}
 
-	// Tar paths are slash-separated regardless of host OS. Treat backslashes
-	// as separators too so Windows-style traversal is rejected everywhere.
 	normalized := strings.ReplaceAll(name, "\\", "/")
 	if strings.HasPrefix(normalized, "/") {
 		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
