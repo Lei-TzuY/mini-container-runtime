@@ -1,0 +1,150 @@
+//go:build linux
+
+package dns
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const dnsCrashHelperEnv = "MINICONTAINER_DNS_CRASH_HELPER"
+
+func TestDNSRegistrarCrashHelper(t *testing.T) {
+	if os.Getenv(dnsCrashHelperEnv) != "1" {
+		return
+	}
+	if err := RegisterHost("default", "crashed-container", "crashed-host", "10.0.0.9"); err != nil {
+		os.Exit(91)
+	}
+	// Deliberately bypass all Go defers, matching cmdRun's os.Exit failure path.
+	os.Exit(17)
+}
+
+func TestDNSRegistryPrunesRegistrationAfterRegistrarOsExit(t *testing.T) {
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDNSRegistrarCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		dnsCrashHelperEnv+"=1",
+		"HOME="+home,
+		"USERPROFILE="+home,
+	)
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 {
+		t.Fatalf("helper exit=%v, want status 17", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	content, err := GenerateHostsContentChecked("default")
+	if err != nil {
+		t.Fatalf("generate after registrar exit: %v", err)
+	}
+	if strings.Contains(content, "crashed-host") || strings.Contains(content, "10.0.0.9") {
+		t.Fatalf("stale crashed registration remained authoritative:\n%s", content)
+	}
+
+	data, err := os.ReadFile(filepath.Join(DefaultDNSDir(), "default.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []HostEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stale registration remained on disk: %+v", entries)
+	}
+}
+
+func TestRegisterHostPersistsCurrentRegistrarGeneration(t *testing.T) {
+	useTempDNSHome(t)
+	if err := RegisterHost("default", "live-container", "live-host", "10.0.0.2"); err != nil {
+		t.Fatal(err)
+	}
+	entries, ok, err := loadEntriesChecked(filepath.Join(DefaultDNSDir(), "default.json"), "default")
+	if err != nil || !ok || len(entries) != 1 {
+		t.Fatalf("entries=%+v ok=%v err=%v", entries, ok, err)
+	}
+	owner, err := currentRegistrarIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].OwnerPID != owner.PID || entries[0].OwnerStartTime != owner.StartTime {
+		t.Fatalf("owner=%d/%d, want %d/%d", entries[0].OwnerPID, entries[0].OwnerStartTime, owner.PID, owner.StartTime)
+	}
+	content, err := GenerateHostsContentChecked("default")
+	if err != nil || !strings.Contains(content, "10.0.0.2\tlive-host") {
+		t.Fatalf("live registration lost: content=%q err=%v", content, err)
+	}
+}
+
+func TestDNSRegistryPrunesPIDReuseMismatch(t *testing.T) {
+	useTempDNSHome(t)
+	owner, err := currentRegistrarIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := HostEntry{
+		ContainerID:    "stale-container",
+		Hostname:       "stale-host",
+		IP:             "10.0.0.4",
+		OwnerPID:       owner.PID,
+		OwnerStartTime: owner.StartTime + 1,
+	}
+	dir, err := ensureDNSDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveEntriesAtomic(dir, filepath.Join(dir, "default.json"), "default", []HostEntry{entry}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := GenerateHostsContentChecked("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "stale-host") {
+		t.Fatalf("PID-reused registration survived:\n%s", content)
+	}
+}
+
+func TestDNSRegistryRetainsLegacyUnownedEntry(t *testing.T) {
+	useTempDNSHome(t)
+	dir, err := ensureDNSDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := HostEntry{ContainerID: "legacy", Hostname: "legacy-host", IP: "10.0.0.5"}
+	if err := saveEntriesAtomic(dir, filepath.Join(dir, "default.json"), "default", []HostEntry{legacy}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := GenerateHostsContentChecked("default")
+	if err != nil || !strings.Contains(content, "10.0.0.5\tlegacy-host") {
+		t.Fatalf("legacy entry lost: content=%q err=%v", content, err)
+	}
+}
+
+func TestDNSRegistryRejectsPartialRegistrarIdentity(t *testing.T) {
+	useTempDNSHome(t)
+	dir, err := ensureDNSDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "default.json")
+	const malformed = `[{"container_id":"bad","hostname":"bad-host","ip":"10.0.0.6","owner_pid":123}]`
+	if err := os.WriteFile(path, []byte(malformed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GenerateHostsContentChecked("default"); err == nil || !strings.Contains(err.Error(), "invalid ownership") {
+		t.Fatalf("partial registrar identity error=%v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != malformed {
+		t.Fatalf("malformed registry was mutated: data=%q err=%v", got, err)
+	}
+}
