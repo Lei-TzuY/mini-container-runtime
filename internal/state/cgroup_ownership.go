@@ -115,6 +115,9 @@ func (s *Store) GetCgroupOwnership(id string) (CgroupOwnership, bool, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return CgroupOwnership{}, false, ErrStoreClosed
+	}
 	return s.readCgroupOwnershipUnlocked(id)
 }
 
