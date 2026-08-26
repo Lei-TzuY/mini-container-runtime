@@ -29,7 +29,7 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 	if current.Status != state.StatusStopped {
 		return changed, cgroupErr
 	}
-	return changed, errors.Join(cgroupErr, CleanupStoppedNetwork(st, current))
+	return changed, errors.Join(cgroupErr, cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false))
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
