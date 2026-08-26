@@ -24,9 +24,7 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	targetAbs, err := filepath.Abs(target)
 	if err != nil { return fmt.Errorf("resolve regular target: %w", err) }
 	rel, err := filepath.Rel(destAbs, targetAbs)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path traversal detected: %q escapes %q", target, destDir)
-	}
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) { return fmt.Errorf("path traversal detected: %q escapes %q", target, destDir) }
 	rootFD, err := unix.Open(destAbs, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil { return fmt.Errorf("open extraction root %s: %w", destAbs, err) }
 	defer unix.Close(rootFD)
@@ -60,4 +58,13 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	if _, err := io.Copy(out, r); err != nil { _ = out.Close(); return fmt.Errorf("write %s: %w", target, err) }
 	if err := out.Close(); err != nil { return fmt.Errorf("close %s: %w", target, err) }
 	return nil
+}
+
+// writeRegular remains the narrow exclusive-create primitive covered by legacy
+// unit tests. Production extraction uses writeRegularSecure above.
+func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, hdr.FileInfo().Mode())
+	if err != nil { return fmt.Errorf("create %s exclusively: %w", target, err) }
+	if _, err := io.Copy(out, r); err != nil { _ = out.Close(); return fmt.Errorf("write %s: %w", target, err) }
+	return out.Close()
 }
