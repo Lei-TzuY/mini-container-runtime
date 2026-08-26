@@ -14,6 +14,9 @@ func PruneOrphanLayers(st *state.Store) (int, int64, error) {
 	if st == nil {
 		return 0, 0, fmt.Errorf("state store is nil")
 	}
+	if err := recoverPendingManagedImageCleanups(st); err != nil {
+		return 0, 0, fmt.Errorf("recover pending image cleanup before prune: %w", err)
+	}
 
 	images, err := st.ListImages()
 	if err != nil {

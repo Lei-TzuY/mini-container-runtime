@@ -121,6 +121,25 @@ func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (result *s
 				retErr = errors.Join(retErr, fmt.Errorf("close pinned managed image rootfs: %w", err))
 			}
 		}()
+
+		cleanup := state.ImageCleanup{ID: img.ID, RootFS: filepath.Clean(img.RootFS)}
+		removed, armed, err := st.DeleteImageIfMatchWithCleanup(nameOrID, img, cleanup)
+		if err != nil {
+			return nil, err
+		}
+		result = removed
+		if !armed {
+			// Another durable alias still owns the payload. The state transaction
+			// removed only this metadata record and intentionally armed no cleanup.
+			return result, nil
+		}
+		if err := pinned.Remove(); err != nil {
+			return result, fmt.Errorf("remove managed image rootfs %q with cleanup ownership retained: %w", removed.RootFS, err)
+		}
+		if _, err := st.ClearImageCleanupIfMatch(cleanup); err != nil {
+			return result, fmt.Errorf("clear managed image cleanup ownership after payload removal: %w", err)
+		}
+		return result, nil
 	}
 
 	removed, err := st.DeleteImageIfMatch(nameOrID, img)
@@ -132,6 +151,9 @@ func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (result *s
 		return result, nil
 	}
 
+	// External/custom rootfs paths preserve historical behavior. They are not
+	// eligible for automatic crash recovery because the Store cannot prove a
+	// stable filesystem generation for an arbitrary host path.
 	remaining, err := st.ListImages()
 	if err != nil {
 		return result, fmt.Errorf("verify image rootfs references after metadata removal: %w", err)
@@ -140,13 +162,6 @@ func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (result *s
 		return result, fmt.Errorf("verify image alias ownership after metadata removal: %w", err)
 	}
 	if imageRootFSReferenced(remaining, removed.RootFS) {
-		return result, nil
-	}
-
-	if pinned != nil {
-		if err := pinned.Remove(); err != nil {
-			return result, fmt.Errorf("remove managed image rootfs %q: %w", removed.RootFS, err)
-		}
 		return result, nil
 	}
 	if err := os.RemoveAll(removed.RootFS); err != nil {
