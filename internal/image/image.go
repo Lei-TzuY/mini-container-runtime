@@ -90,12 +90,12 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		return createHardlinkSecure(target, destDir, linkTarget)
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		if err := makeSpecialSecure(target, destDir, hdr); err != nil {
-			if !strings.Contains(err.Error(), "not supported") {
-				fmt.Fprintf(os.Stderr, "warning: mknod %s: %v\n", target, err)
-			}
+			return fmt.Errorf("create special tar entry %q (type %d): %w", hdr.Name, hdr.Typeflag, err)
 		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported tar entry %q with type flag %d", hdr.Name, hdr.Typeflag)
 	}
-	return nil
 }
 
 // ensureSafeParentDirs is the portable pathname fallback. Linux production tar
