@@ -49,7 +49,16 @@ func TestUnpackFinalizesRestrictiveDirectoryMetadataAfterChildren(t *testing.T) 
 	if err := Unpack(archive, dest); err != nil {
 		t.Fatalf("unpack restrictive directory archive: %v", err)
 	}
-	payload, err := os.ReadFile(filepath.Join(dest, "locked", "nested", "payload"))
+	locked := filepath.Join(dest, "locked")
+	nested := filepath.Join(locked, "nested")
+	defer func() {
+		// Restore owner-write after assertions so testing.TempDir can remove the
+		// intentionally restrictive extracted tree during test cleanup.
+		_ = os.Chmod(locked, 0o700)
+		_ = os.Chmod(nested, 0o700)
+	}()
+
+	payload, err := os.ReadFile(filepath.Join(nested, "payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +70,8 @@ func TestUnpackFinalizesRestrictiveDirectoryMetadataAfterChildren(t *testing.T) 
 		mode os.FileMode
 		mt   time.Time
 	}{
-		{filepath.Join(dest, "locked"), 0o500, parentTime},
-		{filepath.Join(dest, "locked", "nested"), 0o555, childTime},
+		{locked, 0o500, parentTime},
+		{nested, 0o555, childTime},
 	} {
 		info, err := os.Stat(tc.path)
 		if err != nil {
