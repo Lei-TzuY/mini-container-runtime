@@ -11,4 +11,5 @@ type directoryMetadata struct {
 	modTime time.Time
 	uid     int
 	gid     int
+	xattrs  map[string][]byte
 }

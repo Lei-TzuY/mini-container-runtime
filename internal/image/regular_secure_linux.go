@@ -36,10 +36,11 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	out := os.NewFile(uintptr(fd), target)
 	if out == nil { _ = unix.Close(fd); return fmt.Errorf("wrap regular target fd for %s", target) }
 	if _, err := io.Copy(out, r); err != nil { _ = out.Close(); return fmt.Errorf("write %s: %w", target, err) }
-	// chown may clear setuid/setgid bits, so ownership must be restored before
-	// the final chmod pass.
+	// chown may clear setuid/setgid bits and security.capability, so ownership
+	// must precede final mode and xattr restoration.
 	if err := restoreOwnershipFD(fd, target, hdr.Uid, hdr.Gid); err != nil { _ = out.Close(); return err }
 	if err := unix.Fchmod(fd, tarUnixMode(hdr.FileInfo().Mode())); err != nil { _ = out.Close(); return fmt.Errorf("restore mode on %s: %w", target, err) }
+	if err := restoreXattrsFD(fd, target, tarXattrsPortable(hdr)); err != nil { _ = out.Close(); return err }
 	if !hdr.ModTime.IsZero() {
 		times := []unix.Timeval{unix.NsecToTimeval(time.Now().UnixNano()), unix.NsecToTimeval(hdr.ModTime.UnixNano())}
 		if err := unix.Futimes(fd, times); err != nil { _ = out.Close(); return fmt.Errorf("restore mtime on %s: %w", target, err) }
@@ -48,8 +49,6 @@ func writeRegularSecureWithHook(target, destDir string, hdr *tar.Header, r io.Re
 	return nil
 }
 
-// writeRegular remains the narrow exclusive-create primitive covered by legacy
-// unit tests. Production extraction uses writeRegularSecure above.
 func writeRegular(target string, hdr *tar.Header, r io.Reader) error {
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, hdr.FileInfo().Mode())
 	if err != nil { return fmt.Errorf("create %s exclusively: %w", target, err) }

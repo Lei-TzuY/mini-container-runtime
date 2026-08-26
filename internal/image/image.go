@@ -68,6 +68,7 @@ func Unpack(tarPath, destDir string) error {
 				modTime: hdr.ModTime,
 				uid:     hdr.Uid,
 				gid:     hdr.Gid,
+				xattrs:  tarXattrsPortable(hdr),
 			})
 		}
 		extracted++
@@ -90,8 +91,6 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		// Keep archive directories owner-writable while later entries are still
-		// being unpacked. Exact mode/mtime are restored deepest-first at EOF.
 		return createDirectorySecure(target, destDir, hdr.FileInfo().Mode()|0700)
 	case tar.TypeReg, tar.TypeRegA:
 		return writeRegularSecure(target, destDir, hdr, r)
@@ -113,30 +112,19 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 	}
 }
 
-// ensureSafeParentDirs is the portable pathname fallback. Linux production tar
-// extraction intentionally does not call it because each entry-specific helper
-// pins and traverses the extraction tree with *at operations and O_NOFOLLOW.
 func ensureSafeParentDirs(target, destDir string) error {
 	destAbs, err := filepath.Abs(destDir)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	targetAbs, err := filepath.Abs(target)
-	if err != nil {
-		return err
-	}
-
+	if err != nil { return err }
 	rel, err := filepath.Rel(destAbs, targetAbs)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path traversal detected: %q escapes %q", target, destDir)
 	}
-
 	parts := strings.Split(filepath.Dir(rel), string(filepath.Separator))
 	curr := destAbs
 	for _, part := range parts {
-		if part == "." || part == "" {
-			continue
-		}
+		if part == "." || part == "" { continue }
 		curr = filepath.Join(curr, part)
 		fi, err := os.Lstat(curr)
 		if err == nil {
@@ -147,12 +135,8 @@ func ensureSafeParentDirs(target, destDir string) error {
 				}
 			}
 		} else if os.IsNotExist(err) {
-			if err := os.Mkdir(curr, 0755); err != nil && !os.IsExist(err) {
-				return err
-			}
-		} else {
-			return err
-		}
+			if err := os.Mkdir(curr, 0755); err != nil && !os.IsExist(err) { return err }
+		} else { return err }
 	}
 	return nil
 }
@@ -160,42 +144,24 @@ func ensureSafeParentDirs(target, destDir string) error {
 func isSubDir(base, target string) bool {
 	baseAbs, err1 := filepath.Abs(base)
 	targetAbs, err2 := filepath.Abs(target)
-	if err1 != nil || err2 != nil {
-		return false
-	}
+	if err1 != nil || err2 != nil { return false }
 	rel, err := filepath.Rel(baseAbs, targetAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) { return false }
 	return true
 }
 
-// safePath joins base and name, rejecting tar-slip and Windows-drive escapes.
 func safePath(base, name string) (string, error) {
 	baseAbs, err := filepath.Abs(base)
-	if err != nil {
-		return "", fmt.Errorf("resolve destination %q: %w", base, err)
-	}
-
+	if err != nil { return "", fmt.Errorf("resolve destination %q: %w", base, err) }
 	normalized := strings.ReplaceAll(name, "\\", "/")
-	if strings.HasPrefix(normalized, "/") {
-		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
-	}
+	if strings.HasPrefix(normalized, "/") { return "", fmt.Errorf("path traversal detected: %q escapes destination", name) }
 	trimmed := strings.TrimLeft(normalized, "/")
-	if hasWindowsDrivePrefix(trimmed) {
-		return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
-	}
+	if hasWindowsDrivePrefix(trimmed) { return "", fmt.Errorf("path traversal detected: %q escapes destination", name) }
 	for _, part := range strings.Split(normalized, "/") {
-		if part == ".." {
-			return "", fmt.Errorf("path traversal detected: %q escapes destination", name)
-		}
+		if part == ".." { return "", fmt.Errorf("path traversal detected: %q escapes destination", name) }
 	}
-
 	cleaned := strings.TrimPrefix(path.Clean("/"+normalized), "/")
-	if cleaned == "." {
-		cleaned = ""
-	}
-
+	if cleaned == "." { cleaned = "" }
 	target := filepath.Join(baseAbs, filepath.FromSlash(cleaned))
 	rel, err := filepath.Rel(baseAbs, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
@@ -205,6 +171,5 @@ func safePath(base, name string) (string, error) {
 }
 
 func hasWindowsDrivePrefix(name string) bool {
-	return len(name) >= 2 && name[1] == ':' &&
-		((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z'))
+	return len(name) >= 2 && name[1] == ':' && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z'))
 }
