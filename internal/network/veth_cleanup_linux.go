@@ -122,6 +122,21 @@ func removeVethHostOwnedWith(
 		return fmt.Errorf("host veth %s changed interface identity during cleanup (%d -> %d)", name, iface.Index, current.Index)
 	}
 
+	// The interface can retain the same name/index while its ownership alias is
+	// changed between our first proof and deletion. Re-check immediately before
+	// the destructive netlink operation so ownership is validated at the final
+	// observable boundary rather than only against an earlier snapshot.
+	alias, err = readAlias(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("re-read owner alias for host veth %s: %w", name, err)
+	}
+	if alias != owner {
+		return fmt.Errorf("host veth %s ownership changed during cleanup", name)
+	}
+
 	if err := deleteLink(name, current.Index); err != nil {
 		return fmt.Errorf("delete owned host veth %s: %w", name, err)
 	}

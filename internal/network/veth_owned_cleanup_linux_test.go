@@ -38,11 +38,13 @@ func TestRemoveVethHostOwnedDeletesExactMatchingGeneration(t *testing.T) {
 	owner := "minicontainer:0123456789abcdef0123456789abcdef"
 	name := VethHostIfaceOwned(owner)
 	listCalls := 0
+	aliasCalls := 0
 	deleteCalls := 0
 	err := removeVethHostOwnedWith(name, owner, false, func() ([]net.Interface, error) {
 		listCalls++
 		return []net.Interface{{Index: 88, Name: name}}, nil
 	}, func(string) (string, error) {
+		aliasCalls++
 		return owner, nil
 	}, func(got string, index int) error {
 		deleteCalls++
@@ -54,8 +56,8 @@ func TestRemoveVethHostOwnedDeletesExactMatchingGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("matching cleanup: %v", err)
 	}
-	if listCalls != 2 || deleteCalls != 1 {
-		t.Fatalf("matching cleanup listCalls=%d deleteCalls=%d", listCalls, deleteCalls)
+	if listCalls != 2 || aliasCalls != 2 || deleteCalls != 1 {
+		t.Fatalf("matching cleanup listCalls=%d aliasCalls=%d deleteCalls=%d", listCalls, aliasCalls, deleteCalls)
 	}
 }
 
@@ -145,5 +147,33 @@ func TestRemoveVethHostOwnedRejectsIndexReplacement(t *testing.T) {
 	}
 	if deleteCalls != 0 {
 		t.Fatalf("delete called %d times after identity replacement", deleteCalls)
+	}
+}
+
+func TestRemoveVethHostOwnedRejectsOwnerChangeAtSameIdentity(t *testing.T) {
+	owner := "minicontainer:0123456789abcdef0123456789abcdef"
+	name := VethHostIfaceOwned(owner)
+	aliasCalls := 0
+	deleteCalls := 0
+	err := removeVethHostOwnedWith(name, owner, false, func() ([]net.Interface, error) {
+		return []net.Interface{{Index: 93, Name: name}}, nil
+	}, func(string) (string, error) {
+		aliasCalls++
+		if aliasCalls == 1 {
+			return owner, nil
+		}
+		return "minicontainer:foreign-owner", nil
+	}, func(string, int) error {
+		deleteCalls++
+		return nil
+	})
+	if err == nil {
+		t.Fatal("ownership change at same interface identity was accepted")
+	}
+	if aliasCalls != 2 {
+		t.Fatalf("alias calls=%d, want 2", aliasCalls)
+	}
+	if deleteCalls != 0 {
+		t.Fatalf("delete called %d times after ownership changed", deleteCalls)
 	}
 }
