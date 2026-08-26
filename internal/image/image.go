@@ -124,10 +124,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		return createHardlinkSecure(target, destDir, linkTarget)
 
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-		if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove existing node before mknod %s: %w", target, err)
-		}
-		if err := makeSpecial(target, hdr); err != nil {
+		if err := makeSpecialSecure(target, destDir, hdr); err != nil {
 			if !strings.Contains(err.Error(), "not supported") {
 				fmt.Fprintf(os.Stderr, "warning: mknod %s: %v\n", target, err)
 			}
