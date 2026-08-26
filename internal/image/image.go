@@ -66,6 +66,8 @@ func Unpack(tarPath, destDir string) error {
 				target:  target,
 				mode:    hdr.FileInfo().Mode(),
 				modTime: hdr.ModTime,
+				uid:     hdr.Uid,
+				gid:     hdr.Gid,
 			})
 		}
 		extracted++
