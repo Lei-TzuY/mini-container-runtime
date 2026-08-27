@@ -43,15 +43,10 @@ func createHardlinkSecureWithHeader(target, destDir, linkTarget string, hdr *tar
 	}
 	defer sourceParent.Close()
 
-	destParent, err := root.openParent(target, "hardlink destination", true)
-	if err != nil {
-		return fmt.Errorf("open hardlink destination parent: %w", err)
-	}
-	defer destParent.Close()
-
-	// Pin the exact source inode before any destination work. A parent dirfd
-	// alone is insufficient: another actor can replace sourceLeaf between an
-	// Fstatat proof and a later Linkat by pathname.
+	// Pin and validate the exact source inode before opening the destination
+	// parent with create=true. A missing or invalid source is a pure observation:
+	// it must not create destination directories that can perturb later archive
+	// entries while this hardlink waits for deferred resolution.
 	sourceFD, err := unix.Openat(sourceParent.fd, sourceParent.leaf, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("pin hardlink source %s: %w", linkTarget, err)
@@ -73,6 +68,12 @@ func createHardlinkSecureWithHeader(target, destDir, linkTarget string, hdr *tar
 			return fmt.Errorf("validate hardlink xattrs for %s: %w", linkTarget, err)
 		}
 	}
+
+	destParent, err := root.openParent(target, "hardlink destination", true)
+	if err != nil {
+		return fmt.Errorf("open hardlink destination parent: %w", err)
+	}
+	defer destParent.Close()
 
 	if beforeLink != nil {
 		beforeLink()
