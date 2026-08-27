@@ -6,21 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"minicontainer/internal/events"
 )
 
 const runtimeReadyByte byte = 0xa5
 
-// releaseBlockedChild commits runtime setup by writing one explicit readiness
-// byte to the child's private sync pipe. Closing the pipe is not a readiness
-// signal: an unexpected parent exit also closes the writer, so the child must
-// never treat EOF as permission to continue.
+// releaseBlockedChild commits parent-side runtime setup by writing one explicit
+// readiness byte to the child's private sync pipe. Closing the pipe is not a
+// readiness signal: an unexpected parent exit also closes the writer, so the
+// child must never treat EOF as permission to continue.
 //
-// Once the byte has been written, the child may already be running. A later
-// Close error cannot safely revoke that commit, so successful delivery of the
-// byte is the only success criterion. Event publication is therefore best
-// effort after delivery: observability failure cannot revoke runtime readiness.
+// Successful delivery means the child may proceed with container initialization;
+// it does not prove that the payload image has successfully exec'd. Lifecycle
+// start observability is therefore committed later at the init-status CLOEXEC
+// boundary in awaitPayloadExec.
 func releaseBlockedChild(writePipe *os.File) error {
 	if writePipe == nil {
 		return fmt.Errorf("runtime sync writer is nil")
@@ -29,7 +27,6 @@ func releaseBlockedChild(writePipe *os.File) error {
 	n, err := writePipe.Write([]byte{runtimeReadyByte})
 	if n == 1 {
 		_ = writePipe.Close()
-		_ = events.CommitPendingStart()
 		return nil
 	}
 	_ = writePipe.Close()
