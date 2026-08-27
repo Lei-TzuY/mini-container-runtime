@@ -166,6 +166,13 @@ func finalizeStoppedGenerationWithCleanup(
 	changed, stateErr := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, exitCode, finishedAt)
 	if stateErr != nil {
 		stateErr = fmt.Errorf("persist stopped state for container %s: %w", c.ID, stateErr)
+		if !changed {
+			// Destructive host cleanup must never run before stopped state is
+			// durable. MarkStoppedIfIdentity can return changed=true together
+			// with a post-commit housekeeping error; only changed=false proves
+			// that the stop transition itself did not commit.
+			return false, stateErr
+		}
 	}
 
 	ownership, ok, ownershipErr := st.GetCgroupOwnership(c.ID)
