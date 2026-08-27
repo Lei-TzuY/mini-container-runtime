@@ -33,7 +33,8 @@ func (s *Store) DeleteIfNotRunning(id string) error {
 	}
 	if c.Status == StatusRunning {
 		return fmt.Errorf(
-			"container %s is running with process %d/%d; refusing deletion",
+			"%w: container %s has process %d/%d; refusing deletion",
+			ErrContainerRunning,
 			id,
 			c.PID,
 			c.PIDStartTime,

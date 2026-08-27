@@ -1,6 +1,7 @@
 package system
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -74,6 +75,20 @@ func CalculateDF(st *state.Store) (*DFResult, error) {
 	return res, nil
 }
 
+// deletePrunableContainer rechecks lifecycle state under the Store lock. A
+// concurrent restart is a benign skip; every other refusal/failure must remain
+// visible to callers so garbage collection cannot report false success.
+func deletePrunableContainer(st *state.Store, id string) (bool, error) {
+	err := st.DeleteIfNotRunning(id)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, state.ErrContainerRunning) {
+		return false, nil
+	}
+	return false, err
+}
+
 // SystemPrune cleans up stopped containers, unused images, and unused volumes.
 func SystemPrune(st *state.Store, pruneAll bool) (*PruneResult, error) {
 	if st == nil {
@@ -82,18 +97,22 @@ func SystemPrune(st *state.Store, pruneAll bool) (*PruneResult, error) {
 	res := &PruneResult{}
 
 	// Prune stopped containers. DeleteIfNotRunning rechecks disk under the state
-	// lock, so a generation restarted after List cannot be removed here. A
-	// lifecycle change is therefore treated as a skip rather than stale authority
-	// to delete the newer running generation.
+	// lock, so a generation restarted after List cannot be removed here. Only
+	// that classified lifecycle race is a skip; cleanup/state failures surface.
 	ctrs, err := st.List()
 	if err != nil {
 		return res, fmt.Errorf("list containers for system prune: %w", err)
 	}
 	for _, c := range ctrs {
-		if c.Status == state.StatusStopped {
-			if err := st.DeleteIfNotRunning(c.ID); err == nil {
-				res.ContainersReclaimed++
-			}
+		if c.Status != state.StatusStopped {
+			continue
+		}
+		deleted, err := deletePrunableContainer(st, c.ID)
+		if err != nil {
+			return res, fmt.Errorf("prune stopped container %s: %w", c.ID, err)
+		}
+		if deleted {
+			res.ContainersReclaimed++
 		}
 	}
 
