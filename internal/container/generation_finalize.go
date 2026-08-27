@@ -7,6 +7,7 @@ import (
 
 	"minicontainer/internal/cgroups"
 	"minicontainer/internal/dns"
+	"minicontainer/internal/events"
 	"minicontainer/internal/state"
 )
 
@@ -29,6 +30,20 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 	}
 	if current.Status != state.StatusStopped {
 		return changed, cgroupErr
+	}
+
+	// Die is generation-scoped, just like MarkStoppedIfIdentity. Emit it only
+	// for the actor that actually transitioned this exact PID/start-time record;
+	// retries/reconcilers observing an already-stopped record cannot duplicate it.
+	// Event persistence is best effort and must not revoke an already-finished
+	// payload generation.
+	if changed {
+		_ = events.Publish(
+			events.EventDie,
+			c.ID,
+			current.RootFS,
+			fmt.Sprintf("exited with code %d", exitCode),
+		)
 	}
 
 	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
