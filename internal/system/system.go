@@ -2,6 +2,7 @@ package system
 
 import (
 	"fmt"
+	"strings"
 
 	"minicontainer/internal/imagestore"
 	"minicontainer/internal/state"
@@ -75,11 +76,19 @@ func CalculateDF(st *state.Store) (*DFResult, error) {
 
 // SystemPrune cleans up stopped containers, unused images, and unused volumes.
 func SystemPrune(st *state.Store, pruneAll bool) (*PruneResult, error) {
+	if st == nil {
+		return nil, fmt.Errorf("state store is nil")
+	}
 	res := &PruneResult{}
 
 	// Prune stopped containers. DeleteIfNotRunning rechecks disk under the state
-	// lock, so a generation restarted after List cannot be removed here.
-	ctrs, _ := st.List()
+	// lock, so a generation restarted after List cannot be removed here. A
+	// lifecycle change is therefore treated as a skip rather than stale authority
+	// to delete the newer running generation.
+	ctrs, err := st.List()
+	if err != nil {
+		return res, fmt.Errorf("list containers for system prune: %w", err)
+	}
 	for _, c := range ctrs {
 		if c.Status == state.StatusStopped {
 			if err := st.DeleteIfNotRunning(c.ID); err == nil {
@@ -88,18 +97,38 @@ func SystemPrune(st *state.Store, pruneAll bool) (*PruneResult, error) {
 		}
 	}
 
-	// Prune unused volumes
-	volsCount, _ := volume.PruneVolumes()
+	// Volume prune already aggregates per-volume removal failures. Preserve its
+	// successful partial count, but never report the overall system prune as
+	// successful when any managed volume could not be validated or removed.
+	volsCount, err := volume.PruneVolumes()
 	res.VolumesReclaimed = volsCount
+	if err != nil {
+		return res, fmt.Errorf("prune volumes during system prune: %w", err)
+	}
 
-	// Prune images if all requested
-	if pruneAll {
-		imgs, _ := st.ListImages()
-		for _, img := range imgs {
-			if _, err := imagestore.RemoveImage(st, img.Name, true); err == nil {
-				res.ImagesReclaimed++
-			}
+	if !pruneAll {
+		return res, nil
+	}
+
+	imgs, err := st.ListImages()
+	if err != nil {
+		return res, fmt.Errorf("list images for system prune: %w", err)
+	}
+	for _, img := range imgs {
+		if img == nil {
+			return res, fmt.Errorf("image list contains nil metadata")
 		}
+		selector := strings.TrimSpace(img.Name)
+		if selector == "" {
+			selector = strings.TrimSpace(img.ID)
+		}
+		if selector == "" {
+			return res, fmt.Errorf("cannot prune unnamed image without an ID")
+		}
+		if _, err := imagestore.RemoveImageIfMatch(st, selector, img, true); err != nil {
+			return res, fmt.Errorf("prune image %q: %w", selector, err)
+		}
+		res.ImagesReclaimed++
 	}
 
 	return res, nil
