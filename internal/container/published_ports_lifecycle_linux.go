@@ -3,9 +3,11 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 
 	"minicontainer/internal/dns"
+	"minicontainer/internal/events"
 	"minicontainer/internal/state"
 )
 
@@ -47,7 +49,35 @@ func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store,
 	return nil
 }
 
-// beginNetworkAttemptAdmission fails closed before process creation whenever
+// beginNetworkAttemptAdmission establishes the process-local Start proof for
+// every managed runtime attempt, then performs durable network admission. The
+// returned rollback always clears an uncommitted Start proof, including paths
+// that fail before a child generation exists. A matching CLI pre-stage is an
+// idempotent handoff rather than a second lifecycle authority.
+func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func() error, error) {
+	if cfg.ContainerID == "" {
+		return beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
+	}
+	if err := events.StageRuntimeStart(cfg.ContainerID, cfg.RootFS, "started container"); err != nil {
+		return nil, &runtimeSetupError{err: fmt.Errorf("stage runtime start event: %w", err)}
+	}
+
+	networkRollback, err := beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
+	if err != nil {
+		events.CancelPendingStart(cfg.ContainerID)
+		return nil, err
+	}
+	rollback := func() error {
+		events.CancelPendingStart(cfg.ContainerID)
+		if networkRollback == nil {
+			return nil
+		}
+		return networkRollback()
+	}
+	return rollback, nil
+}
+
+// beginNetworkAttemptAdmissionWith fails closed before process creation whenever
 // host networking can create resources that outlive the runtime parent. Bridge
 // veth ownership and published-port DNAT ownership both require a managed state
 // store so a later lifecycle actor can safely recover after a parent crash.
@@ -57,10 +87,6 @@ func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store,
 // invoke even after authoritative generation finalization already removed the
 // same entry. This closes both pre-spawn registration leaks and the historical
 // gap where attempt 1 finalization removed DNS state before attempt 2 started.
-func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func() error, error) {
-	return beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
-}
-
 func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, deps networkAdmissionDeps) (func() error, error) {
 	if len(cfg.PortMappings) > 0 && !cfg.BridgeNetwork {
 		return nil, &runtimeSetupError{err: fmt.Errorf("published ports require bridge networking")}
@@ -98,3 +124,5 @@ func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, d
 	}
 	return rollback, nil
 }
+
+var _ = errors.Join
