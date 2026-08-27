@@ -21,7 +21,7 @@ func payloadExitError(t *testing.T, code string) *exec.ExitError {
 	return exitErr
 }
 
-func TestFinalizeManagedParentExitSkipsCleanupWithoutOwnership(t *testing.T) {
+func TestFinalizeManagedParentExitUsesGenerationFinalizerWithoutCgroupOwnership(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -44,15 +44,15 @@ func TestFinalizeManagedParentExitSkipsCleanupWithoutOwnership(t *testing.T) {
 		7,
 		time.Now(),
 		false,
-		func(*state.Store, *state.Container, int, time.Time) (bool, error) {
+		func(gotStore *state.Store, got *state.Container, exitCode int, finished time.Time) (bool, error) {
 			finalizerCalled = true
-			return false, errors.New("must not clean an unowned cgroup")
+			return gotStore.MarkStoppedIfIdentity(got.ID, got.PID, got.PIDStartTime, exitCode, finished)
 		},
 	); err != nil {
 		t.Fatalf("finalize unowned managed exit: %v", err)
 	}
-	if finalizerCalled {
-		t.Fatal("generation cleanup ran despite failed cgroup Apply")
+	if !finalizerCalled {
+		t.Fatal("generation finalizer skipped because cgroup Apply failed")
 	}
 
 	current, err := st.Get(snapshot.ID)
