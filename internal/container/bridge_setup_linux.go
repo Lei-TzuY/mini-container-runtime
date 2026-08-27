@@ -35,31 +35,43 @@ func defaultBridgeHostOps(owner string) bridgeHostOps {
 }
 
 // setupBridgeHost is the compatibility wrapper for callers that do not persist
-// network ownership. Managed runtime paths persist the owner before mutation and
-// call setupBridgeHostOwned with that exact marker.
+// network ownership. Without a durable recovery token it must retain eager
+// rollback semantics on partial setup failure.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
 	owner, err := network.NewPortForwardingOwner()
 	if err != nil {
 		return nil, fmt.Errorf("create bridge ownership marker: %w", err)
 	}
-	return setupBridgeHostOwned(containerPID, hostCIDR, containerIP, mappings, owner, debug)
+	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(owner))
 }
 
+// setupBridgeHostOwned is used only after the managed runtime has durably
+// persisted generation-scoped network ownership. It intentionally does not
+// destroy successfully-created host resources on a later setup failure: the
+// authoritative stopped-generation finalizer consumes that durable ownership
+// only after stopped lifecycle state has committed. The returned cleanup is a
+// no-op for the same reason; legacy run paths may still invoke it before state
+// finalization, but managed teardown authority lives in the durable sidecar.
 func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, owner string, debug bool) (func() error, error) {
 	if owner == "" {
 		return nil, fmt.Errorf("bridge ownership marker is required")
 	}
-	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(owner))
+	if _, err := setupBridgeHostWithOpsPolicy(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(owner), false); err != nil {
+		return nil, err
+	}
+	return func() error { return nil }, nil
 }
 
 // setupBridgeHostWithOps establishes all requested host-side bridge networking
-// before the container child is released from its sync pipe. Each setup
-// operation owns rollback for side effects created before that operation reports
-// success. Once veth setup succeeds, this layer owns the veth and every
-// successfully installed, generation-tagged port rule. The returned cleanup
-// function owns those resources after successful setup and should be called when
-// the container exits.
+// before the container child is released from its sync pipe. Compatibility
+// callers without durable ownership get eager rollback. Managed callers use the
+// policy helper below with rollbackOnFailure=false so stopped-state durability
+// always precedes destructive recovery.
 func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool, ops bridgeHostOps) (func() error, error) {
+	return setupBridgeHostWithOpsPolicy(containerPID, hostCIDR, containerIP, mappings, debug, ops, true)
+}
+
+func setupBridgeHostWithOpsPolicy(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool, ops bridgeHostOps, rollbackOnFailure bool) (func() error, error) {
 	if ops.setupVeth == nil || ops.removeVeth == nil || ops.setupPort == nil || ops.removePort == nil {
 		return nil, fmt.Errorf("bridge host network operation is nil")
 	}
@@ -93,6 +105,9 @@ func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mapp
 	for _, p := range mappings {
 		if err := ops.setupPort(p.HostPort, p.ContainerPort, containerIP, p.Protocol, debug); err != nil {
 			setupErr := fmt.Errorf("setup port mapping %d:%d/%s: %w", p.HostPort, p.ContainerPort, normalizedProtocol(p.Protocol), err)
+			if !rollbackOnFailure {
+				return nil, setupErr
+			}
 			if cleanupErr := cleanup(installed); cleanupErr != nil {
 				return nil, errors.Join(setupErr, cleanupErr)
 			}
