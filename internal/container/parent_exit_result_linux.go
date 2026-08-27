@@ -14,9 +14,11 @@ import (
 type managedGenerationFinalizer func(*state.Store, *state.Container, int, time.Time) (bool, error)
 
 // finalizeManagedParentExit reconciles the authoritative parent-side lifecycle
-// state after the child has exited. A successful cgroup Apply is the ownership
-// proof required before deleting a generation cgroup: deriving the same name is
-// not sufficient because Apply may have failed on a pre-existing cgroup.
+// state after the child has exited. Production callers provide the generation
+// finalizer unconditionally so network/DNS ownership is cleaned only after the
+// durable stopped transition even when best-effort cgroup Apply did not succeed.
+// The nil-finalizer fallback is retained only for legacy focused tests/callers
+// that explicitly have no generation-owned resources to reconcile.
 func finalizeManagedParentExit(
 	st *state.Store,
 	snapshot *state.Container,
@@ -32,12 +34,12 @@ func finalizeManagedParentExit(
 		return fmt.Errorf("container snapshot is nil")
 	}
 
-	if cgroupApplied {
-		if finalizeGeneration == nil {
-			return fmt.Errorf("generation finalizer is nil")
-		}
+	if finalizeGeneration != nil {
 		_, err := finalizeGeneration(st, snapshot, exitCode, finishedAt)
 		return err
+	}
+	if cgroupApplied {
+		return fmt.Errorf("generation finalizer is nil")
 	}
 
 	_, err := st.MarkStoppedIfIdentity(
