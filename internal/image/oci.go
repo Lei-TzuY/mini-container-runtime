@@ -49,20 +49,12 @@ const (
 	whiteoutOpaque = ".wh..wh..opq"
 )
 
-// dockerManifest is one entry in the manifest.json written by "docker save".
 type dockerManifest struct {
 	Config   string   `json:"Config"`
 	RepoTags []string `json:"RepoTags"`
 	Layers   []string `json:"Layers"`
 }
 
-// LoadDockerSave reads a docker-save archive (produced by "docker save") and
-// extracts all image layers into destDir in order, applying whiteout semantics.
-//
-// The archive may be a plain .tar or a .tar.gz. If destDir does not exist when
-// loading begins, layers are assembled in a private sibling directory and the
-// completed rootfs is published without replacing a concurrently-created path.
-// Existing destinations retain the historical in-place overlay behavior.
 func LoadDockerSave(tarPath, destDir string) (retErr error) {
 	tmpDir, err := os.MkdirTemp("", "minicontainer-load-*")
 	if err != nil {
@@ -105,9 +97,6 @@ func LoadDockerSave(tarPath, destDir string) (retErr error) {
 	}
 	fmt.Printf("Loading %s  (%d layer(s))\n", tag, len(m.Layers))
 
-	// Prove and pin every archive-selected layer before mutating the destination.
-	// A bad later member must not be discovered only after earlier layers have
-	// already changed an existing rootfs.
 	layerFiles := make([]*os.File, len(m.Layers))
 	defer func() {
 		for i, f := range layerFiles {
@@ -157,7 +146,7 @@ func LoadDockerSave(tarPath, destDir string) (retErr error) {
 
 	for i, rel := range m.Layers {
 		layerFile := layerFiles[i]
-		layerFiles[i] = nil // applyOpenedLayer assumes ownership and closes it.
+		layerFiles[i] = nil
 		fmt.Printf("  [%d/%d] applying layer\n", i+1, len(m.Layers))
 		if err := applyOpenedLayer(layerFile, rel, workDest); err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
@@ -175,7 +164,6 @@ func LoadDockerSave(tarPath, destDir string) (retErr error) {
 	return nil
 }
 
-// applyLayer extracts one image layer tar onto destDir, handling whiteouts.
 func applyLayer(layerPath, destDir string) error {
 	rc, err := openMaybeGzip(layerPath)
 	if err != nil {
@@ -197,6 +185,7 @@ func applyOpenedLayer(layerFile *os.File, label, destDir string) error {
 func applyLayerReader(r io.Reader, destDir string) error {
 	tr := tar.NewReader(r)
 	var directoryMetadataToFinalize []directoryMetadata
+	var pendingHardlinks deferredHardlinks
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -209,28 +198,25 @@ func applyLayerReader(r io.Reader, destDir string) error {
 		base := filepath.Base(hdr.Name)
 		dir := filepath.Dir(hdr.Name)
 
-		// .wh..wh..opq removes all lower-layer children while preserving the
-		// directory itself. Linux uses pinned dirfds so a parent replacement
-		// cannot redirect recursive deletion outside the extraction root.
 		if base == whiteoutOpaque {
 			targetDir, err := safePath(destDir, dir)
 			if err != nil {
 				return fmt.Errorf("opaque whiteout invalid path %q: %w", dir, err)
 			}
+			pendingHardlinks.cancelSubtree(targetDir, false)
 			if err := clearOpaqueWhiteoutSecure(targetDir, destDir); err != nil {
 				return fmt.Errorf("opaque whiteout cleanup %q: %w", targetDir, err)
 			}
 			continue
 		}
 
-		// .wh.<name> recursively removes the lower-layer path. Linux resolves
-		// and removes it relative to a pinned extraction-root generation.
 		if strings.HasPrefix(base, whiteoutPrefix) {
 			deleted := strings.TrimPrefix(base, whiteoutPrefix)
 			target, err := safePath(destDir, filepath.Join(dir, deleted))
 			if err != nil {
 				return fmt.Errorf("whiteout invalid path %q: %w", filepath.Join(dir, deleted), err)
 			}
+			pendingHardlinks.cancelSubtree(target, true)
 			if err := removeWhiteoutSecure(target, destDir); err != nil {
 				return fmt.Errorf("whiteout cleanup %q: %w", target, err)
 			}
@@ -241,7 +227,7 @@ func applyLayerReader(r io.Reader, destDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
+		if err := applyTarEntryWithDeferredHardlinks(target, hdr, tr, destDir, &pendingHardlinks); err != nil {
 			return err
 		}
 		if hdr.Typeflag == tar.TypeDir {
@@ -255,14 +241,15 @@ func applyLayerReader(r io.Reader, destDir string) error {
 			})
 		}
 	}
+	if err := pendingHardlinks.finish(destDir); err != nil {
+		return fmt.Errorf("finalize layer hardlinks: %w", err)
+	}
 	if err := finalizeDirectoryMetadata(destDir, directoryMetadataToFinalize); err != nil {
 		return fmt.Errorf("finalize layer directory metadata: %w", err)
 	}
 	return nil
 }
 
-// openMaybeGzip opens path and returns a ReadCloser. If the first two bytes are
-// the gzip magic number it wraps the file in a gzip reader.
 func openMaybeGzip(path string) (io.ReadCloser, error) {
 	f, err := os.Open(path)
 	if err != nil {

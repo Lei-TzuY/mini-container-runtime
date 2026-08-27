@@ -46,6 +46,7 @@ func Unpack(tarPath, destDir string) error {
 	tr := tar.NewReader(reader)
 	var extracted int
 	var directoryMetadataToFinalize []directoryMetadata
+	var pendingHardlinks deferredHardlinks
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -58,7 +59,7 @@ func Unpack(tarPath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
+		if err := applyTarEntryWithDeferredHardlinks(target, hdr, tr, destDir, &pendingHardlinks); err != nil {
 			return err
 		}
 		if hdr.Typeflag == tar.TypeDir {
@@ -74,6 +75,9 @@ func Unpack(tarPath, destDir string) error {
 		extracted++
 	}
 
+	if err := pendingHardlinks.finish(destDir); err != nil {
+		return err
+	}
 	if err := finalizeDirectoryMetadata(destDir, directoryMetadataToFinalize); err != nil {
 		return fmt.Errorf("finalize directory metadata: %w", err)
 	}
