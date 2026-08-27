@@ -108,14 +108,31 @@ func UpdateContainerResources(st *state.Store, containerID string, cfg cgroups.U
 
 // UpdateContainerResourcesResolved applies resource changes only while the
 // exact persisted process generation remains alive and returns that canonical
-// snapshot on success.
+// snapshot on success. The state generation lock serializes the multi-file
+// cgroup transaction against concurrent updates and lifecycle transitions.
 func UpdateContainerResourcesResolved(
 	st *state.Store,
 	containerID string,
 	cfg cgroups.UpdateConfig,
 	debug bool,
 ) (*state.Container, error) {
-	return controlRunningCgroup(st, containerID, "update", func(cgroupName string) error {
-		return cgroups.UpdateLimits(cgroupName, cfg, debug)
+	c, handle, cgroupName, err := openRunningCgroup(st, containerID)
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+
+	err = st.WithRunningGenerationLocked(c.ID, c.PID, c.PIDStartTime, func() error {
+		if err := requireCgroupControlGenerationAlive(handle, c, "update", "before"); err != nil {
+			return err
+		}
+		if err := cgroups.UpdateLimits(cgroupName, cfg, debug); err != nil {
+			return fmt.Errorf("update container cgroup: %w", err)
+		}
+		return requireCgroupControlGenerationAlive(handle, c, "update", "after")
 	})
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
