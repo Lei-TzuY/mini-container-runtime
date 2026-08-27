@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const dnsCrashHelperEnv = "MINICONTAINER_DNS_CRASH_HELPER"
@@ -59,6 +60,46 @@ func TestDNSRegistryPrunesRegistrationAfterRegistrarOsExit(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("stale registration remained on disk: %+v", entries)
+	}
+}
+
+func TestRegistrarGenerationAliveRejectsUnreapedZombie(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Wait() }()
+
+	pid := cmd.Process.Pid
+	start, err := readProcessStartTime(pid)
+	if err != nil {
+		t.Fatalf("read child start time: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		observedStart, processState, err := readProcessStat(pid)
+		if err != nil {
+			t.Fatalf("read child process state: %v", err)
+		}
+		if observedStart != start {
+			t.Fatalf("child generation changed while awaiting zombie: start=%d observed=%d", start, observedStart)
+		}
+		if processState == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not become zombie; last state=%q", processState)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	alive, err := registrarGenerationAlive(pid, start)
+	if err != nil {
+		t.Fatalf("probe zombie generation: %v", err)
+	}
+	if alive {
+		t.Fatalf("unreaped zombie %d/%d remained authoritative", pid, start)
 	}
 }
 
