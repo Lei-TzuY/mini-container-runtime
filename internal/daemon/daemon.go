@@ -277,12 +277,26 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate size if zero
 	for _, img := range imgs {
-		if img.Size == 0 && img.RootFS != "" {
-			sz, _ := imagestore.CalculateDirSize(img.RootFS)
-			img.Size = sz
+		if img == nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "image list contains nil metadata"})
+			return
 		}
+		if img.Size != 0 || img.RootFS == "" {
+			continue
+		}
+		sz, err := imagestore.CalculateDirSize(img.RootFS)
+		if err != nil {
+			selector := strings.TrimSpace(img.Name)
+			if selector == "" {
+				selector = strings.TrimSpace(img.ID)
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("calculate rootfs size for image %q at %q: %v", selector, img.RootFS, err),
+			})
+			return
+		}
+		img.Size = sz
 	}
 	writeJSON(w, http.StatusOK, imgs)
 }
