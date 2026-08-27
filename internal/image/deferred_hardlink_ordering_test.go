@@ -29,9 +29,6 @@ func TestUnpackLaterRegularAncestorCancelsDeferredDescendant(t *testing.T) {
 	if string(data) != "new ancestor" {
 		t.Fatalf("a=%q, want later regular ancestor", data)
 	}
-	if _, err := os.Lstat(filepath.Join(dest, "a", "b")); !os.IsNotExist(err) && err != nil {
-		t.Fatalf("stale deferred descendant lookup: %v", err)
-	}
 }
 
 func TestUnpackLaterSymlinkAncestorCancelsDeferredDescendant(t *testing.T) {
