@@ -125,16 +125,13 @@ func publishPinnedHardlinkSource(
 			return fmt.Errorf("stage pinned hardlink: %w", err)
 		}
 
-		published := false
-		defer func() {
-			if !published {
-				_ = unix.Unlinkat(destParentFD, stagingLeaf, 0)
-			}
-		}()
 		if err := renameat(destParentFD, stagingLeaf, destParentFD, destLeaf); err != nil {
-			return fmt.Errorf("publish staged hardlink over destination: %w", err)
+			publishErr := fmt.Errorf("publish staged hardlink over destination: %w", err)
+			if cleanupErr := unix.Unlinkat(destParentFD, stagingLeaf, 0); cleanupErr != nil && !errors.Is(cleanupErr, unix.ENOENT) {
+				return errors.Join(publishErr, fmt.Errorf("remove failed hardlink staging leaf %q: %w", stagingLeaf, cleanupErr))
+			}
+			return publishErr
 		}
-		published = true
 		return nil
 	}
 	return fmt.Errorf("allocate hardlink staging leaf after %d collisions", maxStagingAttempts)
