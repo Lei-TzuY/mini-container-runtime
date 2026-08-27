@@ -196,6 +196,7 @@ func applyOpenedLayer(layerFile *os.File, label, destDir string) error {
 
 func applyLayerReader(r io.Reader, destDir string) error {
 	tr := tar.NewReader(r)
+	var directoryMetadataToFinalize []directoryMetadata
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -243,6 +244,19 @@ func applyLayerReader(r io.Reader, destDir string) error {
 		if err := applyTarEntry(target, hdr, tr, destDir); err != nil {
 			return err
 		}
+		if hdr.Typeflag == tar.TypeDir {
+			directoryMetadataToFinalize = append(directoryMetadataToFinalize, directoryMetadata{
+				target:  target,
+				mode:    hdr.FileInfo().Mode(),
+				modTime: hdr.ModTime,
+				uid:     hdr.Uid,
+				gid:     hdr.Gid,
+				xattrs:  tarXattrsPortable(hdr),
+			})
+		}
+	}
+	if err := finalizeDirectoryMetadata(destDir, directoryMetadataToFinalize); err != nil {
+		return fmt.Errorf("finalize layer directory metadata: %w", err)
 	}
 	return nil
 }
