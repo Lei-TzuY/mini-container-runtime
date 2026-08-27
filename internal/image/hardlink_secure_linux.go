@@ -3,6 +3,8 @@
 package image
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -10,6 +12,8 @@ import (
 )
 
 type hardlinkAtFunc func(olddirfd int, oldpath string, newdirfd int, newpath string, flags int) error
+type hardlinkRenameAtFunc func(olddirfd int, oldpath string, newdirfd int, newpath string) error
+type hardlinkStagingNameFunc func() (string, error)
 
 func createHardlinkSecure(target, destDir, linkTarget string) error {
 	return createHardlinkSecureWithHook(target, destDir, linkTarget, nil)
@@ -34,9 +38,9 @@ func createHardlinkSecureWithHook(target, destDir, linkTarget string, beforeLink
 	}
 	defer destParent.Close()
 
-	// Pin the exact source inode before any destructive destination work. A
-	// parent dirfd alone is insufficient: another actor can replace sourceLeaf
-	// between an Fstatat proof and a later Linkat by pathname.
+	// Pin the exact source inode before any destination work. A parent dirfd
+	// alone is insufficient: another actor can replace sourceLeaf between an
+	// Fstatat proof and a later Linkat by pathname.
 	sourceFD, err := unix.Openat(sourceParent.fd, sourceParent.leaf, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("pin hardlink source %s: %w", linkTarget, err)
@@ -55,23 +59,85 @@ func createHardlinkSecureWithHook(target, destDir, linkTarget string, beforeLink
 		beforeLink()
 	}
 
+	// A directory destination cannot be replaced by renameat and is explicitly
+	// outside the extractor's replacement contract. Other existing leaf types
+	// are left untouched until an exact-source staging hardlink exists, so a
+	// link failure cannot destroy the previous destination.
 	var destStat unix.Stat_t
 	statErr := unix.Fstatat(destParent.fd, destParent.leaf, &destStat, unix.AT_SYMLINK_NOFOLLOW)
 	if statErr == nil {
 		if destStat.Mode&unix.S_IFMT == unix.S_IFDIR {
 			return fmt.Errorf("refuse to replace directory %s with hardlink", target)
 		}
-		if err := unix.Unlinkat(destParent.fd, destParent.leaf, 0); err != nil {
-			return fmt.Errorf("unlink existing hardlink destination %s: %w", target, err)
-		}
 	} else if !errors.Is(statErr, unix.ENOENT) {
 		return fmt.Errorf("inspect hardlink destination %s: %w", target, statErr)
 	}
 
-	if err := linkPinnedHardlinkSource(sourceFD, sourceStat.Mode, destParent.fd, destParent.leaf, unix.Linkat); err != nil {
+	if err := publishPinnedHardlinkSource(
+		sourceFD,
+		sourceStat.Mode,
+		destParent.fd,
+		destParent.leaf,
+		unix.Linkat,
+		unix.Renameat,
+		newHardlinkStagingLeaf,
+	); err != nil {
 		return fmt.Errorf("hardlink pinned source %s → %s: %w", target, linkTarget, err)
 	}
 	return nil
+}
+
+func newHardlinkStagingLeaf() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("generate hardlink staging name: %w", err)
+	}
+	return ".minicontainer-hardlink-" + hex.EncodeToString(nonce[:]), nil
+}
+
+func publishPinnedHardlinkSource(
+	sourceFD int,
+	sourceMode uint32,
+	destParentFD int,
+	destLeaf string,
+	linkat hardlinkAtFunc,
+	renameat hardlinkRenameAtFunc,
+	stagingName hardlinkStagingNameFunc,
+) error {
+	if linkat == nil || renameat == nil || stagingName == nil {
+		return fmt.Errorf("hardlink publish operation is nil")
+	}
+
+	const maxStagingAttempts = 16
+	for attempt := 0; attempt < maxStagingAttempts; attempt++ {
+		stagingLeaf, err := stagingName()
+		if err != nil {
+			return err
+		}
+		if stagingLeaf == "" || stagingLeaf == "." || stagingLeaf == ".." {
+			return fmt.Errorf("invalid hardlink staging leaf %q", stagingLeaf)
+		}
+
+		if err := linkPinnedHardlinkSource(sourceFD, sourceMode, destParentFD, stagingLeaf, linkat); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			return fmt.Errorf("stage pinned hardlink: %w", err)
+		}
+
+		published := false
+		defer func() {
+			if !published {
+				_ = unix.Unlinkat(destParentFD, stagingLeaf, 0)
+			}
+		}()
+		if err := renameat(destParentFD, stagingLeaf, destParentFD, destLeaf); err != nil {
+			return fmt.Errorf("publish staged hardlink over destination: %w", err)
+		}
+		published = true
+		return nil
+	}
+	return fmt.Errorf("allocate hardlink staging leaf after %d collisions", maxStagingAttempts)
 }
 
 func linkPinnedHardlinkSource(sourceFD int, sourceMode uint32, destParentFD int, destLeaf string, linkat hardlinkAtFunc) error {
