@@ -302,47 +302,13 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 	})
 }
 
-// UnregisterHost removes a container host entry. Missing registries and missing
-// container IDs are idempotent success; malformed registries fail closed and are
-// never overwritten with an empty replacement.
+// UnregisterHost is the compatibility teardown API. Modern registrations are
+// generation-owned, so an unscoped container-ID delete is unsafe: a stale CLI
+// defer could otherwise remove a replacement entry published by a newer runtime.
+// Preserve historical call sites while giving them the same exact registrar
+// ownership boundary as authoritative runtime finalization.
 func UnregisterHost(networkName, containerID string) error {
-	if err := validateNetworkName(networkName); err != nil {
-		return err
-	}
-	if strings.TrimSpace(containerID) == "" {
-		return fmt.Errorf("container ID cannot be empty")
-	}
-
-	dnsMu.Lock()
-	defer dnsMu.Unlock()
-	dir, err := ensureDNSDir()
-	if err != nil {
-		return err
-	}
-	return withDNSNetworkLock(dir, networkName, func() error {
-		netFile := filepath.Join(dir, networkName+".json")
-		entries, exists, err := loadEntriesChecked(netFile, networkName)
-		if err != nil || !exists {
-			return err
-		}
-		entries, pruned, err := pruneStaleOwnedEntries(entries)
-		if err != nil {
-			return err
-		}
-		updated := make([]HostEntry, 0, len(entries))
-		found := false
-		for _, entry := range entries {
-			if entry.ContainerID == containerID {
-				found = true
-				continue
-			}
-			updated = append(updated, entry)
-		}
-		if !found && !pruned {
-			return nil
-		}
-		return saveEntriesAtomic(dir, netFile, networkName, updated)
-	})
+	return UnregisterHostOwned(networkName, containerID)
 }
 
 // GenerateHostsContentChecked returns a consistent snapshot of one registry.
