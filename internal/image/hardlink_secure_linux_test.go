@@ -3,9 +3,12 @@
 package image
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestCreateHardlinkSecurePinsSourceAndDestinationParents(t *testing.T) {
@@ -121,6 +124,55 @@ func TestCreateHardlinkSecurePinsSourceLeafAcrossReplacement(t *testing.T) {
 	}
 	if os.SameFile(replacementInfo, linkInfo) {
 		t.Fatal("destination unexpectedly links the replacement source inode")
+	}
+}
+
+func TestLinkPinnedHardlinkSourceFailsClosedForSymlinkWhenEmptyPathUnavailable(t *testing.T) {
+	cause := unix.EPERM
+	calls := 0
+	err := linkPinnedHardlinkSource(41, unix.S_IFLNK|0777, 52, "copy", func(olddirfd int, oldpath string, newdirfd int, newpath string, flags int) error {
+		calls++
+		if calls != 1 {
+			t.Fatalf("symlink source reached procfs fallback call %d", calls)
+		}
+		if olddirfd != 41 || oldpath != "" || newdirfd != 52 || newpath != "copy" || flags != unix.AT_EMPTY_PATH {
+			t.Fatalf("unexpected fd-native link args: old=%d/%q new=%d/%q flags=%#x", olddirfd, oldpath, newdirfd, newpath, flags)
+		}
+		return cause
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("symlink fallback error = %v, want underlying %v", err, cause)
+	}
+	if calls != 1 {
+		t.Fatalf("link calls=%d, want only AT_EMPTY_PATH attempt", calls)
+	}
+}
+
+func TestLinkPinnedHardlinkSourceUsesProcFallbackForRegularFile(t *testing.T) {
+	calls := 0
+	err := linkPinnedHardlinkSource(61, unix.S_IFREG|0644, 72, "copy", func(olddirfd int, oldpath string, newdirfd int, newpath string, flags int) error {
+		calls++
+		switch calls {
+		case 1:
+			if olddirfd != 61 || oldpath != "" || newdirfd != 72 || newpath != "copy" || flags != unix.AT_EMPTY_PATH {
+				t.Fatalf("unexpected fd-native link args: old=%d/%q new=%d/%q flags=%#x", olddirfd, oldpath, newdirfd, newpath, flags)
+			}
+			return unix.EPERM
+		case 2:
+			if olddirfd != unix.AT_FDCWD || oldpath != "/proc/self/fd/61" || newdirfd != 72 || newpath != "copy" || flags != unix.AT_SYMLINK_FOLLOW {
+				t.Fatalf("unexpected proc fallback args: old=%d/%q new=%d/%q flags=%#x", olddirfd, oldpath, newdirfd, newpath, flags)
+			}
+			return nil
+		default:
+			t.Fatalf("unexpected link call %d", calls)
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("regular-file proc fallback: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("link calls=%d, want AT_EMPTY_PATH plus proc fallback", calls)
 	}
 }
 
