@@ -116,7 +116,7 @@ func TestStopContainerUsesVerifiedPidfdAndEscalates(t *testing.T) {
 	}
 }
 
-func TestStopContainerRefusesReusedPIDIdentity(t *testing.T) {
+func TestStopContainerReconcilesReusedPIDIdentity(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -140,12 +140,19 @@ func TestStopContainerRefusesReusedPIDIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/containers/ctr-reused/stop?timeout=0s", nil)
 	rec := httptest.NewRecorder()
 	srv.handleStopContainer(rec, req, "ctr-reused")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status=%d want 409; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	ok, err := container.ProcessIdentityMatches(cmd.Process.Pid, start)
 	if err != nil || !ok {
 		t.Fatalf("unrelated process was affected: match=%v err=%v", ok, err)
+	}
+	current, err := st.Get("ctr-reused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != state.StatusStopped {
+		t.Fatalf("state=%s, want stopped after stale-generation reconciliation", current.Status)
 	}
 }
 
@@ -204,6 +211,41 @@ func TestDeleteRefusesLiveRunningContainer(t *testing.T) {
 	}
 	if _, err := st.Get("ctr-live"); err != nil {
 		t.Fatalf("running state was deleted: %v", err)
+	}
+}
+
+func TestDeleteReconcilesReusedPIDIdentity(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	start, err := container.ProcessStartTime(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveRunningProcess(t, st, "ctr-delete-reused", cmd, start+1)
+	srv := &Server{store: st}
+
+	rec := httptest.NewRecorder()
+	srv.handleDeleteContainer(rec, "ctr-delete-reused")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	ok, err := container.ProcessIdentityMatches(cmd.Process.Pid, start)
+	if err != nil || !ok {
+		t.Fatalf("unrelated process was affected: match=%v err=%v", ok, err)
+	}
+	if _, err := st.Get("ctr-delete-reused"); err == nil {
+		t.Fatal("reconciled stale container state was not deleted")
 	}
 }
 
