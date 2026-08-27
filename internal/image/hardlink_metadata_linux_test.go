@@ -58,8 +58,7 @@ func TestCreateTarHardlinkSecureAcceptsMatchingPinnedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stat := info.Sys().(*unix.Stat_t)
-	hdr := &tar.Header{Mode: 0o640, Uid: int(stat.Uid), Gid: int(stat.Gid), ModTime: mtime}
+	hdr := &tar.Header{Mode: 0o640, Uid: os.Getuid(), Gid: os.Getgid(), ModTime: mtime}
 	if err := createTarHardlinkSecure(dest, root, source, hdr); err != nil {
 		t.Fatalf("matching hardlink metadata: %v", err)
 	}
