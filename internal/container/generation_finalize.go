@@ -33,8 +33,8 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 
 	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
 	var dnsErr error
-	if err := dns.UnregisterHostOwned(defaultBridgeDNSNetwork, c.ID); err != nil {
-		dnsErr = fmt.Errorf("cleanup owned bridge DNS registration for stopped container %s: %w", c.ID, err)
+	if err := dns.CleanupStoppedHostRegistration(defaultBridgeDNSNetwork, c.ID); err != nil {
+		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", c.ID, err)
 	}
 	return changed, errors.Join(cgroupErr, networkErr, dnsErr)
 }
