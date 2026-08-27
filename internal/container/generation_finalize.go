@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"minicontainer/internal/cgroups"
+	"minicontainer/internal/dns"
 	"minicontainer/internal/state"
 )
 
@@ -29,7 +30,13 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 	if current.Status != state.StatusStopped {
 		return changed, cgroupErr
 	}
-	return changed, errors.Join(cgroupErr, cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false))
+
+	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
+	var dnsErr error
+	if err := dns.UnregisterHostOwned(defaultBridgeDNSNetwork, c.ID); err != nil {
+		dnsErr = fmt.Errorf("cleanup owned bridge DNS registration for stopped container %s: %w", c.ID, err)
+	}
+	return changed, errors.Join(cgroupErr, networkErr, dnsErr)
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
