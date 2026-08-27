@@ -44,11 +44,12 @@ func TestApplyLayerReaderFinalizesRestrictiveDirectoryMetadata(t *testing.T) {
 	}
 
 	dest := t.TempDir()
+	dir := filepath.Join(dest, "locked")
+	defer func() { _ = os.Chmod(dir, 0o700) }()
 	if err := applyLayerReader(bytes.NewReader(layer.Bytes()), dest); err != nil {
 		t.Fatalf("apply layer: %v", err)
 	}
 
-	dir := filepath.Join(dest, "locked")
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
