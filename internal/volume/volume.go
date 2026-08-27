@@ -217,7 +217,10 @@ func GetVolume(name string) (*Volume, error) {
 	return vol, nil
 }
 
-// ListVolumes lists all registered volumes.
+// ListVolumes lists all registered volumes. Entries with invalid volume names
+// are outside the managed namespace and remain ignored. A valid-name entry is
+// managed state, so structural or metadata failures must be reported rather
+// than silently making a corrupt volume disappear from inventory.
 func ListVolumes() ([]*Volume, error) {
 	root, err := volumeRoot(false)
 	if err != nil {
@@ -232,15 +235,18 @@ func ListVolumes() ([]*Volume, error) {
 	}
 	var out []*Volume
 	for _, entry := range entries {
+		name := entry.Name()
+		if err := ValidateVolumeName(name); err != nil {
+			continue
+		}
 		if !entry.IsDir() {
-			continue
+			return nil, fmt.Errorf("managed volume entry %q is not a directory", name)
 		}
-		if err := ValidateVolumeName(entry.Name()); err != nil {
-			continue
+		vol, err := readVolume(root, name)
+		if err != nil {
+			return nil, fmt.Errorf("read managed volume %q: %w", name, err)
 		}
-		if vol, err := readVolume(root, entry.Name()); err == nil {
-			out = append(out, vol)
-		}
+		out = append(out, vol)
 	}
 	return out, nil
 }
