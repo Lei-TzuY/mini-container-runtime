@@ -555,23 +555,16 @@ func cmdCommit(args []string) {
 		os.Exit(1)
 	}
 
-	rec, err := store.Resolve(idOrPrefix)
+	img, err := commitContainerImage(store, idOrPrefix, imageName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	img := &state.Image{
-		Name:     imageName,
-		RootFS:   rec.RootFS,
-		LoadedAt: time.Now(),
-	}
-
-	if err := store.SaveImage(img); err != nil {
 		fmt.Fprintf(os.Stderr, "commit error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Committed container %s as image %s\n", rec.ID[:8], imageName)
+	shortImageID := img.ID
+	if len(shortImageID) > 12 {
+		shortImageID = shortImageID[:12]
+	}
+	fmt.Printf("Committed container %s as image %s (%s)\n", idOrPrefix[:min(8, len(idOrPrefix))], imageName, shortImageID)
 }
 
 func cmdInspect(args []string) {
