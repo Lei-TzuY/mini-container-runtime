@@ -61,6 +61,39 @@ func TestUnpackRestoresRegularAndDirectoryXattrs(t *testing.T) {
 	}
 }
 
+func TestRestoreXattrsPinnedFDStaysBoundAcrossLeafReplacement(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	pinned := filepath.Join(root, "pinned")
+	if err := os.WriteFile(target, []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(target, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := os.Rename(target, pinned); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := restoreXattrsPinnedFD(fd, target, map[string][]byte{"user.minicontainer.pinned": []byte("owned-xattr")}); err != nil {
+		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP) {
+			t.Skipf("filesystem does not support xattrs: %v", err)
+		}
+		t.Fatalf("restore pinned xattr: %v", err)
+	}
+	if got := readXattr(t, pinned, "user.minicontainer.pinned"); got != "owned-xattr" {
+		t.Fatalf("pinned xattr=%q, want owned-xattr", got)
+	}
+	if _, err := unix.Getxattr(target, "user.minicontainer.pinned", nil); !errors.Is(err, unix.ENODATA) {
+		t.Fatalf("foreign replacement received pinned xattr: %v", err)
+	}
+}
+
 func TestTarXattrsPortableIgnoresUnrelatedPAXRecordsAndCopiesValues(t *testing.T) {
 	hdr := &tar.Header{PAXRecords: map[string]string{
 		"SCHILY.xattr.user.keep": "value",

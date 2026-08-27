@@ -66,9 +66,9 @@ func makeSpecialSecureWithHooks(target, destDir string, hdr *tar.Header, beforeC
 	}
 
 	// Pin the exact inode without opening the device/FIFO itself. Subsequent
-	// ownership, mode, and timestamp restoration is addressed through this
-	// O_PATH handle rather than the archive pathname, so leaf replacement cannot
-	// redirect metadata writes to a foreign inode.
+	// ownership, mode, xattr, and timestamp restoration is addressed through
+	// this O_PATH handle rather than the archive pathname, so leaf replacement
+	// cannot redirect metadata writes to a foreign inode.
 	inodeFD, err := unix.Openat(parent.fd, parent.leaf, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("pin special target %s: %w", target, err)
@@ -96,6 +96,12 @@ func restoreSpecialMetadataFD(fd int, target string, hdr *tar.Header) error {
 	fdPath := fmt.Sprintf("/proc/self/fd/%d", fd)
 	if err := os.Chmod(fdPath, hdr.FileInfo().Mode()); err != nil {
 		return fmt.Errorf("restore mode on special node %s: %w", target, err)
+	}
+	// Apply xattrs after ownership/mode. In particular, a later chown can clear
+	// security.capability, so restoring capabilities earlier would silently lose
+	// archive semantics.
+	if err := restoreXattrsPinnedFD(fd, target, tarXattrsPortable(hdr)); err != nil {
+		return err
 	}
 	if !hdr.ModTime.IsZero() {
 		if err := os.Chtimes(fdPath, time.Now(), hdr.ModTime); err != nil {
