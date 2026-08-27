@@ -101,7 +101,7 @@ func applyTarEntry(target string, hdr *tar.Header, r io.Reader, destDir string) 
 		if err != nil {
 			return err
 		}
-		return createHardlinkSecure(target, destDir, linkTarget)
+		return createTarHardlinkSecure(target, destDir, linkTarget, hdr)
 	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
 		if err := makeSpecialSecure(target, destDir, hdr); err != nil {
 			return fmt.Errorf("create special tar entry %q (type %d): %w", hdr.Name, hdr.Typeflag, err)
