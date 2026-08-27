@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type deferredHardlink struct {
@@ -50,9 +51,9 @@ func (d *deferredHardlinks) cancelSubtree(root string, includeRoot bool) {
 	kept := d.entries[:0]
 	for _, entry := range d.entries {
 		rel, err := filepath.Rel(root, entry.target)
-		within := err == nil && rel != ".." && !filepath.IsAbs(rel) && rel != "." && rel != ""
-		if includeRoot && err == nil && (rel == "." || rel == "") {
-			within = true
+		within := err == nil && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		if !includeRoot && (rel == "." || rel == "") {
+			within = false
 		}
 		if !within {
 			kept = append(kept, entry)
