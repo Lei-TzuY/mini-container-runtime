@@ -48,11 +48,37 @@ func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store,
 	return nil
 }
 
+// rollbackNetworkAdmissionAfterRun consumes an attempt-scoped DNS admission
+// only when durable lifecycle state proves there is no running generation.
+// A running or unreadable record is recovery evidence: fail closed and leave
+// the registrar entry intact so a later lifecycle actor can reconcile it.
+func rollbackNetworkAdmissionAfterRun(lifecycleStore *state.Store, containerID string, rollback func() error) error {
+	if rollback == nil {
+		return nil
+	}
+	if lifecycleStore == nil {
+		return fmt.Errorf("lifecycle store is nil while rolling back bridge DNS admission")
+	}
+	current, err := lifecycleStore.Get(containerID)
+	if err != nil {
+		return fmt.Errorf("read lifecycle state before bridge DNS rollback: %w", err)
+	}
+	switch current.Status {
+	case state.StatusCreated, state.StatusStopped:
+		return rollback()
+	case state.StatusRunning:
+		return nil
+	default:
+		return fmt.Errorf("refuse bridge DNS rollback for container %s with unknown lifecycle state %q", containerID, current.Status)
+	}
+}
+
 // beginNetworkAttemptAdmission establishes the process-local Start proof for
 // every managed runtime attempt, then performs durable network admission. The
 // returned rollback always clears an uncommitted Start proof, including paths
-// that fail before a child generation exists. A matching CLI pre-stage is an
-// idempotent handoff rather than a second lifecycle authority.
+// that fail before a child generation exists. Network admission itself is only
+// consumed once durable state proves the attempt is not running. A matching CLI
+// pre-stage is an idempotent handoff rather than a second lifecycle authority.
 func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func() error, error) {
 	if cfg.ContainerID == "" {
 		return beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
@@ -71,7 +97,7 @@ func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func
 		if networkRollback == nil {
 			return nil
 		}
-		return networkRollback()
+		return rollbackNetworkAdmissionAfterRun(lifecycleStore, cfg.ContainerID, networkRollback)
 	}
 	return rollback, nil
 }
@@ -82,10 +108,9 @@ func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func
 // store so a later lifecycle actor can safely recover after a parent crash.
 //
 // Bridge service discovery is attempt-scoped: every restart attempt validates
-// and registers independently, and receives an owned rollback that is safe to
-// invoke even after authoritative generation finalization already removed the
-// same entry. This closes both pre-spawn registration leaks and the historical
-// gap where attempt 1 finalization removed DNS state before attempt 2 started.
+// and registers independently, and receives an owned rollback. Production Run
+// gates that rollback on durable lifecycle state; the narrow validation helper
+// consumes it immediately because no child attempt is involved.
 func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, deps networkAdmissionDeps) (func() error, error) {
 	if len(cfg.PortMappings) > 0 && !cfg.BridgeNetwork {
 		return nil, &runtimeSetupError{err: fmt.Errorf("published ports require bridge networking")}
