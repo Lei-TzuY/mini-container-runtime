@@ -24,16 +24,22 @@ func PruneUntil(st *state.Store, cutoff time.Time) (*PruneResult, error) {
 	res := &PruneResult{}
 	ctrs, err := st.List()
 	if err != nil {
-		return nil, err
+		return res, fmt.Errorf("list containers for time-based prune: %w", err)
 	}
 
 	for _, c := range ctrs {
-		if c.Status == state.StatusStopped && c.CreatedAt.Before(cutoff) {
-			// Recheck the current on-disk lifecycle under the state lock so a
-			// concurrent restart after List cannot be deleted from a stale snapshot.
-			if err := st.DeleteIfNotRunning(c.ID); err == nil {
-				res.ContainersReclaimed++
-			}
+		if c.Status != state.StatusStopped || !c.CreatedAt.Before(cutoff) {
+			continue
+		}
+		// Recheck the current on-disk lifecycle under the state lock so a
+		// concurrent restart after List is a skip, while real deletion failures
+		// remain visible to the caller.
+		deleted, err := deletePrunableContainer(st, c.ID)
+		if err != nil {
+			return res, fmt.Errorf("prune stopped container %s before cutoff: %w", c.ID, err)
+		}
+		if deleted {
+			res.ContainersReclaimed++
 		}
 	}
 
