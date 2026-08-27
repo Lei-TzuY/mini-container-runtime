@@ -1,0 +1,84 @@
+//go:build linux
+
+package image
+
+import (
+	"archive/tar"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+func TestCreateTarHardlinkSecureRejectsModeConflictBeforeDestinationMutation(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	dest := filepath.Join(root, "dest")
+	if err := os.WriteFile(source, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := createTarHardlinkSecure(dest, root, source, &tar.Header{Mode: 0o600})
+	if err == nil || !strings.Contains(err.Error(), "declared mode") {
+		t.Fatalf("mode conflict error=%v", err)
+	}
+	got, readErr := os.ReadFile(dest)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "sentinel" {
+		t.Fatalf("destination changed after rejected metadata: %q", got)
+	}
+}
+
+func TestCreateTarHardlinkSecureAcceptsMatchingPinnedMetadata(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	dest := filepath.Join(root, "dest")
+	if err := os.WriteFile(source, []byte("source"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Unix(1_700_000_000, 123_000_000)
+	if err := os.Chtimes(source, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat := info.Sys().(*unix.Stat_t)
+	hdr := &tar.Header{Mode: 0o640, Uid: int(stat.Uid), Gid: int(stat.Gid), ModTime: mtime}
+	if err := createTarHardlinkSecure(dest, root, source, hdr); err != nil {
+		t.Fatalf("matching hardlink metadata: %v", err)
+	}
+	dstInfo, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(info, dstInfo) {
+		t.Fatal("destination is not a hardlink to source")
+	}
+}
+
+func TestVerifyPinnedHardlinkMetadataRejectsRootOwnershipConflict(t *testing.T) {
+	st := unix.Stat_t{Mode: unix.S_IFREG | 0o644, Uid: 100, Gid: 200}
+	hdr := &tar.Header{Mode: 0o644, Uid: 101, Gid: 200}
+	if err := verifyPinnedHardlinkMetadata(st, hdr, 0); err == nil || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("ownership conflict error=%v", err)
+	}
+	if err := verifyPinnedHardlinkMetadata(st, hdr, 1000); err != nil {
+		t.Fatalf("rootless ownership fallback should not reject: %v", err)
+	}
+}
