@@ -16,17 +16,40 @@ type hostEntryActiveProbe func(HostEntry) (bool, error)
 // live replacement/adopted generations and legacy entries without ownership
 // proof are retained.
 func CleanupStoppedHostRegistration(networkName, containerID string) error {
+	return cleanupStoppedHostRegistrationForFinalization(networkName, containerID, true)
+}
+
+// CleanupStoppedHostRegistrationForFinalization lets a generation finalizer
+// distinguish the actor that actually committed stopped state from a later
+// retry. A retry must not consume a live registration owned by this same parent
+// process: during restart admission that registration may already belong to the
+// next attempt while lifecycle state still describes the prior stopped
+// generation. Provably stale foreign registrations remain recoverable.
+func CleanupStoppedHostRegistrationForFinalization(networkName, containerID string, consumeCurrentOwner bool) error {
+	return cleanupStoppedHostRegistrationForFinalization(networkName, containerID, consumeCurrentOwner)
+}
+
+func cleanupStoppedHostRegistrationForFinalization(networkName, containerID string, consumeCurrentOwner bool) error {
 	owner, err := currentRegistrarIdentity()
 	if err != nil {
 		return err
 	}
-	return cleanupStoppedHostRegistrationWith(networkName, containerID, owner, hostEntryOwnerActive)
+	return cleanupStoppedHostRegistrationWithPolicy(networkName, containerID, owner, hostEntryOwnerActive, consumeCurrentOwner)
 }
 
 func cleanupStoppedHostRegistrationWith(
 	networkName, containerID string,
 	currentOwner registrarIdentity,
 	ownerActive hostEntryActiveProbe,
+) error {
+	return cleanupStoppedHostRegistrationWithPolicy(networkName, containerID, currentOwner, ownerActive, true)
+}
+
+func cleanupStoppedHostRegistrationWithPolicy(
+	networkName, containerID string,
+	currentOwner registrarIdentity,
+	ownerActive hostEntryActiveProbe,
+	consumeCurrentOwner bool,
 ) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
@@ -80,7 +103,11 @@ func cleanupStoppedHostRegistrationWith(
 			}
 
 			if entry.OwnerPID == currentOwner.PID && entry.OwnerStartTime == currentOwner.StartTime {
-				removed = true
+				if consumeCurrentOwner {
+					removed = true
+					continue
+				}
+				updated = append(updated, entry)
 				continue
 			}
 
