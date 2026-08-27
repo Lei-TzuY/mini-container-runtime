@@ -78,7 +78,7 @@ Run flags:
   --cap-drop <cap>        Drop Linux capability from bounding set (e.g. CAP_SYS_ADMIN).
   --cpus <number>         Hard fractional CPU quota (e.g. 0.5 = 50% CPU, 2.0 = 2 CPUs).
   --hostname <name>       Hostname visible inside the container.
-  -w, --workdir <dir>     Working directory inside the container after pivot_root.
+  -w, --workdir <dir>     Working directory inside the container (e.g. /app).
   -e, --env <key=val>     Environment variable to inject (repeatable).
   -p, --publish <spec>    Port mapping: hostPort:containerPort[/tcp|udp] (requires --bridge).
   --memory <size>         Memory limit, e.g. 67108864, 64m, 1g. 0 disables it.
@@ -503,7 +503,7 @@ func cmdTop(args []string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "PID\tPPID\tSTATE\tNAME")
 	for _, p := range procs {
-		fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\n", p.PID, p.PPID, p.State, p.Name)
+		fmt.Fprintf(w, "%d\t%d\t%s\t%s\n", p.PID, p.PPID, p.State, p.Name)
 	}
 	_ = w.Flush()
 }
@@ -1636,7 +1636,7 @@ func parseVolumeSpec(spec string) (container.Volume, error) {
 
 	if len(parts) == 3 {
 		if parts[2] != "ro" {
-			return container.Volume{}, fmt.Errorf("unknown modifier %q (only :ro is supported)", parts[2])
+			return container.Volume{}, fmt.Errorf("unknown modifier %q (only :ro is supported)")
 		}
 		v.ReadOnly = true
 	}
