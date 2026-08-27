@@ -55,11 +55,12 @@ func runtimeCgroupName(containerID string, childPID int, childStartTime uint64, 
 }
 
 // abortRuntimeSetupFailure terminates and reaps a child that is still blocked
-// on the parent/child sync pipe, cleans only cgroup paths that the child was
-// observed to own, reconciles the persisted running identity, then retries only
-// durable cleanup tokens belonging to that exact process generation. Capturing
-// cgroup membership before termination avoids deleting a same-named cgroup when
-// Apply failed because the runtime never acquired it.
+// on the parent/child sync pipe, reconciles managed lifecycle state, then cleans
+// only cgroup paths that the child was observed to own and durable cleanup
+// tokens belonging to that exact process generation. Capturing cgroup membership
+// before termination avoids deleting a same-named cgroup when Apply failed
+// because the runtime never acquired it. For managed containers, destructive
+// cleanup never precedes a durable stopped transition.
 func abortRuntimeSetupFailure(
 	cmd *exec.Cmd,
 	writePipe *os.File,
@@ -118,17 +119,16 @@ func abortRuntimeSetupFailureWithAbort(
 		return errors.Join(resultErr, &runtimeSetupError{err: fmt.Errorf("blocked child was not confirmed reaped; preserving running lifecycle and resource ownership")})
 	}
 
-	if ownedCgroups != nil && !ownedCgroups.Empty() {
-		if err := ownedCgroups.Remove(false); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("cleanup aborted cgroup: %w", err))
-		}
-	}
-
 	if lifecycleStore == nil {
+		if ownedCgroups != nil && !ownedCgroups.Empty() {
+			if err := ownedCgroups.Remove(false); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("cleanup aborted cgroup: %w", err))
+			}
+		}
 		return resultErr
 	}
 
-	_, stateErr := lifecycleStore.MarkStoppedIfIdentity(
+	changed, stateErr := lifecycleStore.MarkStoppedIfIdentity(
 		containerID,
 		childPID,
 		childStartTime,
@@ -140,6 +140,18 @@ func abortRuntimeSetupFailureWithAbort(
 			resultErr,
 			&runtimeStateError{err: fmt.Errorf("persist stopped state after runtime setup failure for container %s: %w", containerID, stateErr)},
 		)
+		if !changed {
+			// The child is gone, but the durable lifecycle record still does not
+			// prove that. Preserve captured cgroups and all ownership sidecars so
+			// reconciliation retains a complete retry proof.
+			return resultErr
+		}
+	}
+
+	if ownedCgroups != nil && !ownedCgroups.Empty() {
+		if err := ownedCgroups.Remove(false); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("cleanup aborted cgroup: %w", err))
+		}
 	}
 
 	current, readErr := lifecycleStore.Get(containerID)
