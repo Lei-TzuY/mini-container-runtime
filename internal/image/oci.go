@@ -70,9 +70,17 @@ func LoadDockerSave(tarPath, destDir string) error {
 		return fmt.Errorf("extract save archive: %w", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(tmpDir, "manifest.json"))
+	manifestFile, err := openDockerSaveMember(tmpDir, "manifest.json")
 	if err != nil {
-		return fmt.Errorf("read manifest.json: %w", err)
+		return fmt.Errorf("open manifest.json: %w", err)
+	}
+	raw, readErr := io.ReadAll(manifestFile)
+	closeErr := manifestFile.Close()
+	if readErr != nil {
+		return fmt.Errorf("read manifest.json: %w", readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close manifest.json: %w", closeErr)
 	}
 
 	var manifests []dockerManifest
@@ -98,12 +106,12 @@ func LoadDockerSave(tarPath, destDir string) error {
 	}
 
 	for i, rel := range m.Layers {
-		layerPath, err := safePath(tmpDir, rel)
+		layerFile, err := openDockerSaveMember(tmpDir, rel)
 		if err != nil {
-			return fmt.Errorf("layer %d has invalid path %q: %w", i+1, rel, err)
+			return fmt.Errorf("layer %d has invalid member %q: %w", i+1, rel, err)
 		}
 		fmt.Printf("  [%d/%d] applying layer\n", i+1, len(m.Layers))
-		if err := applyLayer(layerPath, destDir); err != nil {
+		if err := applyOpenedLayer(layerFile, rel, destDir); err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
 		}
 	}
@@ -119,8 +127,20 @@ func applyLayer(layerPath, destDir string) error {
 		return err
 	}
 	defer rc.Close()
+	return applyLayerReader(rc, destDir)
+}
 
-	tr := tar.NewReader(rc)
+func applyOpenedLayer(layerFile *os.File, label, destDir string) error {
+	rc, err := openMaybeGzipFile(layerFile, label)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	return applyLayerReader(rc, destDir)
+}
+
+func applyLayerReader(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -179,7 +199,10 @@ func openMaybeGzip(path string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	return openMaybeGzipFile(f, path)
+}
 
+func openMaybeGzipFile(f *os.File, label string) (io.ReadCloser, error) {
 	br := bufio.NewReaderSize(f, 512)
 	magic, err := br.Peek(2)
 	if err != nil {
@@ -189,8 +212,8 @@ func openMaybeGzip(path string) (io.ReadCloser, error) {
 	if magic[0] == 0x1f && magic[1] == 0x8b {
 		gz, err := gzip.NewReader(br)
 		if err != nil {
-			f.Close()
-			return nil, fmt.Errorf("gzip open %s: %w", path, err)
+			_ = f.Close()
+			return nil, fmt.Errorf("gzip open %s: %w", label, err)
 		}
 		return &gzipFile{Reader: gz, f: f}, nil
 	}
