@@ -72,6 +72,67 @@ func TestNetworkPreflightAllowsManagedBridgeAndNonNetworkingRuns(t *testing.T) {
 	}
 }
 
+func TestNetworkPreflightRollsBackSuccessfulDNSAdmission(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := Config{ContainerID: "ctr-validation-rollback", Hostname: "demo", RootFS: "/rootfs", BridgeNetwork: true}
+	registerCalls := 0
+	unregisterCalls := 0
+	err = requireDurableNetworkOwnershipWith(cfg, st, networkAdmissionDeps{
+		validateDNSRootFS: func(string, string) error { return nil },
+		registerDNSHost: func(networkName, containerID, hostname, ipAddr string) error {
+			registerCalls++
+			if networkName != defaultBridgeDNSNetwork || containerID != cfg.ContainerID || hostname != cfg.Hostname || ipAddr != defaultBridgeContainerIP {
+				t.Fatalf("registration args=%q/%q/%q/%q", networkName, containerID, hostname, ipAddr)
+			}
+			return nil
+		},
+		unregisterDNSHost: func(networkName, containerID string) error {
+			unregisterCalls++
+			if networkName != defaultBridgeDNSNetwork || containerID != cfg.ContainerID {
+				t.Fatalf("rollback args=%q/%q", networkName, containerID)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("network preflight: %v", err)
+	}
+	if registerCalls != 1 || unregisterCalls != 1 {
+		t.Fatalf("preflight leaked DNS admission: register=%d unregister=%d, want 1/1", registerCalls, unregisterCalls)
+	}
+}
+
+func TestNetworkPreflightRollbackFailureFailsClosed(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cause := errors.New("registry cleanup fsync failed")
+	err = requireDurableNetworkOwnershipWith(Config{
+		ContainerID:   "ctr-validation-rollback-failure",
+		Hostname:      "demo",
+		RootFS:        "/rootfs",
+		BridgeNetwork: true,
+	}, st, networkAdmissionDeps{
+		validateDNSRootFS: func(string, string) error { return nil },
+		registerDNSHost:   func(string, string, string, string) error { return nil },
+		unregisterDNSHost: func(string, string) error { return cause },
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("rollback error=%v, want cause", err)
+	}
+	if !isRuntimeControlError(err) {
+		t.Fatalf("rollback failure was retryable payload error: %v", err)
+	}
+}
+
 func TestBridgeDNSValidationFailsClosedBeforeRegistration(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {

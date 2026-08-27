@@ -30,13 +30,21 @@ func defaultNetworkAdmissionDeps() networkAdmissionDeps {
 // focused tests. Production Run uses beginNetworkAttemptAdmission so each
 // restart attempt receives its own DNS registration and owned rollback token.
 func requireDurableNetworkOwnership(cfg Config, lifecycleStore *state.Store) error {
-	_, err := beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
-	return err
+	return requireDurableNetworkOwnershipWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
 }
 
 func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store, deps networkAdmissionDeps) error {
-	_, err := beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, deps)
-	return err
+	rollback, err := beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, deps)
+	if err != nil {
+		return err
+	}
+	if rollback == nil {
+		return nil
+	}
+	if err := rollback(); err != nil {
+		return &runtimeSetupError{err: fmt.Errorf("rollback network validation admission: %w", err)}
+	}
+	return nil
 }
 
 // beginNetworkAttemptAdmission fails closed before process creation whenever
