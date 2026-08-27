@@ -54,16 +54,33 @@ func CalculateDF(st *state.Store) (*DFResult, error) {
 	}
 
 	for _, c := range ctrs {
-		if c.RootFS != "" {
-			sz, _ := imagestore.CalculateDirSize(c.RootFS)
-			res.ContainersSize += sz
+		if c == nil {
+			return res, fmt.Errorf("container list contains nil metadata")
 		}
+		if c.RootFS == "" {
+			continue
+		}
+		sz, err := imagestore.CalculateDirSize(c.RootFS)
+		if err != nil {
+			return res, fmt.Errorf("calculate rootfs size for container %s at %q: %w", c.ID, c.RootFS, err)
+		}
+		res.ContainersSize += sz
 	}
 
 	for _, img := range imgs {
+		if img == nil {
+			return res, fmt.Errorf("image list contains nil metadata")
+		}
 		sz := img.Size
 		if sz == 0 && img.RootFS != "" {
-			sz, _ = imagestore.CalculateDirSize(img.RootFS)
+			sz, err = imagestore.CalculateDirSize(img.RootFS)
+			if err != nil {
+				selector := strings.TrimSpace(img.Name)
+				if selector == "" {
+					selector = strings.TrimSpace(img.ID)
+				}
+				return res, fmt.Errorf("calculate rootfs size for image %q at %q: %w", selector, img.RootFS, err)
+			}
 		}
 		res.ImagesSize += sz
 	}
