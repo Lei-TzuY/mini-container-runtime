@@ -44,9 +44,6 @@ func Run(cfg Config) error {
 	if lifecycleStore != nil {
 		defer lifecycleStore.Close()
 	}
-	if err := requireDurableNetworkOwnership(cfg, lifecycleStore); err != nil {
-		return err
-	}
 
 	maxAttempts := 1
 	if cfg.Restart == "always" || cfg.Restart == "on-failure" {
@@ -56,7 +53,17 @@ func Run(cfg Config) error {
 	attempt := 0
 	for {
 		attempt++
+		rollbackAdmission, admissionErr := beginNetworkAttemptAdmission(cfg, lifecycleStore)
+		if admissionErr != nil {
+			return admissionErr
+		}
+
 		err := runOnce(cfg, lifecycleStore)
+		if rollbackAdmission != nil {
+			if cleanupErr := rollbackAdmission(); cleanupErr != nil {
+			err = errors.Join(err, &runtimeSetupError{err: fmt.Errorf("rollback network attempt admission: %w", cleanupErr)})
+			}
+		}
 
 		if isRuntimeControlError(err) {
 			// Runtime state/setup failures are not payload failures. Retrying cannot
