@@ -62,6 +62,18 @@ func (d *deferredHardlinks) cancelSubtree(root string, includeRoot bool) {
 	d.entries = kept
 }
 
+// cancelForEntry preserves archive ordering for deferred hardlinks. A later
+// directory entry can coexist with older descendants, but any later
+// non-directory entry at an ancestor makes those older descendant paths
+// unreachable and must invalidate them before they can be resolved later.
+func (d *deferredHardlinks) cancelForEntry(target string, typeflag byte) {
+	if typeflag == tar.TypeDir {
+		d.cancelTarget(target)
+		return
+	}
+	d.cancelSubtree(target, true)
+}
+
 func (d *deferredHardlinks) add(target, linkTarget string, hdr *tar.Header) {
 	d.entries = append(d.entries, deferredHardlink{
 		target:     target,
@@ -105,7 +117,7 @@ func (d *deferredHardlinks) finish(destDir string) error {
 }
 
 func applyTarEntryWithDeferredHardlinks(target string, hdr *tar.Header, r io.Reader, destDir string, pending *deferredHardlinks) error {
-	pending.cancelTarget(target)
+	pending.cancelForEntry(target, hdr.Typeflag)
 	if hdr.Typeflag == tar.TypeLink {
 		linkTarget, err := safePath(destDir, hdr.Linkname)
 		if err != nil {
