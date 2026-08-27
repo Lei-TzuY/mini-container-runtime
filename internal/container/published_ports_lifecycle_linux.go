@@ -3,7 +3,6 @@
 package container
 
 import (
-	"errors"
 	"fmt"
 
 	"minicontainer/internal/dns"
@@ -124,5 +123,3 @@ func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, d
 	}
 	return rollback, nil
 }
-
-var _ = errors.Join
