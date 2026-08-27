@@ -1,16 +1,7 @@
 // internal/registry/pull.go
 //
 // OCI Image Pulling (`minictl pull <image>`)
-// ─────────────────────────────────────────
-// Downloads container image manifests and layer blobs directly from Docker Hub
-// or OCI-compliant registries via HTTP REST API v2 without relying on Docker daemon.
-//
-// Protocol sequence:
-//   1. Authenticate with auth.docker.io to get Bearer Token.
-//   2. Fetch OCI Manifest (GET /v2/library/<image>/manifests/<tag>).
-//   3. Download and verify every layer blob.
-//   4. Only after all blobs pass size/digest validation, extract layers sequentially
-//      to destDir applying OCI whiteout rules.
+// Downloads and verifies every manifest layer before applying it locally.
 
 package registry
 
@@ -26,8 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"minicontainer/internal/image"
 )
 
 const (
@@ -36,14 +25,12 @@ const (
 	manifestV2Header    = "application/vnd.docker.distribution.manifest.v2+json"
 )
 
-// Descriptor is the subset of an OCI descriptor used by the pull path.
 type Descriptor struct {
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
 	Digest    string `json:"digest"`
 }
 
-// ManifestV2 represents a Docker Schema 2 / OCI manifest.
 type ManifestV2 struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	Config        Descriptor   `json:"config"`
@@ -55,7 +42,9 @@ type authResponse struct {
 	AccessToken string `json:"access_token"`
 }
 
-// PullImage fetches an image from Docker Hub (e.g. "alpine" or "alpine:3.19") and extracts it to destDir.
+// PullImage fetches an image from Docker Hub (e.g. "alpine" or "alpine:3.19")
+// and extracts it to destDir. A destination that does not yet exist is assembled
+// privately and published only after every verified layer applies successfully.
 func PullImage(imageRef, destDir string) error {
 	imageName, tag := parseImageRef(imageRef)
 	if err := validateImageReference(imageName, tag); err != nil {
@@ -63,14 +52,11 @@ func PullImage(imageRef, destDir string) error {
 	}
 	fmt.Printf("Pulling image %s:%s from Docker Hub …\n", imageName, tag)
 
-	// Step 1: Obtain Auth Token
 	token, err := getAuthToken(imageName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Step 2: Fetch Image Manifest and preflight every descriptor before any
-	// download or extraction can mutate local image state.
 	manifest, err := getManifest(imageName, tag, token)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
@@ -78,13 +64,8 @@ func PullImage(imageRef, destDir string) error {
 	if err := validateManifestLayers(manifest); err != nil {
 		return fmt.Errorf("validate manifest: %w", err)
 	}
-
 	fmt.Printf("Image manifest loaded: %d layer(s)\n", len(manifest.Layers))
 
-	// Step 3: Download and verify every layer into an isolated temp directory.
-	// Do not begin extraction until the entire layer set has passed integrity
-	// validation; a later corrupt/missing blob must not leave a partially applied
-	// rootfs behind.
 	tmpDir, err := os.MkdirTemp("", "minicontainer-pull-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -96,8 +77,6 @@ func PullImage(imageRef, destDir string) error {
 	for i, layer := range manifest.Layers {
 		short, err := shortDigest(layer.Digest)
 		if err != nil {
-			// validateManifestLayers already checked every descriptor. Keep this
-			// defensive guard so future callers cannot reintroduce unsafe slicing.
 			return fmt.Errorf("layer %d digest: %w", i+1, err)
 		}
 		fmt.Printf("  [%d/%d] downloading layer %s (%.2f MB) …\n",
@@ -110,12 +89,8 @@ func PullImage(imageRef, destDir string) error {
 		layerFiles[i] = layerFile
 	}
 
-	// Step 4: All blobs are locally verified; only now mutate destDir.
-	for i, layerFile := range layerFiles {
-		fmt.Printf("  [%d/%d] applying verified layer to %s …\n", i+1, len(layerFiles), destDir)
-		if err := image.Unpack(layerFile, destDir); err != nil {
-			return fmt.Errorf("apply layer %d: %w", i+1, err)
-		}
+	if err := applyVerifiedLayers(layerFiles, destDir); err != nil {
+		return err
 	}
 
 	fmt.Printf("Successfully pulled %s:%s -> %s\n", imageName, tag, destDir)
@@ -203,11 +178,9 @@ func getAuthToken(imageName string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("auth service returned status %d", resp.StatusCode)
 	}
-
 	var auth authResponse
 	if err := decodeJSONLimited(resp.Body, maxAuthResponseBytes, &auth); err != nil {
 		return "", err
@@ -226,17 +199,14 @@ func getManifest(imageName, tag, token string) (*ManifestV2, error) {
 	}
 	req.Header.Set("Accept", manifestV2Header)
 	req.Header.Set("Authorization", "Bearer "+token)
-
 	resp, err := registryMetadataClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("registry returned status %d", resp.StatusCode)
 	}
-
 	var manifest ManifestV2
 	if err := decodeJSONLimited(resp.Body, maxManifestResponseBytes, &manifest); err != nil {
 		return nil, err
@@ -301,13 +271,11 @@ func downloadBlob(client *http.Client, imageName, digest, token, destPath string
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("blob download status %d", resp.StatusCode)
 	}
