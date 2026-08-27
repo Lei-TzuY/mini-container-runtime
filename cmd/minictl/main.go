@@ -265,36 +265,13 @@ func cmdRun(args []string) {
 		os.Exit(1)
 	}
 
-	store, err := openStore()
+	store, rec, err := prepareManagedRunState(&cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: state store unavailable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: prepare container state: %v\n", err)
+		os.Exit(1)
 	}
-
-	var containerID string
-	var rec *state.Container
-	if store != nil {
-		containerID, err = state.NewID()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: generate container ID: %v\n", err)
-		} else {
-			now := time.Now()
-			rec = &state.Container{
-				ID:        containerID,
-				Status:    state.StatusCreated,
-				RootFS:    cfg.RootFS,
-				Command:   cfg.Command,
-				Hostname:  cfg.Hostname,
-				CreatedAt: now,
-			}
-			cfg.ContainerID = containerID
-			if err := store.Save(rec); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: save state: %v\n", err)
-				rec = nil
-			} else {
-				fmt.Printf("Container ID: %s\n", containerID[:8])
-			}
-		}
-	}
+	containerID := rec.ID
+	fmt.Printf("Container ID: %s\n", containerID[:8])
 
 	if containerID != "" {
 		_ = events.Publish(events.EventCreate, containerID, cfg.RootFS, "created container")
