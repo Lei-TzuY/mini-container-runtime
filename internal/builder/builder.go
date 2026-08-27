@@ -2,6 +2,7 @@ package builder
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -29,7 +30,7 @@ type BuildResult struct {
 }
 
 // BuildDockerfile parses and executes Dockerfile directives to create a container rootfs image.
-func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
+func BuildDockerfile(opts BuildOptions) (result *BuildResult, retErr error) {
 	if opts.ContextDir == "" {
 		return nil, fmt.Errorf("context directory is required")
 	}
@@ -45,23 +46,52 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 	defer file.Close()
 
 	imgID := imagestore.GenerateImageID()
-	if opts.OutputDir == "" {
-		home, _ := os.UserHomeDir()
-		if home == "" {
-			home = "/tmp"
-		}
-		cleanTag := strings.NewReplacer(":", "_", "/", "_").Replace(opts.Tag)
-		if cleanTag == "" {
-			cleanTag = imgID
-		}
-		opts.OutputDir = filepath.Join(home, ".minicontainer", "builds", cleanTag)
-	}
+	var managedOutput *managedBuildOutput
+	cleanupManagedOutput := false
+	cleanupOwnedOutput := false
+	metadataRootFS := ""
 
-	if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
-		return nil, fmt.Errorf("create build output dir: %w", err)
-	}
-	if _, err := canonicalBuildRoot(opts.OutputDir); err != nil {
-		return nil, fmt.Errorf("validate build output dir: %w", err)
+	if opts.Store != nil && opts.OutputDir == "" {
+		managedOutput, err = prepareManagedBuildOutput(opts.Store, imgID)
+		if err != nil {
+			return nil, err
+		}
+		opts.OutputDir = managedOutput.workRootFS
+		metadataRootFS = managedOutput.durableRoot
+		cleanupManagedOutput = true
+		// Register Close first so owned-path cleanup runs while the lease is still
+		// open and its /proc/self/fd mutation path remains stable.
+		defer func() {
+			if err := managedOutput.close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close managed build image storage lease: %w", err))
+			}
+		}()
+		defer func() {
+			if !cleanupManagedOutput {
+				return
+			}
+			if err := managedOutput.cleanupOwned(); err != nil {
+				result = nil
+				retErr = errors.Join(retErr, err)
+			}
+		}()
+	} else {
+		output, err := prepareBuildOutput(opts, imgID)
+		if err != nil {
+			return nil, err
+		}
+		opts.OutputDir = output.path
+		metadataRootFS = opts.OutputDir
+		cleanupOwnedOutput = output.owned
+		defer func() {
+			if !cleanupOwnedOutput {
+				return
+			}
+			if err := os.RemoveAll(opts.OutputDir); err != nil {
+				result = nil
+				retErr = errors.Join(retErr, fmt.Errorf("rollback owned build output %q: %w", opts.OutputDir, err))
+			}
+		}()
 	}
 
 	repo, tag := imagestore.ParseRepositoryTag(opts.Tag)
@@ -70,7 +100,7 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 		Repository: repo,
 		Tag:        tag,
 		Name:       opts.Tag,
-		RootFS:     opts.OutputDir,
+		RootFS:     metadataRootFS,
 		LoadedAt:   time.Now(),
 		WorkDir:    "/",
 	}
@@ -111,7 +141,7 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 			// If base image is directory path.
 			if info, err := os.Stat(args); err == nil && info.IsDir() {
 				if err := copyTree(args, opts.OutputDir, "/", true); err != nil {
-					return nil, fmt.Errorf("copy base directory %s: %w", args, err)
+					return nil, fmt.Errorf("copy base directory %s to %s failed: %w", args, opts.OutputDir, err)
 				}
 				log(fmt.Sprintf("  Loaded base rootfs from directory %s", args))
 			} else {
@@ -219,15 +249,60 @@ func BuildDockerfile(opts BuildOptions) (*BuildResult, error) {
 		return nil, fmt.Errorf("scan Dockerfile: %w", err)
 	}
 
-	sz, _ := imagestore.CalculateDirSize(opts.OutputDir)
+	sz, err := imagestore.CalculateDirSize(opts.OutputDir)
+	if err != nil {
+		return nil, fmt.Errorf("calculate built image size: %w", err)
+	}
 	img.Size = sz
 
-	if opts.Store != nil {
-		if err := opts.Store.PublishImage(img); err != nil {
-			return nil, fmt.Errorf("save image state: %w", err)
+	if managedOutput != nil {
+		if err := managedOutput.publish(); err != nil {
+			return nil, err
 		}
 	}
 
+	if opts.Store != nil {
+		ownedExternal := cleanupOwnedOutput
+		// Publication may commit metadata and then report a later maintenance
+		// error. Disable generic external rollback and inspect durable state first.
+		cleanupOwnedOutput = false
+		if err := opts.Store.PublishImage(img); err != nil {
+			saveErr := error(fmt.Errorf("save image state: %w", err))
+			if managedOutput != nil {
+				referenced, proofErr := buildPayloadHasCommittedReference(opts.Store, img.ID, img.RootFS)
+				switch {
+				case proofErr != nil:
+					cleanupManagedOutput = false
+					saveErr = errors.Join(saveErr, fmt.Errorf("preserve managed build output because metadata absence is unproven: %w", proofErr))
+				case referenced:
+					cleanupManagedOutput = false
+				default:
+					if cleanupErr := managedOutput.cleanupOwned(); cleanupErr != nil {
+						saveErr = errors.Join(saveErr, cleanupErr)
+					} else {
+						cleanupManagedOutput = false
+					}
+				}
+			} else if ownedExternal {
+				referenced, proofErr := buildPayloadHasCommittedReference(opts.Store, img.ID, img.RootFS)
+				switch {
+				case proofErr != nil:
+					saveErr = errors.Join(saveErr, fmt.Errorf("preserve newly built output because metadata absence is unproven: %w", proofErr))
+				case referenced:
+					// Durable metadata owns the output; deleting it would create a
+					// dangling image even though publication returned an error.
+				default:
+					if cleanupErr := os.RemoveAll(opts.OutputDir); cleanupErr != nil {
+						saveErr = errors.Join(saveErr, fmt.Errorf("rollback unpublished build output %q: %w", opts.OutputDir, cleanupErr))
+					}
+				}
+			}
+			return nil, saveErr
+		}
+	}
+
+	cleanupManagedOutput = false
+	cleanupOwnedOutput = false
 	log(fmt.Sprintf("Successfully built image %s (Size: %d bytes)", opts.Tag, sz))
 	return &BuildResult{Image: img, Logs: logs}, nil
 }
