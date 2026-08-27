@@ -69,6 +69,9 @@ func createHardlinkSecureWithHeader(target, destDir, linkTarget string, hdr *tar
 		if err := verifyPinnedHardlinkMetadata(sourceStat, hdr, os.Geteuid()); err != nil {
 			return fmt.Errorf("validate hardlink metadata for %s: %w", linkTarget, err)
 		}
+		if err := verifyDeclaredXattrsPinnedFD(sourceFD, sourceStat.Mode, linkTarget, tarXattrsPortable(hdr)); err != nil {
+			return fmt.Errorf("validate hardlink xattrs for %s: %w", linkTarget, err)
+		}
 	}
 
 	if beforeLink != nil {
