@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -60,6 +61,13 @@ func writeExternalLayerTar(t *testing.T, path string) {
 	}}, [][]byte{body})
 }
 
+func skipDockerSaveSymlinkTest(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating archive symlinks on Windows may require elevated privileges")
+	}
+}
+
 func TestLoadDockerSaveReadsRegularMembers(t *testing.T) {
 	base := t.TempDir()
 	layerPath := filepath.Join(base, "layer.tar")
@@ -86,6 +94,7 @@ func TestLoadDockerSaveReadsRegularMembers(t *testing.T) {
 }
 
 func TestLoadDockerSaveRejectsSymlinkManifest(t *testing.T) {
+	skipDockerSaveSymlinkTest(t)
 	base := t.TempDir()
 	externalManifest := filepath.Join(base, "outside-manifest.json")
 	if err := os.WriteFile(externalManifest, dockerSaveManifestBytes(t, "layer/layer.tar"), 0o600); err != nil {
@@ -106,6 +115,7 @@ func TestLoadDockerSaveRejectsSymlinkManifest(t *testing.T) {
 }
 
 func TestLoadDockerSaveRejectsSymlinkLayerFile(t *testing.T) {
+	skipDockerSaveSymlinkTest(t)
 	base := t.TempDir()
 	externalLayer := filepath.Join(base, "outside-layer.tar")
 	writeExternalLayerTar(t, externalLayer)
@@ -127,6 +137,7 @@ func TestLoadDockerSaveRejectsSymlinkLayerFile(t *testing.T) {
 }
 
 func TestLoadDockerSaveRejectsSymlinkLayerAncestor(t *testing.T) {
+	skipDockerSaveSymlinkTest(t)
 	base := t.TempDir()
 	externalDir := filepath.Join(base, "outside")
 	if err := os.MkdirAll(externalDir, 0o755); err != nil {

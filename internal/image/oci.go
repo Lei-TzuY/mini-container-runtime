@@ -36,6 +36,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,8 +59,11 @@ type dockerManifest struct {
 // LoadDockerSave reads a docker-save archive (produced by "docker save") and
 // extracts all image layers into destDir in order, applying whiteout semantics.
 //
-// The archive may be a plain .tar or a .tar.gz.
-func LoadDockerSave(tarPath, destDir string) error {
+// The archive may be a plain .tar or a .tar.gz. If destDir does not exist when
+// loading begins, layers are assembled in a private sibling directory and the
+// completed rootfs is published without replacing a concurrently-created path.
+// Existing destinations retain the historical in-place overlay behavior.
+func LoadDockerSave(tarPath, destDir string) (retErr error) {
 	tmpDir, err := os.MkdirTemp("", "minicontainer-load-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -101,19 +105,70 @@ func LoadDockerSave(tarPath, destDir string) error {
 	}
 	fmt.Printf("Loading %s  (%d layer(s))\n", tag, len(m.Layers))
 
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", destDir, err)
-	}
-
+	// Prove and pin every archive-selected layer before mutating the destination.
+	// A bad later member must not be discovered only after earlier layers have
+	// already changed an existing rootfs.
+	layerFiles := make([]*os.File, len(m.Layers))
+	defer func() {
+		for i, f := range layerFiles {
+			if f == nil {
+				continue
+			}
+			if err := f.Close(); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close pinned docker-save layer %d: %w", i+1, err))
+			}
+		}
+	}()
 	for i, rel := range m.Layers {
 		layerFile, err := openDockerSaveMember(tmpDir, rel)
 		if err != nil {
 			return fmt.Errorf("layer %d has invalid member %q: %w", i+1, rel, err)
 		}
+		layerFiles[i] = layerFile
+	}
+
+	destDir = filepath.Clean(destDir)
+	workDest := destDir
+	stagingDir := ""
+	if _, err := os.Lstat(destDir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect load destination %s: %w", destDir, err)
+		}
+		parent := filepath.Dir(destDir)
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("create load destination parent %s: %w", parent, err)
+		}
+		stagingDir, err = os.MkdirTemp(parent, "."+filepath.Base(destDir)+".load-*")
+		if err != nil {
+			return fmt.Errorf("create load destination staging directory: %w", err)
+		}
+		workDest = stagingDir
+		defer func() {
+			if stagingDir == "" {
+				return
+			}
+			if err := os.RemoveAll(stagingDir); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("remove failed load staging directory %q: %w", stagingDir, err))
+			}
+		}()
+	} else if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+
+	for i, rel := range m.Layers {
+		layerFile := layerFiles[i]
+		layerFiles[i] = nil // applyOpenedLayer assumes ownership and closes it.
 		fmt.Printf("  [%d/%d] applying layer\n", i+1, len(m.Layers))
-		if err := applyOpenedLayer(layerFile, rel, destDir); err != nil {
+		if err := applyOpenedLayer(layerFile, rel, workDest); err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
 		}
+	}
+
+	if stagingDir != "" {
+		if err := publishDirectoryNoReplace(stagingDir, destDir); err != nil {
+			return err
+		}
+		stagingDir = ""
 	}
 
 	fmt.Printf("Done. Rootfs ready at %s\n", destDir)
