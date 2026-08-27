@@ -27,56 +27,23 @@ func (s *Server) handleDeleteContainer(w http.ResponseWriter, id string) {
 		return
 	}
 
-	if c.Status == state.StatusRunning {
-		handle, err := container.OpenProcessHandle(c.PID, c.PIDStartTime)
-		if err == nil {
-			defer handle.Close()
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "container is still running; stop it before deletion"})
-			return
-		}
-		switch {
-		case errors.Is(err, container.ErrProcessNotFound):
-			// The persisted generation is gone. Reconcile it before deleting the
-			// state record. Finalization consumes only durable resource ownership
-			// belonging to this exact process generation.
-			if _, finalizeErr := container.FinalizeStoppedGeneration(s.store, c, -1, time.Now()); finalizeErr != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": finalizeErr.Error()})
-				return
-			}
-		case errors.Is(err, container.ErrProcessIdentityMismatch):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID now belongs to a different process; refusing deletion until state is reconciled"})
-			return
-		case errors.Is(err, container.ErrProcessIdentityUnavailable):
+	c, err = container.ReconcileContainerState(s.store, c)
+	if err != nil {
+		if errors.Is(err, container.ErrProcessIdentityUnavailable) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks a verified process identity; refusing deletion"})
 			return
-		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
 		}
-	}
-
-	// Reload after reconciliation so a concurrent restart cannot be deleted by a
-	// stale pre-stop snapshot. A stopped record may retain durable cleanup tokens
-	// after an earlier failure; retry them before discarding state.
-	current, err := s.store.Get(c.ID)
-	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if current.Status == state.StatusRunning {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "container became running while deletion was being reconciled"})
+	if c.Status == state.StatusRunning {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "container is still running; stop it before deletion"})
 		return
-	}
-	if current.Status == state.StatusStopped {
-		if err := container.CleanupStoppedRuntimeResources(s.store, current); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
 	}
 
 	// Recheck the current on-disk status while holding the state lock. This
-	// closes the final cleanup->delete window if another actor restarts the
-	// container after the reload above.
+	// closes the final reconciliation->delete window if another actor restarts
+	// the container after the exact-generation probe above.
 	if err := s.store.DeleteIfNotRunning(c.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -88,6 +55,15 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 	c, err := s.store.Resolve(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	c, err = container.ReconcileContainerState(s.store, c)
+	if err != nil {
+		if errors.Is(err, container.ErrProcessIdentityUnavailable) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks PID starttime identity; refusing to signal by PID alone"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	if c.Status != state.StatusRunning {
@@ -113,15 +89,21 @@ func (s *Server) handleStopContainer(w http.ResponseWriter, r *http.Request, id 
 		case errors.Is(err, container.ErrProcessIdentityUnavailable):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "running container lacks PID starttime identity; refusing to signal by PID alone"})
 			return
-		case errors.Is(err, container.ErrProcessIdentityMismatch):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "stored PID has been reused by another process; refusing to signal it"})
-			return
-		case errors.Is(err, container.ErrProcessNotFound):
-			if _, finalizeErr := container.FinalizeStoppedGeneration(s.store, c, -1, time.Now()); finalizeErr != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": finalizeErr.Error()})
+		case errors.Is(err, container.ErrProcessNotFound), errors.Is(err, container.ErrProcessIdentityMismatch):
+			// The exact generation may have exited or its numeric PID may now
+			// belong to an unrelated process after the initial reconciliation.
+			// Reconcile by PID/start-time identity instead of ever signaling the
+			// replacement process.
+			latest, reconcileErr := container.ReconcileContainerState(s.store, c)
+			if reconcileErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": reconcileErr.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "id": c.ID, "already_exited": true})
+			if latest.Status != state.StatusRunning {
+				writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped", "id": latest.ID, "already_exited": true})
+				return
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "container process generation changed while stop was opening its process handle; retry"})
 			return
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
