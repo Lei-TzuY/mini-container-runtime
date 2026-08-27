@@ -93,8 +93,34 @@ func cleanupNetworkOwnershipWith(
 	return fmt.Errorf("network ownership changed or remained after successful cleanup")
 }
 
+// cleanupNetworkOwnershipAfterDurableStopWith is the destructive-cleanup gate
+// for generic callers that may run before authoritative lifecycle finalization.
+// A running/created record is a durable claim that host networking may still be
+// in use, so cleanup must be a no-op until stopped has committed. State read
+// failures fail closed and preserve both host resources and the ownership token.
+func cleanupNetworkOwnershipAfterDurableStopWith(
+	st *state.Store,
+	containerID string,
+	ownership state.NetworkOwnership,
+	debug bool,
+	removePort ownedPortCleanupFunc,
+	removeVeth ownedVethCleanupFunc,
+) error {
+	if st == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	current, err := st.Get(containerID)
+	if err != nil {
+		return fmt.Errorf("read lifecycle state before network cleanup for container %s: %w", containerID, err)
+	}
+	if current.Status != state.StatusStopped {
+		return nil
+	}
+	return cleanupNetworkOwnershipWith(st, containerID, ownership, debug, removePort, removeVeth)
+}
+
 func cleanupNetworkOwnership(st *state.Store, containerID string, ownership state.NetworkOwnership, debug bool) error {
-	return cleanupNetworkOwnershipWith(
+	return cleanupNetworkOwnershipAfterDurableStopWith(
 		st,
 		containerID,
 		ownership,
