@@ -226,11 +226,40 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 	return nil
 }
 
+func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string) ([]HostEntry, bool, error) {
+	for _, entry := range entries {
+		if entry.ContainerID != containerID && entry.Hostname != hostname {
+			continue
+		}
+		if entry.ContainerID == containerID && entry.Hostname == hostname && entry.IP == ipAddr && entry.OwnerPID == owner.PID && entry.OwnerStartTime == owner.StartTime {
+			return entries, false, nil
+		}
+		return nil, false, fmt.Errorf(
+			"live DNS registration conflict: container %q/hostname %q is owned by registrar %d/%d",
+			entry.ContainerID,
+			entry.Hostname,
+			entry.OwnerPID,
+			entry.OwnerStartTime,
+		)
+	}
+	updated := append([]HostEntry(nil), entries...)
+	updated = append(updated, HostEntry{
+		ContainerID:    containerID,
+		Hostname:       hostname,
+		IP:             ipAddr,
+		OwnerPID:       owner.PID,
+		OwnerStartTime: owner.StartTime,
+	})
+	return updated, true, nil
+}
+
 // RegisterHost records a container IP mapping in a network. The registration is
 // owned by the exact minictl parent process generation so an os.Exit, kill, or
 // crash cannot leave it permanently authoritative. If the registrar disappears
 // while its container remains alive, the committed child generation adopts the
-// entry until that generation exits.
+// entry until that generation exits. A still-live registration owned by another
+// registrar is never overwritten: competing lifecycle actors must fail closed
+// rather than steal service-discovery ownership from the generation that won.
 func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
@@ -258,23 +287,17 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 		if err != nil {
 			return err
 		}
-		entries, _, err = pruneStaleOwnedEntries(entries)
+		entries, pruned, err := pruneStaleOwnedEntries(entries)
 		if err != nil {
 			return err
 		}
-		updated := make([]HostEntry, 0, len(entries)+1)
-		for _, entry := range entries {
-			if entry.ContainerID != containerID && entry.Hostname != hostname {
-				updated = append(updated, entry)
-			}
+		updated, changed, err := entriesWithRegistration(entries, owner, containerID, hostname, ipAddr)
+		if err != nil {
+			return err
 		}
-		updated = append(updated, HostEntry{
-			ContainerID:    containerID,
-			Hostname:       hostname,
-			IP:             ipAddr,
-			OwnerPID:       owner.PID,
-			OwnerStartTime: owner.StartTime,
-		})
+		if !changed && !pruned {
+			return nil
+		}
 		return saveEntriesAtomic(dir, netFile, networkName, updated)
 	})
 }
