@@ -14,6 +14,7 @@ func noopNetworkAdmissionDeps() networkAdmissionDeps {
 	return networkAdmissionDeps{
 		validateDNSRootFS: func(string, string) error { return nil },
 		registerDNSHost:   func(string, string, string, string) error { return nil },
+		unregisterDNSHost: func(string, string) error { return nil },
 	}
 }
 
@@ -92,6 +93,7 @@ func TestBridgeDNSValidationFailsClosedBeforeRegistration(t *testing.T) {
 			registerCalls++
 			return nil
 		},
+		unregisterDNSHost: func(string, string) error { return nil },
 	})
 	if !errors.Is(err, cause) {
 		t.Fatalf("DNS validation error=%v, want cause", err)
@@ -127,6 +129,7 @@ func TestBridgeDNSRegistrationFailureIsAuthoritativeAdmissionError(t *testing.T)
 			}
 			return cause
 		},
+		unregisterDNSHost: func(string, string) error { return nil },
 	})
 	if !errors.Is(err, cause) {
 		t.Fatalf("DNS registration error=%v, want cause", err)
@@ -150,11 +153,92 @@ func TestBridgeDNSAdmissionRejectsMissingManagedContainerID(t *testing.T) {
 	err = requireDurableNetworkOwnershipWith(Config{BridgeNetwork: true}, st, networkAdmissionDeps{
 		validateDNSRootFS: func(string, string) error { calls++; return nil },
 		registerDNSHost:   func(string, string, string, string) error { calls++; return nil },
+		unregisterDNSHost: func(string, string) error { calls++; return nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "managed container ID") {
 		t.Fatalf("missing ID error=%v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("DNS side effects called %d times before managed ID proof", calls)
+	}
+}
+
+func TestBridgeDNSAttemptAdmissionReturnsOwnedRollback(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := Config{ContainerID: "ctr-attempt-rollback", Hostname: "demo", RootFS: "/rootfs", BridgeNetwork: true}
+	registerCalls := 0
+	unregisterCalls := 0
+	rollback, err := beginNetworkAttemptAdmissionWith(cfg, st, networkAdmissionDeps{
+		validateDNSRootFS: func(string, string) error { return nil },
+		registerDNSHost: func(networkName, containerID, hostname, ipAddr string) error {
+			registerCalls++
+			if networkName != defaultBridgeDNSNetwork || containerID != cfg.ContainerID || hostname != cfg.Hostname || ipAddr != defaultBridgeContainerIP {
+				t.Fatalf("registration args=%q/%q/%q/%q", networkName, containerID, hostname, ipAddr)
+			}
+			return nil
+		},
+		unregisterDNSHost: func(networkName, containerID string) error {
+			unregisterCalls++
+			if networkName != defaultBridgeDNSNetwork || containerID != cfg.ContainerID {
+				t.Fatalf("rollback args=%q/%q", networkName, containerID)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("begin attempt admission: %v", err)
+	}
+	if rollback == nil {
+		t.Fatal("bridge DNS admission returned nil rollback")
+	}
+	if registerCalls != 1 || unregisterCalls != 0 {
+		t.Fatalf("calls before rollback register=%d unregister=%d", registerCalls, unregisterCalls)
+	}
+	if err := rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if unregisterCalls != 1 {
+		t.Fatalf("unregister calls=%d, want 1", unregisterCalls)
+	}
+}
+
+func TestBridgeDNSRestartAttemptsReregisterAfterRollback(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := Config{ContainerID: "ctr-restart-dns", Hostname: "demo", RootFS: "/rootfs", BridgeNetwork: true}
+	registerCalls := 0
+	unregisterCalls := 0
+	deps := networkAdmissionDeps{
+		validateDNSRootFS: func(string, string) error { return nil },
+		registerDNSHost: func(string, string, string, string) error {
+			registerCalls++
+			return nil
+		},
+		unregisterDNSHost: func(string, string) error {
+			unregisterCalls++
+			return nil
+		},
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		rollback, err := beginNetworkAttemptAdmissionWith(cfg, st, deps)
+		if err != nil {
+			t.Fatalf("attempt %d admission: %v", attempt+1, err)
+		}
+		if err := rollback(); err != nil {
+			t.Fatalf("attempt %d rollback: %v", attempt+1, err)
+		}
+	}
+	if registerCalls != 2 || unregisterCalls != 2 {
+		t.Fatalf("attempt-scoped calls register=%d unregister=%d, want 2/2", registerCalls, unregisterCalls)
 	}
 }
