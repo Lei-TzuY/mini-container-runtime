@@ -111,14 +111,21 @@ func PullImage(imageRef, destDir string) error {
 	}
 
 	// Step 4: All blobs are locally verified; only now mutate destDir.
-	for i, layerFile := range layerFiles {
-		fmt.Printf("  [%d/%d] applying verified layer to %s …\n", i+1, len(layerFiles), destDir)
-		if err := image.Unpack(layerFile, destDir); err != nil {
-			return fmt.Errorf("apply layer %d: %w", i+1, err)
-		}
+	if err := applyVerifiedLayers(layerFiles, destDir); err != nil {
+		return err
 	}
 
 	fmt.Printf("Successfully pulled %s:%s -> %s\n", imageName, tag, destDir)
+	return nil
+}
+
+func applyVerifiedLayers(layerFiles []string, destDir string) error {
+	for i, layerFile := range layerFiles {
+		fmt.Printf("  [%d/%d] applying verified layer to %s …\n", i+1, len(layerFiles), destDir)
+		if err := image.ApplyLayer(layerFile, destDir); err != nil {
+			return fmt.Errorf("apply layer %d: %w", i+1, err)
+		}
+	}
 	return nil
 }
 
