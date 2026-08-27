@@ -23,22 +23,35 @@ func GenerateImageID() string {
 	return hex.EncodeToString(b)
 }
 
+type walkDirFunc func(string, fs.WalkDirFunc) error
+
 // CalculateDirSize recursively calculates total bytes of files inside path.
-func CalculateDirSize(path string) (int64, error) {
+// A partial traversal is not a trustworthy size, so any walk or metadata error
+// returns zero together with the underlying error.
+func CalculateDirSize(root string) (int64, error) {
+	return calculateDirSizeWithWalk(root, filepath.WalkDir)
+}
+
+func calculateDirSizeWithWalk(root string, walk walkDirFunc) (int64, error) {
 	var total int64
-	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
+	err := walk(root, func(current string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk %q: %w", current, walkErr)
+		}
+		if d.IsDir() {
 			return nil
 		}
-		if !d.IsDir() {
-			info, err := d.Info()
-			if err == nil {
-				total += info.Size()
-			}
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("inspect %q while calculating directory size: %w", current, err)
 		}
+		total += info.Size()
 		return nil
 	})
-	return total, err
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // ParseRepositoryTag splits "ubuntu:22.04" into ("ubuntu", "22.04")
