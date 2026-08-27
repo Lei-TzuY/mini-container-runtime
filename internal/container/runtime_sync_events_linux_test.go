@@ -39,7 +39,7 @@ func TestRuntimeSyncDoesNotCommitStartWhenReadyByteIsUndelivered(t *testing.T) {
 	}
 }
 
-func TestRuntimeSyncCommitsStartAfterReadyByteThenAllowsDie(t *testing.T) {
+func TestRuntimeSyncReadyByteDoesNotCommitStartUntilPayloadExec(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	containerID := "sync-release"
 	if err := events.Publish(events.EventStart, containerID, "rootfs", "started container"); err != nil {
@@ -56,6 +56,16 @@ func TestRuntimeSyncCommitsStartAfterReadyByteThenAllowsDie(t *testing.T) {
 	if err := awaitParentReady(readPipe); err != nil {
 		t.Fatalf("await readiness: %v", err)
 	}
+	if _, err := os.Stat(events.LogPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parent readiness committed start before payload exec: err=%v", err)
+	}
+
+	initRead := writeInitStatusPipe(t, []byte{runtimeInitReadyByte})
+	if err := awaitPayloadExec(initRead); err != nil {
+		_ = initRead.Close()
+		t.Fatalf("confirm payload exec: %v", err)
+	}
+	_ = initRead.Close()
 	if err := events.Publish(events.EventDie, containerID, "rootfs", "exited with code 0"); err != nil {
 		t.Fatalf("publish die: %v", err)
 	}
