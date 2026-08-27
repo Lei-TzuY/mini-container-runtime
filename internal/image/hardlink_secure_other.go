@@ -3,6 +3,7 @@
 package image
 
 import (
+	"archive/tar"
 	"fmt"
 	"os"
 )
@@ -16,4 +17,9 @@ func createHardlinkSecure(target, destDir, linkTarget string) error {
 		return fmt.Errorf("hardlink %s → %s: %w", target, linkTarget, err)
 	}
 	return nil
+}
+
+func createTarHardlinkSecure(target, destDir, linkTarget string, hdr *tar.Header) error {
+	_ = hdr
+	return createHardlinkSecure(target, destDir, linkTarget)
 }
