@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -86,11 +87,29 @@ func TagImage(st *state.Store, source, target string) (*state.Image, error) {
 }
 
 // RemoveImage removes image metadata and optionally cleans up the rootfs folder if no other tags reference it.
-func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (result *state.Image, retErr error) {
+func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (*state.Image, error) {
+	return removeImage(st, nameOrID, nil, removeRootFS)
+}
+
+// RemoveImageIfMatch removes an image only while the selector still resolves to
+// the exact durable snapshot previously observed by the caller. It is intended
+// for prune/reconcile loops that must not delete a newer tag generation that
+// replaced their list snapshot before destructive cleanup begins.
+func RemoveImageIfMatch(st *state.Store, nameOrID string, expected *state.Image, removeRootFS bool) (*state.Image, error) {
+	if expected == nil {
+		return nil, fmt.Errorf("expected image state is nil")
+	}
+	return removeImage(st, nameOrID, expected, removeRootFS)
+}
+
+func removeImage(st *state.Store, nameOrID string, expected *state.Image, removeRootFS bool) (result *state.Image, retErr error) {
 	if st == nil {
 		return nil, fmt.Errorf("state store is nil")
 	}
 	if !removeRootFS {
+		if expected != nil {
+			return st.DeleteImageIfMatch(nameOrID, expected)
+		}
 		return st.DeleteImage(nameOrID)
 	}
 
@@ -106,6 +125,9 @@ func RemoveImage(st *state.Store, nameOrID string, removeRootFS bool) (result *s
 	img, err := st.GetImage(nameOrID)
 	if err != nil {
 		return nil, err
+	}
+	if expected != nil && !reflect.DeepEqual(img, expected) {
+		return nil, fmt.Errorf("image %q changed after prune snapshot", nameOrID)
 	}
 	if !imageSnapshotContains(snapshot, img) {
 		return nil, fmt.Errorf("image %q changed during destructive preflight", nameOrID)
