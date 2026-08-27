@@ -76,6 +76,54 @@ func TestCreateHardlinkSecurePinsSourceAndDestinationParents(t *testing.T) {
 	}
 }
 
+func TestCreateHardlinkSecurePinsSourceLeafAcrossReplacement(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	original := filepath.Join(root, "source-original")
+	target := filepath.Join(root, "copy")
+	if err := os.WriteFile(source, []byte("verified-inode"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := createHardlinkSecureWithHook(target, root, source, func() {
+		if err := os.Rename(source, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, []byte("replacement-inode"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("secure hardlink after source leaf replacement: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "verified-inode" {
+		t.Fatalf("hardlink followed replacement source: got %q", got)
+	}
+	originalInfo, err := os.Stat(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(originalInfo, linkInfo) {
+		t.Fatal("destination does not link the source inode pinned before replacement")
+	}
+	replacementInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(replacementInfo, linkInfo) {
+		t.Fatal("destination unexpectedly links the replacement source inode")
+	}
+}
+
 func TestCreateHardlinkSecureRefusesDirectoryDestination(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "source"), []byte("payload"), 0644); err != nil {
