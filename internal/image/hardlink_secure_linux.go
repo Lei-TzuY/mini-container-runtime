@@ -3,10 +3,13 @@
 package image
 
 import (
+	"archive/tar"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,10 +19,18 @@ type hardlinkRenameAtFunc func(olddirfd int, oldpath string, newdirfd int, newpa
 type hardlinkStagingNameFunc func() (string, error)
 
 func createHardlinkSecure(target, destDir, linkTarget string) error {
-	return createHardlinkSecureWithHook(target, destDir, linkTarget, nil)
+	return createHardlinkSecureWithHeader(target, destDir, linkTarget, nil, nil)
+}
+
+func createTarHardlinkSecure(target, destDir, linkTarget string, hdr *tar.Header) error {
+	return createHardlinkSecureWithHeader(target, destDir, linkTarget, hdr, nil)
 }
 
 func createHardlinkSecureWithHook(target, destDir, linkTarget string, beforeLink func()) error {
+	return createHardlinkSecureWithHeader(target, destDir, linkTarget, nil, beforeLink)
+}
+
+func createHardlinkSecureWithHeader(target, destDir, linkTarget string, hdr *tar.Header, beforeLink func()) error {
 	root, err := openExtractionRoot(destDir)
 	if err != nil {
 		return err
@@ -54,6 +65,11 @@ func createHardlinkSecureWithHook(target, destDir, linkTarget string, beforeLink
 	if sourceStat.Mode&unix.S_IFMT == unix.S_IFDIR {
 		return fmt.Errorf("refuse hardlink to directory %s", linkTarget)
 	}
+	if hdr != nil {
+		if err := verifyPinnedHardlinkMetadata(sourceStat, hdr, os.Geteuid()); err != nil {
+			return fmt.Errorf("validate hardlink metadata for %s: %w", linkTarget, err)
+		}
+	}
 
 	if beforeLink != nil {
 		beforeLink()
@@ -83,6 +99,31 @@ func createHardlinkSecureWithHook(target, destDir, linkTarget string, beforeLink
 		newHardlinkStagingLeaf,
 	); err != nil {
 		return fmt.Errorf("hardlink pinned source %s → %s: %w", target, linkTarget, err)
+	}
+	return nil
+}
+
+func verifyPinnedHardlinkMetadata(source unix.Stat_t, hdr *tar.Header, euid int) error {
+	if hdr == nil {
+		return nil
+	}
+	expectedMode := uint32(hdr.Mode) & 0o7777
+	actualMode := source.Mode & 0o7777
+	if actualMode != expectedMode {
+		return fmt.Errorf("declared mode %#o conflicts with source inode mode %#o", expectedMode, actualMode)
+	}
+	// Root extraction is expected to preserve archive ownership exactly. A
+	// rootless extractor intentionally degrades EPERM chown to caller ownership,
+	// so comparing the on-disk uid/gid there would reject otherwise supported
+	// rootless archives even when both tar headers declare identical ownership.
+	if euid == 0 && (source.Uid != uint32(hdr.Uid) || source.Gid != uint32(hdr.Gid)) {
+		return fmt.Errorf("declared ownership %d:%d conflicts with source inode ownership %d:%d", hdr.Uid, hdr.Gid, source.Uid, source.Gid)
+	}
+	if !hdr.ModTime.IsZero() {
+		actualMtime := time.Unix(source.Mtim.Sec, source.Mtim.Nsec)
+		if !actualMtime.Equal(hdr.ModTime) {
+			return fmt.Errorf("declared mtime %s conflicts with source inode mtime %s", hdr.ModTime.Format(time.RFC3339Nano), actualMtime.Format(time.RFC3339Nano))
+		}
 	}
 	return nil
 }
