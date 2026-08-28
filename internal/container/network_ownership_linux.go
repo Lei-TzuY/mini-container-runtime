@@ -64,7 +64,6 @@ func cleanupNetworkOwnershipWith(
 				"remove persisted port mapping %d:%d/%s: %w",
 				mapping.HostPort,
 				mapping.ContainerPort,
-				mapping.ContainerIP,
 				mapping.Protocol,
 				err,
 			))
