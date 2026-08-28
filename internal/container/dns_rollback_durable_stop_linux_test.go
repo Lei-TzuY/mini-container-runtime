@@ -49,18 +49,25 @@ func TestNetworkAdmissionRollbackPreservesRunningGeneration(t *testing.T) {
 	}
 }
 
-func TestNetworkAdmissionRollbackRunsForCreatedAndStoppedState(t *testing.T) {
-	for _, status := range []state.Status{state.StatusCreated, state.StatusStopped} {
-		t.Run(string(status), func(t *testing.T) {
+func TestNetworkAdmissionRollbackRunsOnlyBeforeGenerationAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    state.Status
+		wantCalls int
+	}{
+		{name: "created", status: state.StatusCreated, wantCalls: 1},
+		{name: "stopped", status: state.StatusStopped, wantCalls: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			st, err := state.Open(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer st.Close()
 
-			id := "ctr-dns-rollback-" + string(status)
+			id := "ctr-dns-rollback-" + tc.name
 			saveDNSRollbackTestContainer(t, st, id)
-			if status == state.StatusStopped {
+			if tc.status == state.StatusStopped {
 				if err := st.MarkRunning(id, 6262, 7171, time.Now()); err != nil {
 					t.Fatal(err)
 				}
@@ -77,10 +84,42 @@ func TestNetworkAdmissionRollbackRunsForCreatedAndStoppedState(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("rollback gate: %v", err)
 			}
-			if calls != 1 {
-				t.Fatalf("rollback calls=%d, want 1", calls)
+			if calls != tc.wantCalls {
+				t.Fatalf("rollback calls=%d, want %d", calls, tc.wantCalls)
 			}
 		})
+	}
+}
+
+func TestNetworkAdmissionRollbackPreservesStoppedRegistrationForConcurrentRestart(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const id = "ctr-dns-rollback-stopped-restart"
+	saveDNSRollbackTestContainer(t, st, id)
+	if err := st.MarkRunning(id, 8080, 9090, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := st.MarkStoppedIfIdentity(id, 8080, 9090, 1, time.Now())
+	if err != nil || !changed {
+		t.Fatalf("mark stopped: changed=%v err=%v", changed, err)
+	}
+
+	// A newer attempt can re-register DNS before it has spawned/MarkRunning'd a
+	// new child. Registrar-owned registration is idempotent within this process,
+	// so the old attempt's rollback cannot distinguish and must not unregister it.
+	calls := 0
+	if err := rollbackNetworkAdmissionAfterRun(st, id, func() error {
+		calls++
+		return nil
+	}); err != nil {
+		t.Fatalf("stopped rollback gate: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("stale stopped rollback consumed next-attempt registration: calls=%d", calls)
 	}
 }
 
