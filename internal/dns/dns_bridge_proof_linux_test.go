@@ -11,14 +11,12 @@ import (
 	"minicontainer/internal/state"
 )
 
-func TestDNSDeadRegistrarRulesOnlyOwnershipDoesNotProveBridgeAdmission(t *testing.T) {
-	useTempDNSHome(t)
+func setupRunningRulesOnlyDNSOwner(t *testing.T, containerID, hostname, mappingIP string) registrarIdentity {
+	t.Helper()
 	identity, err := currentRegistrarIdentity()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	const containerID = "rules-only-dns-owner"
 	st, err := state.Open(state.DefaultDir())
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +26,7 @@ func TestDNSDeadRegistrarRulesOnlyOwnershipDoesNotProveBridgeAdmission(t *testin
 		Status:    state.StatusCreated,
 		RootFS:    "/tmp/rootfs",
 		Command:   []string{"true"},
-		Hostname:  "rules-only-host",
+		Hostname:  hostname,
 		CreatedAt: time.Now(),
 	}); err != nil {
 		_ = st.Close()
@@ -45,7 +43,7 @@ func TestDNSDeadRegistrarRulesOnlyOwnershipDoesNotProveBridgeAdmission(t *testin
 		Mappings: []state.PortForwardingOwnership{{
 			HostPort:      18080,
 			ContainerPort: 8080,
-			ContainerIP:   "172.20.0.2",
+			ContainerIP:   mappingIP,
 			Protocol:      "tcp",
 		}},
 	}); err != nil {
@@ -55,6 +53,13 @@ func TestDNSDeadRegistrarRulesOnlyOwnershipDoesNotProveBridgeAdmission(t *testin
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return identity
+}
+
+func TestDNSDeadRegistrarRulesOnlyOwnershipMustMatchEntryIP(t *testing.T) {
+	useTempDNSHome(t)
+	const containerID = "rules-only-dns-owner"
+	setupRunningRulesOnlyDNSOwner(t, containerID, "rules-only-host", "172.20.0.99")
 
 	saveDeadRegistrarEntry(t, HostEntry{
 		ContainerID:    containerID,
@@ -69,6 +74,28 @@ func TestDNSDeadRegistrarRulesOnlyOwnershipDoesNotProveBridgeAdmission(t *testin
 		t.Fatal(err)
 	}
 	if strings.Contains(content, "172.20.0.2\trules-only-host") {
-		t.Fatalf("rules-only network ownership incorrectly adopted DNS entry:\n%s", content)
+		t.Fatalf("unrelated rules-only ownership incorrectly adopted DNS entry:\n%s", content)
+	}
+}
+
+func TestDNSDeadRegistrarMatchingRulesOnlyOwnershipRemainsCompatible(t *testing.T) {
+	useTempDNSHome(t)
+	const containerID = "legacy-rules-only-dns-owner"
+	setupRunningRulesOnlyDNSOwner(t, containerID, "legacy-rules-host", "172.20.0.2")
+
+	saveDeadRegistrarEntry(t, HostEntry{
+		ContainerID:    containerID,
+		Hostname:       "legacy-rules-host",
+		IP:             "172.20.0.2",
+		OwnerPID:       99999999,
+		OwnerStartTime: 1,
+	})
+
+	content, err := GenerateHostsContentChecked("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "172.20.0.2\tlegacy-rules-host") {
+		t.Fatalf("matching legacy rules-only ownership was not adopted:\n%s", content)
 	}
 }
