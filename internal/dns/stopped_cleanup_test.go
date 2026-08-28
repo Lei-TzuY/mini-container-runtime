@@ -129,10 +129,12 @@ func TestCleanupStoppedHostRegistrationRetainsAdoptedLiveGeneration(t *testing.T
 		Status:       state.StatusRunning,
 		PID:          child.Process.Pid,
 		PIDStartTime: childStart,
+		Hostname:     "adopted",
 		CreatedAt:    time.Now(),
 	}); err != nil {
 		t.Fatalf("save adopted running state: %v", err)
 	}
+	markDNSBridgeOwnership(t, st, containerID, child.Process.Pid, childStart)
 
 	foreign := HostEntry{
 		ContainerID:    containerID,
