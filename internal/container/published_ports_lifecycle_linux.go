@@ -49,9 +49,13 @@ func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store,
 }
 
 // rollbackNetworkAdmissionAfterRun consumes an attempt-scoped DNS admission
-// only when durable lifecycle state proves there is no running generation.
-// A running or unreadable record is recovery evidence: fail closed and leave
-// the registrar entry intact so a later lifecycle actor can reconcile it.
+// only while durable lifecycle state still proves that no process generation
+// was admitted. Once a generation reached stopped, authoritative generation
+// finalization owns DNS teardown; replaying this registrar-scoped rollback is
+// unsafe because a concurrent restart may already have re-registered the same
+// container ID under the same long-lived registrar process identity. A running,
+// stopped, or unreadable record therefore preserves the entry here. State read
+// failures fail closed so a later lifecycle actor can reconcile it safely.
 func rollbackNetworkAdmissionAfterRun(lifecycleStore *state.Store, containerID string, rollback func() error) error {
 	if rollback == nil {
 		return nil
@@ -64,9 +68,9 @@ func rollbackNetworkAdmissionAfterRun(lifecycleStore *state.Store, containerID s
 		return fmt.Errorf("read lifecycle state before bridge DNS rollback: %w", err)
 	}
 	switch current.Status {
-	case state.StatusCreated, state.StatusStopped:
+	case state.StatusCreated:
 		return rollback()
-	case state.StatusRunning:
+	case state.StatusRunning, state.StatusStopped:
 		return nil
 	default:
 		return fmt.Errorf("refuse bridge DNS rollback for container %s with unknown lifecycle state %q", containerID, current.Status)
