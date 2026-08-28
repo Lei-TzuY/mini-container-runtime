@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 
+	"minicontainer/internal/dns"
 	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
+
+type dnsGenerationCleanupFunc func(networkName, containerID string, pid int, pidStartTime uint64) error
 
 func cleanupNetworkGenerationIfOwnedWith(
 	st *state.Store,
@@ -81,10 +84,18 @@ func cleanupRuntimeGenerationResourcesWith(
 	cgroupCleanup generationCleanupFunc,
 	removePort ownedPortCleanupFunc,
 	removeVeth ownedVethCleanupFunc,
+	dnsCleanup dnsGenerationCleanupFunc,
 ) error {
+	var dnsErr error
+	if dnsCleanup == nil {
+		dnsErr = fmt.Errorf("DNS generation cleanup function is nil")
+	} else if err := dnsCleanup(defaultBridgeDNSNetwork, containerID, pid, pidStartTime); err != nil {
+		dnsErr = fmt.Errorf("cleanup bridge DNS registration for generation %d/%d: %w", pid, pidStartTime, err)
+	}
 	return errors.Join(
 		cleanupCgroupGenerationIfOwnedWith(st, containerID, pid, pidStartTime, cgroupCleanup),
 		cleanupNetworkGenerationIfOwnedWith(st, containerID, pid, pidStartTime, false, removePort, removeVeth),
+		dnsErr,
 	)
 }
 
@@ -97,5 +108,6 @@ func cleanupRuntimeGenerationResources(st *state.Store, containerID string, pid 
 		cleanupContainerProcessGeneration,
 		network.RemovePortForwardingOwned,
 		network.RemoveVethHostOwned,
+		dns.CleanupStoppedHostRegistrationGeneration,
 	)
 }
