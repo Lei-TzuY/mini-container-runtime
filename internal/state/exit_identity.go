@@ -81,6 +81,42 @@ func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok b
 	return identity.PID, identity.PIDStartTime, true, nil
 }
 
+// GetExitedIdentityForStoppedRevision atomically validates that revision still
+// names the current stopped lifecycle and, only then, reads its durable exited
+// PID/start-time identity. Callers use current=false as a stale-snapshot no-op;
+// current=true with ok=false denotes a legacy stopped record without a sidecar.
+// Keeping the lifecycle CAS and sidecar read under one state lock prevents a
+// restart from clearing/replacing the identity between those two decisions.
+func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, err error) {
+	if s == nil {
+		return 0, 0, false, false, fmt.Errorf("state store is nil")
+	}
+	if err := validateID(id); err != nil {
+		return 0, 0, false, false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return 0, 0, false, false, err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	c, err := s.getUnlocked(id)
+	if err != nil {
+		return 0, 0, false, false, err
+	}
+	if c.Status != StatusStopped || c.Revision != revision {
+		return 0, 0, false, false, nil
+	}
+
+	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	if err != nil || !ok {
+		return 0, 0, true, ok, err
+	}
+	return identity.PID, identity.PIDStartTime, true, true, nil
+}
+
 func (s *Store) clearExitedIdentityUnlocked(id string) error {
 	if err := validateID(id); err != nil {
 		return err

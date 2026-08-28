@@ -170,16 +170,20 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 }
 
 func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
-	pid, pidStartTime, ok, err := st.GetExitedIdentity(c.ID)
+	pid, pidStartTime, current, ok, err := st.GetExitedIdentityForStoppedRevision(c.ID, c.Revision)
 	if err != nil {
 		return fmt.Errorf("read stopped generation identity for DNS cleanup: %w", err)
+	}
+	if !current {
+		return nil
 	}
 	if ok {
 		return dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, pid, pidStartTime)
 	}
 	// Historical stopped records may predate durable exited identity. They
 	// cannot participate in exact CAS teardown, so retain the conservative
-	// registrar-scoped fallback only for that legacy migration case.
+	// registrar-scoped fallback only while this exact stopped revision remains
+	// current at the authority-selection point.
 	return dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false)
 }
 
