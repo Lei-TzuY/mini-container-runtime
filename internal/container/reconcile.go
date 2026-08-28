@@ -10,22 +10,24 @@ import (
 
 type processGenerationProbe func(pid int, pidStartTime uint64) (alive bool, err error)
 type stoppedGenerationCleanup func(st *state.Store, c *state.Container) error
+type stoppedGenerationFinalizer func(st *state.Store, c *state.Container, exitCode int, finishedAt time.Time) (changed bool, err error)
 
 // ReconcileContainerState refreshes one persisted container lifecycle using its
 // exact process generation. Running state is never inferred from a numeric PID
 // alone: a pidfd is opened and verified against the persisted /proc starttime.
 //
 // A missing process or a reused PID proves that the persisted generation is
-// gone, so the transition to stopped is performed with MarkStoppedIfIdentity.
-// This keeps a concurrent restart safe: a stale observation cannot stop a newer
-// PID/start-time generation. Stopped records also retry every durable runtime
-// cleanup token before callers such as rm/prune are allowed to discard state.
+// gone. Recovery delegates the transition and all generation-scoped host
+// cleanup to FinalizeStoppedGeneration so a durable stop commit followed by a
+// housekeeping error cannot strand cleanup until some unrelated later command.
+// Stopped records also retry every durable runtime cleanup token before callers
+// such as rm/prune are allowed to discard state.
 //
 // Once a non-nil snapshot is supplied, errors preserve at least that snapshot
 // (or a newer one already read from disk) so callers can report failures without
 // dereferencing a record that disappeared during reconciliation.
 func ReconcileContainerState(st *state.Store, c *state.Container) (*state.Container, error) {
-	return reconcileContainerStateWith(st, c, probeProcessGeneration, CleanupStoppedRuntimeResources, time.Now)
+	return reconcileContainerStateWithFinalizer(st, c, probeProcessGeneration, CleanupStoppedRuntimeResources, FinalizeStoppedGeneration, time.Now)
 }
 
 func probeProcessGeneration(pid int, pidStartTime uint64) (bool, error) {
@@ -48,11 +50,40 @@ func probeProcessGeneration(pid int, pidStartTime uint64) (bool, error) {
 	return !exited, nil
 }
 
+// reconcileContainerStateWith keeps the historical test seam for stopped-state
+// cleanup while exercising the same ordering as the production finalizer.
 func reconcileContainerStateWith(
 	st *state.Store,
 	c *state.Container,
 	probe processGenerationProbe,
 	cleanup stoppedGenerationCleanup,
+	now func() time.Time,
+) (*state.Container, error) {
+	finalize := func(st *state.Store, c *state.Container, exitCode int, finishedAt time.Time) (bool, error) {
+		changed, err := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, exitCode, finishedAt)
+		if err != nil {
+			return changed, err
+		}
+		latest, err := st.Get(c.ID)
+		if err != nil {
+			return changed, err
+		}
+		if latest.Status == state.StatusStopped {
+			if err := cleanup(st, latest); err != nil {
+				return changed, err
+			}
+		}
+		return changed, nil
+	}
+	return reconcileContainerStateWithFinalizer(st, c, probe, cleanup, finalize, now)
+}
+
+func reconcileContainerStateWithFinalizer(
+	st *state.Store,
+	c *state.Container,
+	probe processGenerationProbe,
+	cleanup stoppedGenerationCleanup,
+	finalize stoppedGenerationFinalizer,
 	now func() time.Time,
 ) (*state.Container, error) {
 	if c == nil {
@@ -69,6 +100,9 @@ func reconcileContainerStateWith(
 	}
 	if cleanup == nil {
 		return c, fmt.Errorf("stopped generation cleanup is nil")
+	}
+	if finalize == nil {
+		return c, fmt.Errorf("stopped generation finalizer is nil")
 	}
 	if now == nil {
 		return c, fmt.Errorf("clock is nil")
@@ -110,25 +144,22 @@ func reconcileContainerStateWith(
 		return latest, nil
 	}
 
-	if _, err := st.MarkStoppedIfIdentity(current.ID, pid, pidStartTime, -1, now()); err != nil {
-		return current, fmt.Errorf("reconcile exited container %s generation %d/%d: %w", current.ID, pid, pidStartTime, err)
+	changed, finalizeErr := finalize(st, current, -1, now())
+	latest, reloadErr := st.Get(current.ID)
+	if reloadErr != nil {
+		if finalizeErr != nil {
+			return current, errors.Join(
+				fmt.Errorf("finalize exited container %s generation %d/%d: %w", current.ID, pid, pidStartTime, finalizeErr),
+				fmt.Errorf("reload container %s after generation finalization: %w", current.ID, reloadErr),
+			)
+		}
+		return current, fmt.Errorf("reload container %s after generation finalization: %w", current.ID, reloadErr)
 	}
-
-	latest, err := st.Get(current.ID)
-	if err != nil {
-		return current, fmt.Errorf("reload container %s after stopped reconciliation: %w", current.ID, err)
+	if finalizeErr != nil {
+		// The finalizer may report a post-commit cleanup/housekeeping failure.
+		// Return the durable latest snapshot rather than the stale pre-stop one;
+		// durable ownership tokens remain available for a subsequent retry.
+		return latest, fmt.Errorf("finalize exited container %s generation %d/%d (changed=%t): %w", current.ID, pid, pidStartTime, changed, finalizeErr)
 	}
-	if latest.Status != state.StatusStopped {
-		// A concurrent lifecycle actor may have installed a newer generation.
-		// The identity-CAS above deliberately loses that race.
-		return latest, nil
-	}
-	if err := cleanup(st, latest); err != nil {
-		return latest, fmt.Errorf("cleanup reconciled container %s: %w", latest.ID, err)
-	}
-	cleaned, err := st.Get(latest.ID)
-	if err != nil {
-		return latest, fmt.Errorf("reload reconciled container %s after cleanup: %w", latest.ID, err)
-	}
-	return cleaned, nil
+	return latest, nil
 }
