@@ -48,13 +48,11 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 
 	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
 	var dnsErr error
-	// Only the actor that actually committed this generation's stopped state may
-	// consume a still-live registration owned by the same registrar process. A
-	// retry can race the next restart attempt while state still reads stopped;
-	// preserving the current owner's entry prevents that stale finalizer from
-	// deleting the next attempt's newly-admitted DNS registration. Foreign stale
-	// owners remain eligible for recovery cleanup.
-	if err := dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, changed); err != nil {
+	// DNS teardown is now child-generation scoped as well. A stale finalizer can
+	// consume only the registration bound to the exact PID/start-time it proved
+	// dead; a newer restart registration is preserved even when both attempts use
+	// the same long-lived registrar process.
+	if err := dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, c.PID, c.PIDStartTime); err != nil {
 		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", c.ID, err)
 	}
 	return changed, errors.Join(cgroupErr, networkErr, dnsErr)
