@@ -67,7 +67,7 @@ func TestSettleRunCommandStatePreservesCleanAuthoritativeExitOnRuntimeCleanupErr
 	}
 }
 
-func TestSettleRunCommandStateRecordsPreStartFailure(t *testing.T) {
+func TestSettleRunCommandStateRejectsRuntimeErrorStillCreated(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -77,14 +77,18 @@ func TestSettleRunCommandStateRecordsPreStartFailure(t *testing.T) {
 	finishedAt := time.Unix(30, 0)
 
 	got, err := settleRunCommandState(st, id, errors.New("cmd start failed"), finishedAt)
-	if err != nil {
-		t.Fatalf("settle: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "was not durably finalized") {
+		t.Fatalf("error=%v, want runtime-finalization invariant failure", err)
 	}
-	if got.Status != state.StatusStopped || got.ExitCode != 1 {
-		t.Fatalf("state=%+v, want synthetic startup exit code 1", got)
+	if got == nil || got.Status != state.StatusCreated {
+		t.Fatalf("state=%+v, want unchanged created state", got)
 	}
-	if got.StartedAt != nil || got.FinishedAt == nil || !got.FinishedAt.Equal(finishedAt) {
-		t.Fatalf("startup failure timestamps=%+v", got)
+	persisted, getErr := st.Get(id)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if persisted.Status != state.StatusCreated || persisted.FinishedAt != nil {
+		t.Fatalf("CLI mutated persisted state: %+v", persisted)
 	}
 }
 

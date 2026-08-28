@@ -36,13 +36,16 @@ func (e *runtimeStateError) Error() string { return e.err.Error() }
 func (e *runtimeStateError) Unwrap() error { return e.err }
 
 // Run launches a new container, optionally handles restart policies.
-func Run(cfg Config) error {
+func Run(cfg Config) (resultErr error) {
 	lifecycleStore, err := openLifecycleStore(cfg)
 	if err != nil {
 		return err
 	}
 	if lifecycleStore != nil {
 		defer lifecycleStore.Close()
+		defer func() {
+			resultErr = finalizeCreatedRunFailure(lifecycleStore, cfg.ContainerID, resultErr, time.Now())
+		}()
 	}
 
 	maxAttempts := 1
@@ -61,7 +64,7 @@ func Run(cfg Config) error {
 		err := runOnce(cfg, lifecycleStore)
 		if rollbackAdmission != nil {
 			if cleanupErr := rollbackAdmission(); cleanupErr != nil {
-			err = errors.Join(err, &runtimeSetupError{err: fmt.Errorf("rollback network attempt admission: %w", cleanupErr)})
+				err = errors.Join(err, &runtimeSetupError{err: fmt.Errorf("rollback network attempt admission: %w", cleanupErr)})
 			}
 		}
 
