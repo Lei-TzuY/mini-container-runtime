@@ -25,12 +25,10 @@ func newAttemptToken() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-// BeginHostRegistrationAttempt registers service discovery for one runtime
-// attempt and returns an exact-attempt rollback. The persistent DNS entry keeps
-// registrar process identity for crash recovery, while this process-local opaque
-// token distinguishes sequential restart attempts launched by that same
-// registrar. A stale rollback therefore cannot consume a newer attempt's
-// otherwise-identical registration.
+// BeginHostRegistrationAttempt reserves service discovery for one runtime
+// attempt and returns an exact-attempt rollback. The persistent entry remains
+// admission-pending (and therefore hidden from peer snapshots) until bridge
+// setup binds the exact child generation.
 func BeginHostRegistrationAttempt(networkName, containerID, hostname, ipAddr string) (func() error, error) {
 	token, err := newAttemptToken()
 	if err != nil {
@@ -40,7 +38,7 @@ func BeginHostRegistrationAttempt(networkName, containerID, hostname, ipAddr str
 	return beginHostRegistrationAttemptWith(
 		key,
 		token,
-		func() error { return RegisterHost(networkName, containerID, hostname, ipAddr) },
+		func() error { return registerHostAdmission(networkName, containerID, hostname, ipAddr) },
 		func() error { return UnregisterHostOwned(networkName, containerID) },
 	)
 }
@@ -53,9 +51,6 @@ func beginHostRegistrationAttemptWith(key attemptOwnershipKey, token string, reg
 		return nil, fmt.Errorf("DNS attempt ownership callbacks are incomplete")
 	}
 
-	// Serialize registration and token publication with rollback. In particular,
-	// a newer same-registrar attempt cannot publish its token between an older
-	// rollback's ownership check and persistent unregister.
 	attemptOwnershipMu.Lock()
 	defer attemptOwnershipMu.Unlock()
 	if err := register(); err != nil {
@@ -70,7 +65,6 @@ func beginHostRegistrationAttemptWith(key attemptOwnershipKey, token string, reg
 			return nil
 		}
 		if err := unregister(); err != nil {
-			// Preserve ownership on failure so the exact attempt may retry cleanup.
 			return err
 		}
 		delete(attemptOwners, key)
