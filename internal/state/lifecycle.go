@@ -77,10 +77,9 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
 		return err
 	}
-	// A tombstone from the previous lifecycle is never consulted while the
-	// record is running, and a later unknown stop overwrites it before changing
-	// state. Clear it only after the new running state is durable so a crash can
-	// never destroy the sole reconciliation key for an older stopped record.
+	// The exited identity belongs to the previous stopped generation. Clear it
+	// only after the new running state is durable so a crash can never destroy
+	// the sole exact-generation key needed by stopped-state recovery.
 	_ = s.clearExitedIdentityUnlocked(id)
 	return nil
 }
@@ -88,11 +87,11 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 // MarkStoppedIfIdentity atomically marks a running container stopped only when
 // the persisted process identity still matches the caller's observation.
 //
-// An observer that can prove only that the process exited may persist exitCode
-// -1. In that case a private exited-identity tombstone is retained so the
-// process-owning reaper can later upgrade the unknown code for the exact same
-// PID/start-time lifecycle. A different or restarted process identity can never
-// use the tombstone to overwrite the current lifecycle.
+// Every successful stop persists the exited process identity before committing
+// stopped state. This identity doubles as the exact-generation teardown key for
+// crash/retry cleanup. If an observer knows only that the process exited, it may
+// persist exitCode -1 and the process-owning reaper can later upgrade that code
+// only for the same PID/start-time lifecycle.
 //
 // Returning changed=false is intentional: another lifecycle actor may already
 // have stopped/restarted the container, and stale observations must not win.
@@ -121,7 +120,7 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 
 	// A non-owning observer may have won the stopped-state race with an unknown
 	// exit code. Permit one later authoritative upgrade only when the durable
-	// tombstone proves it refers to the same exited process identity.
+	// exited identity proves it refers to the same process generation.
 	if c.Status == StatusStopped {
 		if c.ExitCode != -1 || exitCode == -1 {
 			return false, nil
@@ -139,9 +138,8 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 		if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
 			return false, err
 		}
-		if err := s.clearExitedIdentityUnlocked(id); err != nil {
-			return true, fmt.Errorf("clear reconciled exited identity: %w", err)
-		}
+		// Keep the exited identity until a later running generation is durable;
+		// stopped cleanup still needs the exact PID/start-time CAS key.
 		return true, nil
 	}
 
@@ -149,12 +147,8 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 		return false, nil
 	}
 
-	wroteUnknownIdentity := false
-	if exitCode == -1 {
-		if err := s.writeExitedIdentityUnlocked(id, pid, pidStartTime); err != nil {
-			return false, fmt.Errorf("persist exited identity before unknown exit status: %w", err)
-		}
-		wroteUnknownIdentity = true
+	if err := s.writeExitedIdentityUnlocked(id, pid, pidStartTime); err != nil {
+		return false, fmt.Errorf("persist exited identity before stopped state: %w", err)
 	}
 
 	c.Status = StatusStopped
@@ -164,18 +158,11 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 	c.ExitCode = exitCode
 
 	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
-		if wroteUnknownIdentity {
-			clearErr := s.clearExitedIdentityUnlocked(id)
-			if clearErr != nil {
-				return false, errors.Join(err, fmt.Errorf("rollback exited identity after failed stop transition: %w", clearErr))
-			}
+		clearErr := s.clearExitedIdentityUnlocked(id)
+		if clearErr != nil {
+			return false, errors.Join(err, fmt.Errorf("rollback exited identity after failed stop transition: %w", clearErr))
 		}
 		return false, err
-	}
-	if !wroteUnknownIdentity {
-		if err := s.clearExitedIdentityUnlocked(id); err != nil {
-			return true, fmt.Errorf("clear stale exited identity after authoritative stop: %w", err)
-		}
 	}
 	return true, nil
 }
