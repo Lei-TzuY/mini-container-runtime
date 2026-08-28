@@ -143,6 +143,22 @@ func cleanupStoppedCgroupWithCleanup(st *state.Store, c *state.Container, cleanu
 	if !ok {
 		return nil
 	}
+
+	// A stopped snapshot is only authority for the exact generation that
+	// produced it. A concurrent restart may already have replaced both the
+	// lifecycle record and cgroup sidecar before this retry reads ownership. Do
+	// not let that stale retry consume the new running generation's cgroup.
+	if ownership.PID != c.PID || ownership.PIDStartTime != c.PIDStartTime {
+		return nil
+	}
+	current, err := st.Get(c.ID)
+	if err != nil {
+		return fmt.Errorf("re-read lifecycle state before cgroup cleanup for container %s: %w", c.ID, err)
+	}
+	if current.Status != state.StatusStopped || current.PID != c.PID || current.PIDStartTime != c.PIDStartTime {
+		return nil
+	}
+
 	if err := cleanupOwnedGenerationWith(st, c.ID, ownership, cleanup); err != nil {
 		return fmt.Errorf("cleanup persisted cgroup for stopped container %s: %w", c.ID, err)
 	}
