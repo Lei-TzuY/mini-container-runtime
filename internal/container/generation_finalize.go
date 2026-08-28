@@ -46,16 +46,39 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 		)
 	}
 
-	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
+	externalErr := cleanupStoppedGenerationExternalResourcesWith(
+		st,
+		c.ID,
+		c.PID,
+		c.PIDStartTime,
+		cleanupNetworkGenerationIfOwned,
+		dns.CleanupStoppedHostRegistrationGeneration,
+	)
+	return changed, errors.Join(cgroupErr, externalErr)
+}
+
+func cleanupStoppedGenerationExternalResourcesWith(
+	st *state.Store,
+	containerID string,
+	pid int,
+	pidStartTime uint64,
+	networkCleanup func(*state.Store, string, int, uint64, bool) error,
+	dnsCleanup func(string, string, int, uint64) error,
+) error {
 	var dnsErr error
-	// DNS teardown is now child-generation scoped as well. A stale finalizer can
-	// consume only the registration bound to the exact PID/start-time it proved
-	// dead; a newer restart registration is preserved even when both attempts use
-	// the same long-lived registrar process.
-	if err := dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, c.PID, c.PIDStartTime); err != nil {
-		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", c.ID, err)
+	if dnsCleanup == nil {
+		dnsErr = fmt.Errorf("DNS generation cleanup function is nil")
+	} else if err := dnsCleanup(defaultBridgeDNSNetwork, containerID, pid, pidStartTime); err != nil {
+		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", containerID, err)
 	}
-	return changed, errors.Join(cgroupErr, networkErr, dnsErr)
+
+	var networkErr error
+	if networkCleanup == nil {
+		networkErr = fmt.Errorf("network generation cleanup function is nil")
+	} else if err := networkCleanup(st, containerID, pid, pidStartTime, false); err != nil {
+		networkErr = err
+	}
+	return errors.Join(dnsErr, networkErr)
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
