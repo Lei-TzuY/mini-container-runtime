@@ -20,11 +20,13 @@ var (
 )
 
 type HostEntry struct {
-	ContainerID    string `json:"container_id"`
-	Hostname       string `json:"hostname"`
-	IP             string `json:"ip"`
-	OwnerPID       int    `json:"owner_pid,omitempty"`
-	OwnerStartTime uint64 `json:"owner_start_time,omitempty"`
+	ContainerID         string `json:"container_id"`
+	Hostname            string `json:"hostname"`
+	IP                  string `json:"ip"`
+	OwnerPID            int    `json:"owner_pid,omitempty"`
+	OwnerStartTime      uint64 `json:"owner_start_time,omitempty"`
+	GenerationPID       int    `json:"generation_pid,omitempty"`
+	GenerationStartTime uint64 `json:"generation_start_time,omitempty"`
 }
 
 type NetworkDNS struct {
@@ -67,11 +69,15 @@ func validateHostAndIP(hostname, ipAddr string) error {
 
 func validateHostEntryOwner(entry HostEntry) error {
 	legacy := entry.OwnerPID == 0 && entry.OwnerStartTime == 0
-	if legacy {
-		return nil
-	}
-	if entry.OwnerPID <= 0 || entry.OwnerStartTime == 0 {
+	if !legacy && (entry.OwnerPID <= 0 || entry.OwnerStartTime == 0) {
 		return fmt.Errorf("incomplete registrar process identity %d/%d", entry.OwnerPID, entry.OwnerStartTime)
+	}
+	generationUnset := entry.GenerationPID == 0 && entry.GenerationStartTime == 0
+	if !generationUnset && (entry.GenerationPID <= 0 || entry.GenerationStartTime == 0) {
+		return fmt.Errorf("incomplete child process identity %d/%d", entry.GenerationPID, entry.GenerationStartTime)
+	}
+	if legacy && !generationUnset {
+		return fmt.Errorf("child process identity requires registrar ownership")
 	}
 	return nil
 }
