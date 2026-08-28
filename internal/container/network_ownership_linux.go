@@ -64,6 +64,7 @@ func cleanupNetworkOwnershipWith(
 				"remove persisted port mapping %d:%d/%s: %w",
 				mapping.HostPort,
 				mapping.ContainerPort,
+				mapping.ContainerIP,
 				mapping.Protocol,
 				err,
 			))
@@ -188,6 +189,13 @@ func cleanupStoppedDNSRegistration(c *state.Container) error {
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	if c == nil {
 		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
+	}
+	current, err := stoppedSnapshotStillCurrent(st, c)
+	if err != nil {
+		return fmt.Errorf("validate stopped runtime cleanup snapshot for container %s: %w", c.ID, err)
+	}
+	if !current {
+		return nil
 	}
 	return errors.Join(
 		CleanupStoppedCgroup(st, c),
