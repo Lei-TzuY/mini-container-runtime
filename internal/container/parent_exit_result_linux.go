@@ -55,6 +55,21 @@ func finalizeManagedParentExit(
 	return nil
 }
 
+// cleanupBridgeAfterNormalExit runs an eager bridge teardown only for unmanaged
+// callers. Managed runtime generations persist exact network ownership and must
+// let FinalizeStoppedGeneration perform teardown after the stopped transition
+// is durable; running this closure first would make networking disappear while
+// DNS and lifecycle state still advertise a live generation.
+func cleanupBridgeAfterNormalExit(st *state.Store, bridgeCleanup func() error) error {
+	if bridgeCleanup == nil || st != nil {
+		return nil
+	}
+	if err := bridgeCleanup(); err != nil {
+		return &runtimeSetupError{err: fmt.Errorf("cleanup bridge network: %w", err)}
+	}
+	return nil
+}
+
 // parentExitResult combines the payload result with authoritative parent-side
 // teardown failures. Teardown failures are runtime-control failures: restart
 // policies must not launch another generation while isolation cleanup or
