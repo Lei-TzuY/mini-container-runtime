@@ -54,8 +54,9 @@ func TestUnknownExitCodeCanBeUpgradedForSameExitedIdentity(t *testing.T) {
 	if got.FinishedAt == nil || !got.FinishedAt.Equal(authoritativeFinished) {
 		t.Fatalf("finished_at=%v, want %v", got.FinishedAt, authoritativeFinished)
 	}
-	if _, err := os.Stat(exitedIdentityPath(st.ctrDir, id)); !os.IsNotExist(err) {
-		t.Fatalf("exited-identity tombstone survived reconciliation: %v", err)
+	gotPID, gotStart, ok, err := st.GetExitedIdentity(id)
+	if err != nil || !ok || gotPID != pid || gotStart != start {
+		t.Fatalf("stopped generation identity lost after reconciliation: pid=%d start=%d ok=%v err=%v", gotPID, gotStart, ok, err)
 	}
 
 	changed, err = st.MarkStoppedIfIdentity(id, pid, start, -1, time.Now())
@@ -68,6 +69,25 @@ func TestUnknownExitCodeCanBeUpgradedForSameExitedIdentity(t *testing.T) {
 	}
 	if got.ExitCode != 23 {
 		t.Fatalf("authoritative exit code was downgraded: %d", got.ExitCode)
+	}
+}
+
+func TestKnownExitPersistsStoppedGenerationIdentity(t *testing.T) {
+	const (
+		id    = "ctr-known-exit"
+		pid   = 5151
+		start = 6161
+	)
+	st := newLifecycleTestStore(t, id)
+	if err := st.MarkRunning(id, pid, start, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := st.MarkStoppedIfIdentity(id, pid, start, 0, time.Now()); err != nil || !changed {
+		t.Fatalf("known stop: changed=%v err=%v", changed, err)
+	}
+	gotPID, gotStart, ok, err := st.GetExitedIdentity(id)
+	if err != nil || !ok || gotPID != pid || gotStart != start {
+		t.Fatalf("durable stopped generation identity: pid=%d start=%d ok=%v err=%v", gotPID, gotStart, ok, err)
 	}
 }
 
@@ -112,8 +132,8 @@ func TestRestartClearsExitedIdentityTombstone(t *testing.T) {
 	if err := st.MarkRunning(id, 100, 200, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := st.MarkStoppedIfIdentity(id, 100, 200, -1, time.Now()); err != nil || !changed {
-		t.Fatalf("fallback stop: changed=%v err=%v", changed, err)
+	if changed, err := st.MarkStoppedIfIdentity(id, 100, 200, 0, time.Now()); err != nil || !changed {
+		t.Fatalf("stop: changed=%v err=%v", changed, err)
 	}
 	if err := st.MarkRunning(id, 300, 400, time.Now()); err != nil {
 		t.Fatalf("restart: %v", err)
@@ -141,8 +161,8 @@ func TestDeleteRemovesExitedIdentityTombstone(t *testing.T) {
 	if err := st.MarkRunning(id, 100, 200, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := st.MarkStoppedIfIdentity(id, 100, 200, -1, time.Now()); err != nil || !changed {
-		t.Fatalf("fallback stop: changed=%v err=%v", changed, err)
+	if changed, err := st.MarkStoppedIfIdentity(id, 100, 200, 0, time.Now()); err != nil || !changed {
+		t.Fatalf("stop: changed=%v err=%v", changed, err)
 	}
 	path := exitedIdentityPath(st.ctrDir, id)
 	if _, err := os.Stat(path); err != nil {
