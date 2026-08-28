@@ -7,9 +7,9 @@ import (
 )
 
 // BindHostRegistrationGeneration durably upgrades a registrar-owned DNS entry
-// to exact child-generation ownership after bridge admission succeeds. A modern
-// entry is deliberately unbound before this point, so a registrar crash cannot
-// make a pre-admission registration authoritative.
+// to exact child-generation ownership after bridge admission succeeds. Runtime
+// admission reservations become visible to peers in the same atomic registry
+// update that binds the exact child generation.
 func BindHostRegistrationGeneration(networkName, containerID string, pid int, pidStartTime uint64) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
@@ -57,10 +57,11 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 			if !entry.GenerationAware {
 				return fmt.Errorf("DNS registration for container %q is not generation-aware", containerID)
 			}
-			if entry.GenerationPID == pid && entry.GenerationStartTime == pidStartTime {
+			if entry.GenerationPID == pid && entry.GenerationStartTime == pidStartTime && !entry.AdmissionPending {
 				return nil
 			}
-			if entry.GenerationPID != 0 || entry.GenerationStartTime != 0 {
+			if (entry.GenerationPID != 0 || entry.GenerationStartTime != 0) &&
+				(entry.GenerationPID != pid || entry.GenerationStartTime != pidStartTime) {
 				return fmt.Errorf(
 					"DNS registration for container %q is already bound to child generation %d/%d",
 					containerID,
@@ -71,6 +72,7 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 			updated := append([]HostEntry(nil), entries...)
 			updated[i].GenerationPID = pid
 			updated[i].GenerationStartTime = pidStartTime
+			updated[i].AdmissionPending = false
 			return saveEntriesAtomic(dir, netFile, networkName, updated)
 		}
 		return fmt.Errorf("DNS registration for container %q does not exist", containerID)

@@ -28,6 +28,7 @@ type HostEntry struct {
 	GenerationAware     bool   `json:"generation_aware,omitempty"`
 	GenerationPID       int    `json:"generation_pid,omitempty"`
 	GenerationStartTime uint64 `json:"generation_start_time,omitempty"`
+	AdmissionPending    bool   `json:"admission_pending,omitempty"`
 }
 
 type NetworkDNS struct {
@@ -83,6 +84,9 @@ func validateHostEntryOwner(entry HostEntry) error {
 	if !generationUnset && !entry.GenerationAware {
 		return fmt.Errorf("child process identity requires generation-aware registration")
 	}
+	if entry.AdmissionPending && !entry.GenerationAware {
+		return fmt.Errorf("pending admission requires generation-aware registration")
+	}
 	return nil
 }
 
@@ -111,10 +115,6 @@ func validateEntries(networkName string, entries []HostEntry) error {
 	return nil
 }
 
-// pruneStaleOwnedEntries removes only entries whose registrar process generation
-// is authoritatively gone and whose container generation is not still running.
-// Legacy entries lack generation proof and are deliberately retained rather
-// than guessed stale.
 func pruneStaleOwnedEntries(entries []HostEntry) ([]HostEntry, bool, error) {
 	if len(entries) == 0 {
 		return entries, false, nil
@@ -236,49 +236,30 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 	return nil
 }
 
-func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string) ([]HostEntry, bool, error) {
+func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string, admissionPending bool) ([]HostEntry, bool, error) {
 	for i, entry := range entries {
 		if entry.ContainerID != containerID && entry.Hostname != hostname {
 			continue
 		}
 		if entry.ContainerID == containerID && entry.Hostname == hostname && entry.IP == ipAddr && entry.OwnerPID == owner.PID && entry.OwnerStartTime == owner.StartTime {
-			if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 {
+			if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 && entry.AdmissionPending == admissionPending {
 				return entries, false, nil
 			}
 			updated := append([]HostEntry(nil), entries...)
 			updated[i].GenerationAware = true
 			updated[i].GenerationPID = 0
 			updated[i].GenerationStartTime = 0
+			updated[i].AdmissionPending = admissionPending
 			return updated, true, nil
 		}
-		return nil, false, fmt.Errorf(
-			"live DNS registration conflict: container %q/hostname %q is owned by registrar %d/%d",
-			entry.ContainerID,
-			entry.Hostname,
-			entry.OwnerPID,
-			entry.OwnerStartTime,
-		)
+		return nil, false, fmt.Errorf("live DNS registration conflict: container %q/hostname %q is owned by registrar %d/%d", entry.ContainerID, entry.Hostname, entry.OwnerPID, entry.OwnerStartTime)
 	}
 	updated := append([]HostEntry(nil), entries...)
-	updated = append(updated, HostEntry{
-		ContainerID:     containerID,
-		Hostname:        hostname,
-		IP:              ipAddr,
-		OwnerPID:        owner.PID,
-		OwnerStartTime:  owner.StartTime,
-		GenerationAware: true,
-	})
+	updated = append(updated, HostEntry{ContainerID: containerID, Hostname: hostname, IP: ipAddr, OwnerPID: owner.PID, OwnerStartTime: owner.StartTime, GenerationAware: true, AdmissionPending: admissionPending})
 	return updated, true, nil
 }
 
-// RegisterHost records a container IP mapping in a network. The registration is
-// owned by the exact minictl parent process generation so an os.Exit, kill, or
-// crash cannot leave it permanently authoritative. If the registrar disappears
-// while its container remains alive, the committed child generation adopts the
-// entry until that generation exits. A still-live registration owned by another
-// registrar is never overwritten: competing lifecycle actors must fail closed
-// rather than steal service-discovery ownership from the generation that won.
-func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
+func registerHost(networkName, containerID, hostname, ipAddr string, admissionPending bool) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
 	}
@@ -309,7 +290,7 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 		if err != nil {
 			return err
 		}
-		updated, changed, err := entriesWithRegistration(entries, owner, containerID, hostname, ipAddr)
+		updated, changed, err := entriesWithRegistration(entries, owner, containerID, hostname, ipAddr, admissionPending)
 		if err != nil {
 			return err
 		}
@@ -320,19 +301,18 @@ func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
 	})
 }
 
-// UnregisterHost is the compatibility teardown API. Modern registrations are
-// generation-owned, so an unscoped container-ID delete is unsafe: a stale CLI
-// defer could otherwise remove a replacement entry published by a newer runtime.
-// Preserve historical call sites while giving them the same exact registrar
-// ownership boundary as authoritative runtime finalization.
+func RegisterHost(networkName, containerID, hostname, ipAddr string) error {
+	return registerHost(networkName, containerID, hostname, ipAddr, false)
+}
+
+func registerHostAdmission(networkName, containerID, hostname, ipAddr string) error {
+	return registerHost(networkName, containerID, hostname, ipAddr, true)
+}
+
 func UnregisterHost(networkName, containerID string) error {
 	return UnregisterHostOwned(networkName, containerID)
 }
 
-// GenerateHostsContentChecked returns a consistent snapshot of one registry.
-// Dead process-owned entries are garbage-collected transactionally before the
-// snapshot is formatted. Corrupt, symlinked, unreadable, or unprobeable state is
-// reported so runtime setup can fail closed instead of using stale discovery.
 func GenerateHostsContentChecked(networkName string) (string, error) {
 	if err := validateNetworkName(networkName); err != nil {
 		return "", err
@@ -372,13 +352,14 @@ func GenerateHostsContentChecked(networkName string) (string, error) {
 		"# Mini Docker Network Service Discovery (" + networkName + ")",
 	}
 	for _, entry := range entries {
+		if entry.AdmissionPending {
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("%s\t%s", entry.IP, entry.Hostname))
 	}
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// GenerateHostsContent preserves the historical string-only API. New runtime
-// paths should use GenerateHostsContentChecked so storage failures are visible.
 func GenerateHostsContent(networkName string) string {
 	content, err := GenerateHostsContentChecked(networkName)
 	if err != nil {
@@ -387,9 +368,6 @@ func GenerateHostsContent(networkName string) string {
 	return content
 }
 
-// InjectHostsIntoRootFS is retained for API compatibility, but direct rootfs
-// mutation is intentionally disabled. Container runs now bind-mount an
-// anonymous generated hosts file inside the child mount namespace instead.
 func InjectHostsIntoRootFS(rootfsPath, networkName string) error {
 	if rootfsPath == "" {
 		return fmt.Errorf("rootfs path cannot be empty")
