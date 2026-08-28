@@ -71,13 +71,21 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 				c.PIDStartTime,
 			)
 		}
-		// NetworkOwnership also represents historical rules-only recovery
-		// sidecars. Matching PID/start-time alone therefore does not prove that
-		// this generation reached bridge admission. A bridge-backed generation
-		// always persists its generation-scoped host veth name before any bridge
-		// mutation; require that specific resource proof before allowing DNS
-		// adoption.
-		if networkOwner.VethHost == "" {
+		// A generation-scoped host veth is direct bridge-admission proof. Older
+		// runtimes may leave rules-only sidecars, so preserve compatibility when
+		// at least one owned DNAT rule explicitly targets the same container IP
+		// as this DNS entry. A same-generation sidecar describing unrelated host
+		// networking must not be allowed to adopt the service-discovery record.
+		bridgeProof := networkOwner.VethHost != ""
+		if !bridgeProof {
+			for _, mapping := range networkOwner.Mappings {
+				if mapping.ContainerIP == entry.IP {
+					bridgeProof = true
+					break
+				}
+			}
+		}
+		if !bridgeProof {
 			return false, nil
 		}
 
