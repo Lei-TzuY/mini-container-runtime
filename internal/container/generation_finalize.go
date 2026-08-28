@@ -32,6 +32,11 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 		return changed, cgroupErr
 	}
 
+	// Die is generation-scoped, just like MarkStoppedIfIdentity. Emit it only
+	// for the actor that actually transitioned this exact PID/start-time record;
+	// retries/reconcilers observing an already-stopped record cannot duplicate it.
+	// Event persistence is best effort and must not revoke an already-finished
+	// payload generation.
 	if changed {
 		_ = events.Publish(
 			events.EventDie,
@@ -43,6 +48,12 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 
 	networkErr := cleanupNetworkGenerationIfOwned(st, c.ID, c.PID, c.PIDStartTime, false)
 	var dnsErr error
+	// Only the actor that actually committed this generation's stopped state may
+	// consume a still-live registration owned by the same registrar process. A
+	// retry can race the next restart attempt while state still reads stopped;
+	// preserving the current owner's entry prevents that stale finalizer from
+	// deleting the next attempt's newly-admitted DNS registration. Foreign stale
+	// owners remain eligible for recovery cleanup.
 	if err := dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, changed); err != nil {
 		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", c.ID, err)
 	}
@@ -74,6 +85,7 @@ func clearOwnedGenerationAfterCleanup(st *state.Store, containerID string, owner
 		return err
 	}
 	if !ok {
+		// Another lifecycle actor may have completed the same cleanup first.
 		return nil
 	}
 	if current != ownership {
@@ -103,6 +115,9 @@ func cleanupOwnedGenerationWith(
 	return nil
 }
 
+// CleanupStoppedCgroup retries cleanup for a stopped container whose durable
+// ownership sidecar survived an earlier cleanup failure. Legacy/unowned stopped
+// containers have no sidecar and are a no-op.
 func CleanupStoppedCgroup(st *state.Store, c *state.Container) error {
 	return cleanupStoppedCgroupWithCleanup(st, c, cleanupContainerProcessGeneration)
 }
@@ -130,12 +145,11 @@ func cleanupStoppedCgroupWithCleanup(st *state.Store, c *state.Container, cleanu
 	}
 
 	// The caller's stopped snapshot can go stale while a concurrent restart
-	// commits a new running generation and replaces cgroup ownership. Re-read
-	// lifecycle state after loading ownership and refuse destructive cleanup once
-	// stopped is no longer the durable authority. If restart happens after this
-	// gate, the captured ownership still names the old generation's unique cgroup
-	// and the sidecar clear below is compare-and-swap, so the new generation is
-	// not consumed.
+	// commits a new running generation. Re-read lifecycle state after loading the
+	// old generation's ownership and refuse destructive cleanup once stopped is
+	// no longer the durable authority. If restart happens after this gate, the
+	// captured generation-scoped cgroup name remains safe to clean and the
+	// ownership clear below is compare-and-swap protected.
 	current, err := st.Get(c.ID)
 	if err != nil {
 		return fmt.Errorf("re-read lifecycle state before cgroup cleanup for container %s: %w", c.ID, err)
@@ -174,6 +188,10 @@ func finalizeStoppedGenerationWithCleanup(
 	if stateErr != nil {
 		stateErr = fmt.Errorf("persist stopped state for container %s: %w", c.ID, stateErr)
 		if !changed {
+			// Destructive host cleanup must never run before stopped state is
+			// durable. MarkStoppedIfIdentity can return changed=true together
+			// with a post-commit housekeeping error; only changed=false proves
+			// that the stop transition itself did not commit.
 			return false, stateErr
 		}
 	}
