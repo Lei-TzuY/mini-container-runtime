@@ -162,13 +162,22 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 	return nil
 }
 
+func cleanupStoppedDNSRegistration(c *state.Container) error {
+	if c.PID > 0 && c.PIDStartTime != 0 {
+		return dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, c.PID, c.PIDStartTime)
+	}
+	// Historical stopped records may predate durable child-generation identity.
+	// They cannot participate in exact CAS teardown, so retain the prior retry
+	// semantics: reclaim provably stale foreign entries, but never consume a
+	// registration owned by this current registrar process.
+	return dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false)
+}
+
 // CleanupStoppedRuntimeResources retries every durable host-side cleanup token
 // currently known for a stopped generation. Independent failures are joined so
-// one resource class cannot prevent another from making progress. DNS cleanup is
-// deliberately retry-mode: it may remove provably stale foreign registrations,
-// but it must preserve a registration owned by the current registrar because a
-// newer restart attempt can already have admitted it while state still reflects
-// the prior stopped generation.
+// one resource class cannot prevent another from making progress. Modern DNS
+// teardown is generation-scoped; legacy stopped records without child identity
+// fall back to conservative registrar-scoped recovery.
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	if c == nil {
 		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
@@ -176,6 +185,6 @@ func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	return errors.Join(
 		CleanupStoppedCgroup(st, c),
 		CleanupStoppedNetwork(st, c),
-		dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false),
+		cleanupStoppedDNSRegistration(c),
 	)
 }
