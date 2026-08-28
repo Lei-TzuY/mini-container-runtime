@@ -19,7 +19,6 @@ import (
 	"minicontainer/internal/container"
 	"minicontainer/internal/daemon"
 	"minicontainer/internal/diff"
-	"minicontainer/internal/dns"
 	"minicontainer/internal/events"
 	"minicontainer/internal/health"
 	"minicontainer/internal/image"
@@ -57,7 +56,7 @@ Usage:
   minictl logs    [-f] [--tail n] <id>                        View container logs
   minictl stats   [id]                                        View live resource usage
   minictl pause   <id>                                        Pause a container (cgroup freeze)
-  minictl unpause <id>                                        Unpause a container
+  minictl unpause <id>                                        Unpause container
   minictl stop    [-t timeout] <id>                           Gracefully stop container
   minictl kill    <id>                                        Kill a running container
   minictl rm      <id>                                        Remove a stopped container
@@ -275,12 +274,6 @@ func cmdRun(args []string) {
 
 	if containerID != "" {
 		_ = events.Publish(events.EventCreate, containerID, cfg.RootFS, "created container")
-		_ = events.Publish(events.EventStart, containerID, cfg.RootFS, "started container")
-		if cfg.BridgeNetwork {
-			_ = dns.RegisterHost("default", containerID, cfg.Hostname, "172.20.0.2")
-			_ = dns.InjectHostsIntoRootFS(cfg.RootFS, "default")
-			defer func() { _ = dns.UnregisterHost("default", containerID) }()
-		}
 		logFile, err := logs.CreateLogFile(containerID)
 		if err == nil {
 			defer logFile.Close()
@@ -296,10 +289,7 @@ func cmdRun(args []string) {
 	runErr := container.Run(cfg)
 
 	if store != nil && rec != nil {
-		settled, settleErr := settleRunCommandState(store, containerID, runErr, time.Now())
-		if settled != nil && settled.Status == state.StatusStopped {
-			_ = events.Publish(events.EventDie, containerID, cfg.RootFS, fmt.Sprintf("exited with code %d", settled.ExitCode))
-		}
+		_, settleErr := settleRunCommandState(store, containerID, runErr, time.Now())
 		runErr = joinRunCommandErrors(runErr, settleErr)
 	}
 
@@ -1448,7 +1438,6 @@ func cmdUnpack(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: minictl unpack <tar-file> <dest-dir>")
 		os.Exit(1)
 	}
-
 	tarFile := args[0]
 	destDir := args[1]
 
