@@ -15,6 +15,7 @@ const defaultBridgeContainerIP = "172.20.0.2"
 
 type networkAdmissionDeps struct {
 	validateDNSRootFS func(rootfsPath, networkName string) error
+	beginDNSAttempt   func(networkName, containerID, hostname, ipAddr string) (func() error, error)
 	registerDNSHost   func(networkName, containerID, hostname, ipAddr string) error
 	unregisterDNSHost func(networkName, containerID string) error
 }
@@ -22,6 +23,7 @@ type networkAdmissionDeps struct {
 func defaultNetworkAdmissionDeps() networkAdmissionDeps {
 	return networkAdmissionDeps{
 		validateDNSRootFS: dns.InjectHostsIntoRootFS,
+		beginDNSAttempt:   dns.BeginHostRegistrationAttempt,
 		registerDNSHost:   dns.RegisterHost,
 		unregisterDNSHost: dns.UnregisterHostOwned,
 	}
@@ -51,11 +53,10 @@ func requireDurableNetworkOwnershipWith(cfg Config, lifecycleStore *state.Store,
 // rollbackNetworkAdmissionAfterRun consumes an attempt-scoped DNS admission
 // only while durable lifecycle state still proves that no process generation
 // was admitted. Once a generation reached stopped, authoritative generation
-// finalization owns DNS teardown; replaying this registrar-scoped rollback is
-// unsafe because a concurrent restart may already have re-registered the same
-// container ID under the same long-lived registrar process identity. A running,
-// stopped, or unreadable record therefore preserves the entry here. State read
-// failures fail closed so a later lifecycle actor can reconcile it safely.
+// finalization owns DNS teardown; replaying this attempt-scoped rollback is
+// unnecessary. A running, stopped, or unreadable record therefore preserves the
+// entry here. State read failures fail closed so a later lifecycle actor can
+// reconcile it safely.
 func rollbackNetworkAdmissionAfterRun(lifecycleStore *state.Store, containerID string, rollback func() error) error {
 	if rollback == nil {
 		return nil
@@ -112,9 +113,10 @@ func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func
 // store so a later lifecycle actor can safely recover after a parent crash.
 //
 // Bridge service discovery is attempt-scoped: every restart attempt validates
-// and registers independently, and receives an owned rollback. Production Run
-// gates that rollback on durable lifecycle state; the narrow validation helper
-// consumes it immediately because no child attempt is involved.
+// and registers independently, and receives an exact-attempt rollback. The
+// production dependency uses an opaque token so stale rollback from one attempt
+// cannot consume a newer identical registration from the same registrar. Legacy
+// injected register/unregister callbacks remain supported for focused tests.
 func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, deps networkAdmissionDeps) (func() error, error) {
 	if len(cfg.PortMappings) > 0 && !cfg.BridgeNetwork {
 		return nil, &runtimeSetupError{err: fmt.Errorf("published ports require bridge networking")}
@@ -134,16 +136,32 @@ func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, d
 	if cfg.ContainerID == "" {
 		return nil, &runtimeStateError{err: fmt.Errorf("bridge networking requires a managed container ID")}
 	}
-	if deps.validateDNSRootFS == nil || deps.registerDNSHost == nil || deps.unregisterDNSHost == nil {
+	if deps.validateDNSRootFS == nil || (deps.beginDNSAttempt == nil && (deps.registerDNSHost == nil || deps.unregisterDNSHost == nil)) {
 		return nil, &runtimeSetupError{err: fmt.Errorf("bridge DNS admission dependencies are incomplete")}
 	}
 	if err := deps.validateDNSRootFS(cfg.RootFS, defaultBridgeDNSNetwork); err != nil {
 		return nil, &runtimeSetupError{err: fmt.Errorf("validate bridge DNS rootfs: %w", err)}
 	}
+
+	if deps.beginDNSAttempt != nil {
+		dnsRollback, err := deps.beginDNSAttempt(defaultBridgeDNSNetwork, cfg.ContainerID, cfg.Hostname, defaultBridgeContainerIP)
+		if err != nil {
+			return nil, &runtimeSetupError{err: fmt.Errorf("register bridge DNS host: %w", err)}
+		}
+		if dnsRollback == nil {
+			return nil, &runtimeSetupError{err: fmt.Errorf("register bridge DNS host returned nil attempt rollback")}
+		}
+		return func() error {
+			if err := dnsRollback(); err != nil {
+				return fmt.Errorf("unregister bridge DNS host: %w", err)
+			}
+			return nil
+		}, nil
+	}
+
 	if err := deps.registerDNSHost(defaultBridgeDNSNetwork, cfg.ContainerID, cfg.Hostname, defaultBridgeContainerIP); err != nil {
 		return nil, &runtimeSetupError{err: fmt.Errorf("register bridge DNS host: %w", err)}
 	}
-
 	rollback := func() error {
 		if err := deps.unregisterDNSHost(defaultBridgeDNSNetwork, cfg.ContainerID); err != nil {
 			return fmt.Errorf("unregister bridge DNS host: %w", err)
