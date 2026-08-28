@@ -69,8 +69,6 @@ func Run(cfg Config) (resultErr error) {
 		}
 
 		if isRuntimeControlError(err) {
-			// Runtime state/setup failures are not payload failures. Retrying cannot
-			// repair missing controls and may create repeated unmanaged processes.
 			return err
 		}
 
@@ -262,18 +260,15 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	if lifecycleStore != nil {
 		childStartTime, err = ProcessStartTime(childPID)
 		if err != nil {
-			abortBlockedChild(cmd, writePipe)
-			return &runtimeStateError{err: fmt.Errorf("capture process identity for container %s: %w", cfg.ContainerID, err)}
+			return abortPreRunningChildFailure(cmd, writePipe, &runtimeStateError{err: fmt.Errorf("capture process identity for container %s: %w", cfg.ContainerID, err)})
 		}
 		cgName, err = cgroups.NameForContainerProcess(cfg.ContainerID, childPID, childStartTime)
 		if err != nil {
-			abortBlockedChild(cmd, writePipe)
-			return &runtimeStateError{err: fmt.Errorf("derive cgroup identity for container %s: %w", cfg.ContainerID, err)}
+			return abortPreRunningChildFailure(cmd, writePipe, &runtimeStateError{err: fmt.Errorf("derive cgroup identity for container %s: %w", cfg.ContainerID, err)})
 		}
 		startedAt := time.Now()
 		if err := lifecycleStore.MarkRunning(cfg.ContainerID, childPID, childStartTime, startedAt); err != nil {
-			abortBlockedChild(cmd, writePipe)
-			return &runtimeStateError{err: fmt.Errorf("persist running state for container %s: %w", cfg.ContainerID, err)}
+			return abortPreRunningChildFailure(cmd, writePipe, &runtimeStateError{err: fmt.Errorf("persist running state for container %s: %w", cfg.ContainerID, err)})
 		}
 	}
 
@@ -287,29 +282,12 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	cgroupApplied := false
 	if err := cgroups.Apply(childPID, cgCfg, cfg.Debug); err != nil {
 		if resourceLimitsRequested(cfg) {
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
-				childPID,
-				childStartTime,
-				fmt.Errorf("apply required cgroup resource limits: %w", err),
-			)
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, fmt.Errorf("apply required cgroup resource limits: %w", err))
 		}
 		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", err)
 	} else {
 		cgroupApplied = true
-		if err := persistAppliedCgroupOwnership(
-			cmd,
-			writePipe,
-			lifecycleStore,
-			cfg.ContainerID,
-			childPID,
-			childStartTime,
-			cgCfg.Name,
-			cfg.Debug,
-		); err != nil {
+		if err := persistAppliedCgroupOwnership(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, cgCfg.Name, cfg.Debug); err != nil {
 			return err
 		}
 	}
@@ -323,45 +301,15 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	if cfg.BridgeNetwork {
 		networkOwner, err := network.NewPortForwardingOwner()
 		if err != nil {
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
-				childPID,
-				childStartTime,
-				fmt.Errorf("create bridge ownership marker: %w", err),
-			)
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, fmt.Errorf("create bridge ownership marker: %w", err))
 		}
 		if lifecycleStore == nil {
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
-				childPID,
-				childStartTime,
-				&runtimeStateError{err: fmt.Errorf("bridge networking requires managed lifecycle state")},
-			)
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, &runtimeStateError{err: fmt.Errorf("bridge networking requires managed lifecycle state")})
 		}
 
-		persistedNetworkOwnership := networkOwnershipForGeneration(
-			networkOwner,
-			childPID,
-			childStartTime,
-			containerIP,
-			cfg.PortMappings,
-		)
+		persistedNetworkOwnership := networkOwnershipForGeneration(networkOwner, childPID, childStartTime, containerIP, cfg.PortMappings)
 		if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
-				childPID,
-				childStartTime,
-				&runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)},
-			)
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, &runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)})
 		}
 
 		bridgeCleanup, err = setupBridgeHostOwned(childPID, hostCIDR, containerIP, cfg.PortMappings, networkOwner, cfg.Debug)
@@ -370,15 +318,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 			if cleanupErr := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); cleanupErr != nil {
 				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted network resources after bridge setup failure: %w", cleanupErr))
 			}
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
-				childPID,
-				childStartTime,
-				setupErr,
-			)
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
 		}
 
 		baseBridgeCleanup := bridgeCleanup
@@ -402,15 +342,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 			}
 			bridgeCleanup = nil
 		}
-		return abortRuntimeSetupFailure(
-			cmd,
-			writePipe,
-			lifecycleStore,
-			cfg.ContainerID,
-			childPID,
-			childStartTime,
-			setupErr,
-		)
+		return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
 	}
 
 	initStatusErr := awaitPayloadExec(initStatusReadPipe)
@@ -427,19 +359,8 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 
 	var finalizationErr error
 	if lifecycleStore != nil {
-		snapshot := &state.Container{
-			ID:           cfg.ContainerID,
-			PID:          childPID,
-			PIDStartTime: childStartTime,
-		}
-		finalizationErr = finalizeManagedParentExit(
-			lifecycleStore,
-			snapshot,
-			exitCodeFromWaitError(waitErr),
-			time.Now(),
-			cgroupApplied,
-			FinalizeStoppedGeneration,
-		)
+		snapshot := &state.Container{ID: cfg.ContainerID, PID: childPID, PIDStartTime: childStartTime}
+		finalizationErr = finalizeManagedParentExit(lifecycleStore, snapshot, exitCodeFromWaitError(waitErr), time.Now(), cgroupApplied, FinalizeStoppedGeneration)
 	} else if cgroupApplied {
 		if err := cgroups.RemoveChecked(cgCfg.Name, cfg.Debug); err != nil {
 			finalizationErr = fmt.Errorf("cleanup cgroup %s: %w", cgCfg.Name, err)
@@ -570,8 +491,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.MkdirAll(sysPath, 0755); err != nil {
 		return fmt.Errorf("mkdir sys: %w", err)
 	}
-	if err := syscall.Mount("sysfs", sysPath, "sysfs",
-		syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NOEXEC|syscall.MS_NODEV, ""); err != nil {
+	if err := syscall.Mount("sysfs", sysPath, "sysfs", syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NOEXEC|syscall.MS_NODEV, ""); err != nil {
 		if cfg.Debug {
 			fmt.Printf("[init] mount sysfs: %v (ignored)\n", err)
 		}
@@ -619,7 +539,6 @@ func ContainerInit(cfg Config) (resultErr error) {
 		return err
 	}
 
-	// Drop Linux Capabilities if specified
 	if len(cfg.CapDrop) > 0 {
 		if err := DropCapabilities(cfg.CapDrop, cfg.Debug); err != nil {
 			return fmt.Errorf("drop capabilities: %w", err)
@@ -679,14 +598,12 @@ func mountVolume(v Volume, rootfs string, debug bool) error {
 	defer syscall.Close(targetFD)
 	target := volumeTargetFDPath(targetFD)
 
-	if err := syscall.Mount(source, target, "",
-		syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+	if err := syscall.Mount(source, target, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind mount: %w", err)
 	}
 
 	if v.ReadOnly {
-		if err := syscall.Mount("", target, "",
-			syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
+		if err := syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
 			return fmt.Errorf("remount read-only: %w", err)
 		}
 	}
