@@ -58,7 +58,7 @@ func Run(cfg Config) (resultErr error) {
 		attempt++
 		rollbackAdmission, admissionErr := beginNetworkAttemptAdmission(cfg, lifecycleStore)
 		if admissionErr != nil {
-			return admissionErr
+			return markPreGenerationRunFailure(admissionErr)
 		}
 
 		err := runOnce(cfg, lifecycleStore)
@@ -112,6 +112,13 @@ func openLifecycleStore(cfg Config) (*state.Store, error) {
 }
 
 func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
+	processStarted := false
+	defer func() {
+		if resultErr != nil && !processStarted {
+			resultErr = markPreGenerationRunFailure(resultErr)
+		}
+	}()
+
 	if cfg.Debug {
 		fmt.Println("[parent] spawning child with new namespaces")
 	}
@@ -237,6 +244,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		_ = initStatusWritePipe.Close()
 		return fmt.Errorf("starting container process: %w", err)
 	}
+	processStarted = true
 	_ = readPipe.Close()
 	_ = initStatusWritePipe.Close()
 	if runtimeHostsFile != nil {
