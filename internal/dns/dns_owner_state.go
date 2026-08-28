@@ -10,9 +10,10 @@ import (
 
 // hostEntryOwnerActive decides whether a process-owned DNS entry is still
 // authoritative. The registrar process owns setup and the whole restart loop.
-// If that process is gone, a committed live container generation may adopt the
-// registration; otherwise the entry is stale. State/probe uncertainty fails
-// closed rather than deleting a possibly-live container's discovery record.
+// If that process is gone, only a committed live container generation with
+// matching durable bridge-network ownership may adopt the registration.
+// State/probe uncertainty fails closed rather than deleting a possibly-live
+// container's discovery record.
 func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 	alive, err := registrarGenerationAlive(entry.OwnerPID, entry.OwnerStartTime)
 	if err != nil {
@@ -40,6 +41,37 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 		if c.PID <= 0 || c.PIDStartTime == 0 {
 			return false, fmt.Errorf("running container %s has invalid process identity %d/%d", c.ID, c.PID, c.PIDStartTime)
 		}
+		// Container IDs are reusable across stopped/delete/recreate cycles. A
+		// newer generation with the same ID must not accidentally adopt an old
+		// registrar's service-discovery name.
+		if c.Hostname != entry.Hostname {
+			return false, nil
+		}
+
+		// MarkRunning commits before bridge setup. If the parent crashes in that
+		// window, the blocked child has not acquired host-network resources and
+		// must not make the pre-generation DNS registration authoritative. The
+		// generation-scoped network sidecar is persisted before bridge mutation,
+		// so it is the durable proof that this running generation reached bridge
+		// admission.
+		networkOwner, ok, err := st.GetNetworkOwnership(c.ID)
+		if err != nil {
+			return false, fmt.Errorf("read network ownership while recovering DNS owner for container %s: %w", c.ID, err)
+		}
+		if !ok {
+			return false, nil
+		}
+		if networkOwner.PID != c.PID || networkOwner.PIDStartTime != c.PIDStartTime {
+			return false, fmt.Errorf(
+				"network ownership for container %s belongs to process %d/%d, not running generation %d/%d",
+				c.ID,
+				networkOwner.PID,
+				networkOwner.PIDStartTime,
+				c.PID,
+				c.PIDStartTime,
+			)
+		}
+
 		childAlive, err := registrarGenerationAlive(c.PID, c.PIDStartTime)
 		if err != nil {
 			return false, fmt.Errorf("probe adopted container generation %s %d/%d: %w", c.ID, c.PID, c.PIDStartTime, err)
