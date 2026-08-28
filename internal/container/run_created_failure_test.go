@@ -25,7 +25,7 @@ func TestFinalizeCreatedRunFailureCommitsSyntheticStop(t *testing.T) {
 	finishedAt := time.Unix(100, 0)
 	cause := errors.New("spawn admission failed")
 
-	gotErr := finalizeCreatedRunFailure(st, id, cause, finishedAt)
+	gotErr := finalizeCreatedRunFailure(st, id, markPreGenerationRunFailure(cause), finishedAt)
 	if !errors.Is(gotErr, cause) {
 		t.Fatalf("error=%v, want original cause", gotErr)
 	}
@@ -38,6 +38,28 @@ func TestFinalizeCreatedRunFailureCommitsSyntheticStop(t *testing.T) {
 	}
 	if got.StartedAt != nil || got.FinishedAt == nil || !got.FinishedAt.Equal(finishedAt) {
 		t.Fatalf("timestamps=%+v", got)
+	}
+}
+
+func TestFinalizeCreatedRunFailureRejectsUnprovenPostSpawnError(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "possibly-spawned"
+	saveCreatedRunFailureContainer(t, st, id)
+	cause := errors.New("identity capture failed after spawn")
+
+	gotErr := finalizeCreatedRunFailure(st, id, cause, time.Unix(105, 0))
+	if !errors.Is(gotErr, cause) {
+		t.Fatalf("error=%v, want original cause", gotErr)
+	}
+	got, err := st.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusCreated || got.FinishedAt != nil {
+		t.Fatalf("unproven failure mutated lifecycle state: %+v", got)
 	}
 }
 
@@ -54,7 +76,7 @@ func TestFinalizeCreatedRunFailureDoesNotOverwriteGenerationState(t *testing.T) 
 	}
 	cause := errors.New("runtime returned")
 
-	gotErr := finalizeCreatedRunFailure(st, id, cause, time.Unix(111, 0))
+	gotErr := finalizeCreatedRunFailure(st, id, markPreGenerationRunFailure(cause), time.Unix(111, 0))
 	if !errors.Is(gotErr, cause) {
 		t.Fatalf("error=%v, want original cause", gotErr)
 	}
