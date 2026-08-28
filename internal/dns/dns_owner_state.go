@@ -71,6 +71,15 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 				c.PIDStartTime,
 			)
 		}
+		// NetworkOwnership also represents historical rules-only recovery
+		// sidecars. Matching PID/start-time alone therefore does not prove that
+		// this generation reached bridge admission. A bridge-backed generation
+		// always persists its generation-scoped host veth name before any bridge
+		// mutation; require that specific resource proof before allowing DNS
+		// adoption.
+		if networkOwner.VethHost == "" {
+			return false, nil
+		}
 
 		childAlive, err := registrarGenerationAlive(c.PID, c.PIDStartTime)
 		if err != nil {
