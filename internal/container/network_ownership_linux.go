@@ -148,6 +148,13 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 	if c.Status != state.StatusStopped {
 		return fmt.Errorf("container %s is %s; network cleanup retry requires stopped state", c.ID, c.Status)
 	}
+	current, err := stoppedSnapshotStillCurrent(st, c)
+	if err != nil {
+		return fmt.Errorf("validate stopped cleanup snapshot for container %s: %w", c.ID, err)
+	}
+	if !current {
+		return nil
+	}
 
 	ownership, ok, err := st.GetNetworkOwnership(c.ID)
 	if err != nil {
