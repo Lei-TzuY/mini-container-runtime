@@ -204,6 +204,7 @@ func applyLayerReader(r io.Reader, destDir string) error {
 				return fmt.Errorf("opaque whiteout invalid path %q: %w", dir, err)
 			}
 			pendingHardlinks.cancelSubtree(targetDir, false)
+			directoryMetadataToFinalize = cancelDirectoryMetadataSubtree(directoryMetadataToFinalize, targetDir, false)
 			if err := clearOpaqueWhiteoutSecure(targetDir, destDir); err != nil {
 				return fmt.Errorf("opaque whiteout cleanup %q: %w", targetDir, err)
 			}
@@ -217,6 +218,7 @@ func applyLayerReader(r io.Reader, destDir string) error {
 				return fmt.Errorf("whiteout invalid path %q: %w", filepath.Join(dir, deleted), err)
 			}
 			pendingHardlinks.cancelSubtree(target, true)
+			directoryMetadataToFinalize = cancelDirectoryMetadataSubtree(directoryMetadataToFinalize, target, true)
 			if err := removeWhiteoutSecure(target, destDir); err != nil {
 				return fmt.Errorf("whiteout cleanup %q: %w", target, err)
 			}
@@ -248,6 +250,20 @@ func applyLayerReader(r io.Reader, destDir string) error {
 		return fmt.Errorf("finalize layer directory metadata: %w", err)
 	}
 	return nil
+}
+
+func cancelDirectoryMetadataSubtree(items []directoryMetadata, target string, includeRoot bool) []directoryMetadata {
+	kept := items[:0]
+	for _, item := range items {
+		rel, err := filepath.Rel(target, item.target)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			if rel != "." || includeRoot {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept
 }
 
 func openMaybeGzip(path string) (io.ReadCloser, error) {
