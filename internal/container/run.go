@@ -279,17 +279,20 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		CPUs:      cfg.CPUs,
 		PidsMax:   cfg.PidsLimit,
 	}
-	cgroupApplied := false
-	if err := cgroups.Apply(childPID, cgCfg, cfg.Debug); err != nil {
-		if resourceLimitsRequested(cfg) {
-			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, fmt.Errorf("apply required cgroup resource limits: %w", err))
+	cgroupApplied, cgroupErr := applyCgroupWithDurableOwnership(
+		lifecycleStore,
+		cfg.ContainerID,
+		childPID,
+		childStartTime,
+		cgCfg,
+		cfg.Debug,
+		cgroups.Apply,
+	)
+	if cgroupErr != nil {
+		if isRuntimeControlError(cgroupErr) || resourceLimitsRequested(cfg) {
+			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, fmt.Errorf("prepare required cgroup controls: %w", cgroupErr))
 		}
-		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", err)
-	} else {
-		cgroupApplied = true
-		if err := persistAppliedCgroupOwnership(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, cgCfg.Name, cfg.Debug); err != nil {
-			return err
-		}
+		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", cgroupErr)
 	}
 
 	const (
