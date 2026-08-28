@@ -365,12 +365,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 
 	waitErr := cmd.Wait()
 
-	var bridgeCleanupErr error
-	if bridgeCleanup != nil {
-		if err := bridgeCleanup(); err != nil {
-			bridgeCleanupErr = &runtimeSetupError{err: fmt.Errorf("cleanup bridge network: %w", err)}
-		}
-	}
+	bridgeCleanupErr := cleanupBridgeAfterNormalExit(lifecycleStore, bridgeCleanup)
 
 	var finalizationErr error
 	if lifecycleStore != nil {
