@@ -136,6 +136,16 @@ func cleanupStoppedHostRegistrationWithPolicy(
 				continue
 			}
 
+			// This compatibility path has no child-generation proof. A modern
+			// registration may have appeared after a legacy stopped snapshot was
+			// validated, so registrar identity/liveness is never sufficient
+			// authority to consume a generation-aware entry. Exact modern teardown
+			// belongs exclusively to cleanupStoppedHostRegistrationWithGenerationPolicy.
+			if entry.GenerationAware {
+				updated = append(updated, entry)
+				continue
+			}
+
 			// Legacy entries have no generation proof. Never guess that they are
 			// stale merely because a modern finalizer is running.
 			if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
