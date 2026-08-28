@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestParseByteSize(t *testing.T) {
 	tests := []struct {
@@ -42,9 +46,9 @@ func TestParseByteSizeRejectsInvalidInput(t *testing.T) {
 
 func TestParsePortSpec(t *testing.T) {
 	tests := []struct {
-		spec     string
-		wantHost int
-		wantCont int
+		spec      string
+		wantHost  int
+		wantCont  int
 		wantProto string
 	}{
 		{"8080:80", 8080, 80, "tcp"},
@@ -143,5 +147,34 @@ func TestParseRunConfig(t *testing.T) {
 	}
 	if cfg.UserNS {
 		t.Fatalf("UserNS = true, want false")
+	}
+}
+
+func TestCmdRunLeavesGenerationLifecycleToRuntime(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func cmdRun(args []string)")
+	end := strings.Index(text, "func cmdExec(args []string)")
+	if start < 0 || end <= start {
+		t.Fatalf("could not isolate cmdRun source")
+	}
+	cmdRunSource := text[start:end]
+
+	for _, forbidden := range []string{
+		"events.EventStart",
+		"events.EventDie",
+		"dns.RegisterHost",
+		"dns.InjectHostsIntoRootFS",
+		"dns.UnregisterHost",
+	} {
+		if strings.Contains(cmdRunSource, forbidden) {
+			t.Fatalf("cmdRun regained duplicate runtime lifecycle authority via %q", forbidden)
+		}
+	}
+	if !strings.Contains(cmdRunSource, "events.EventCreate") {
+		t.Fatalf("cmdRun no longer publishes the CLI create event")
 	}
 }
