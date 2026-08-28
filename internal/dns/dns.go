@@ -20,11 +20,14 @@ var (
 )
 
 type HostEntry struct {
-	ContainerID    string `json:"container_id"`
-	Hostname       string `json:"hostname"`
-	IP             string `json:"ip"`
-	OwnerPID       int    `json:"owner_pid,omitempty"`
-	OwnerStartTime uint64 `json:"owner_start_time,omitempty"`
+	ContainerID         string `json:"container_id"`
+	Hostname            string `json:"hostname"`
+	IP                  string `json:"ip"`
+	OwnerPID            int    `json:"owner_pid,omitempty"`
+	OwnerStartTime      uint64 `json:"owner_start_time,omitempty"`
+	GenerationAware     bool   `json:"generation_aware,omitempty"`
+	GenerationPID       int    `json:"generation_pid,omitempty"`
+	GenerationStartTime uint64 `json:"generation_start_time,omitempty"`
 }
 
 type NetworkDNS struct {
@@ -67,11 +70,18 @@ func validateHostAndIP(hostname, ipAddr string) error {
 
 func validateHostEntryOwner(entry HostEntry) error {
 	legacy := entry.OwnerPID == 0 && entry.OwnerStartTime == 0
-	if legacy {
-		return nil
-	}
-	if entry.OwnerPID <= 0 || entry.OwnerStartTime == 0 {
+	if !legacy && (entry.OwnerPID <= 0 || entry.OwnerStartTime == 0) {
 		return fmt.Errorf("incomplete registrar process identity %d/%d", entry.OwnerPID, entry.OwnerStartTime)
+	}
+	generationUnset := entry.GenerationPID == 0 && entry.GenerationStartTime == 0
+	if !generationUnset && (entry.GenerationPID <= 0 || entry.GenerationStartTime == 0) {
+		return fmt.Errorf("incomplete child process identity %d/%d", entry.GenerationPID, entry.GenerationStartTime)
+	}
+	if entry.GenerationAware && legacy {
+		return fmt.Errorf("generation-aware registration requires registrar ownership")
+	}
+	if !generationUnset && !entry.GenerationAware {
+		return fmt.Errorf("child process identity requires generation-aware registration")
 	}
 	return nil
 }
@@ -227,12 +237,19 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 }
 
 func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string) ([]HostEntry, bool, error) {
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if entry.ContainerID != containerID && entry.Hostname != hostname {
 			continue
 		}
 		if entry.ContainerID == containerID && entry.Hostname == hostname && entry.IP == ipAddr && entry.OwnerPID == owner.PID && entry.OwnerStartTime == owner.StartTime {
-			return entries, false, nil
+			if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 {
+				return entries, false, nil
+			}
+			updated := append([]HostEntry(nil), entries...)
+			updated[i].GenerationAware = true
+			updated[i].GenerationPID = 0
+			updated[i].GenerationStartTime = 0
+			return updated, true, nil
 		}
 		return nil, false, fmt.Errorf(
 			"live DNS registration conflict: container %q/hostname %q is owned by registrar %d/%d",
@@ -244,11 +261,12 @@ func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, conta
 	}
 	updated := append([]HostEntry(nil), entries...)
 	updated = append(updated, HostEntry{
-		ContainerID:    containerID,
-		Hostname:       hostname,
-		IP:             ipAddr,
-		OwnerPID:       owner.PID,
-		OwnerStartTime: owner.StartTime,
+		ContainerID:     containerID,
+		Hostname:        hostname,
+		IP:              ipAddr,
+		OwnerPID:        owner.PID,
+		OwnerStartTime:  owner.StartTime,
+		GenerationAware: true,
 	})
 	return updated, true, nil
 }

@@ -10,8 +10,9 @@ import (
 
 // hostEntryOwnerActive decides whether a process-owned DNS entry is still
 // authoritative. The registrar process owns setup and the whole restart loop.
-// If that process is gone, only a committed live container generation with
-// matching durable bridge-network ownership may adopt the registration.
+// If that process is gone, modern registrations may be adopted only by the exact
+// child generation durably bound after bridge admission. Legacy registrations
+// retain the older state/network proof path for backward compatibility.
 // State/probe uncertainty fails closed rather than deleting a possibly-live
 // container's discovery record.
 func hostEntryOwnerActive(entry HostEntry) (bool, error) {
@@ -21,6 +22,14 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 	}
 	if alive {
 		return true, nil
+	}
+
+	// New registrations explicitly distinguish "child not durably admitted yet"
+	// from legacy registry entries that predate child-generation ownership. If a
+	// modern registrar dies before binding its child, the entry has no authority
+	// to survive merely because a running-state/network reservation exists.
+	if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 {
+		return false, nil
 	}
 
 	st, err := state.Open(state.DefaultDir())
@@ -41,6 +50,9 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 		if c.PID <= 0 || c.PIDStartTime == 0 {
 			return false, fmt.Errorf("running container %s has invalid process identity %d/%d", c.ID, c.PID, c.PIDStartTime)
 		}
+		if entry.GenerationAware && (c.PID != entry.GenerationPID || c.PIDStartTime != entry.GenerationStartTime) {
+			return false, nil
+		}
 		// Container IDs are reusable across stopped/delete/recreate cycles. A
 		// newer generation with the same ID must not accidentally adopt an old
 		// registrar's service-discovery name.
@@ -48,12 +60,10 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 			return false, nil
 		}
 
-		// MarkRunning commits before bridge setup. If the parent crashes in that
-		// window, the blocked child has not acquired host-network resources and
-		// must not make the pre-generation DNS registration authoritative. The
-		// generation-scoped network sidecar is persisted before bridge mutation,
-		// so it is the durable proof that this running generation reached bridge
-		// admission.
+		// MarkRunning commits before bridge setup. For legacy entries, matching
+		// durable bridge ownership remains the strongest available adoption proof.
+		// Modern entries additionally require the exact child-generation binding
+		// checked above, which is published only after bridge setup succeeds.
 		networkOwner, ok, err := st.GetNetworkOwnership(c.ID)
 		if err != nil {
 			return false, fmt.Errorf("read network ownership while recovering DNS owner for container %s: %w", c.ID, err)
@@ -71,11 +81,6 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 				c.PIDStartTime,
 			)
 		}
-		// A generation-scoped host veth is direct bridge-admission proof. Older
-		// runtimes may leave rules-only sidecars, so preserve compatibility when
-		// at least one owned DNAT rule explicitly targets the same container IP
-		// as this DNS entry. A same-generation sidecar describing unrelated host
-		// networking must not be allowed to adopt the service-discovery record.
 		bridgeProof := networkOwner.VethHost != ""
 		if !bridgeProof {
 			for _, mapping := range networkOwner.Mappings {

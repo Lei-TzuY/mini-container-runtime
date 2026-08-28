@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestEntriesWithRegistrationIsIdempotentForSameRegistrar(t *testing.T) {
+func TestEntriesWithRegistrationUpgradesLegacySameRegistrar(t *testing.T) {
 	owner := registrarIdentity{PID: 101, StartTime: 1001}
 	entries := []HostEntry{{
 		ContainerID:    "ctr-a",
@@ -17,10 +17,35 @@ func TestEntriesWithRegistrationIsIdempotentForSameRegistrar(t *testing.T) {
 	}}
 	got, changed, err := entriesWithRegistration(entries, owner, "ctr-a", "app-a", "172.20.0.2")
 	if err != nil {
+		t.Fatalf("same registrar legacy upgrade: %v", err)
+	}
+	if !changed {
+		t.Fatal("legacy same-registrar registration was not upgraded")
+	}
+	if len(got) != 1 || !got[0].GenerationAware || got[0].GenerationPID != 0 || got[0].GenerationStartTime != 0 {
+		t.Fatalf("legacy upgrade produced wrong entry: %+v", got)
+	}
+	if entries[0].GenerationAware {
+		t.Fatal("legacy upgrade mutated caller input")
+	}
+}
+
+func TestEntriesWithRegistrationIsIdempotentForModernUnboundSameRegistrar(t *testing.T) {
+	owner := registrarIdentity{PID: 101, StartTime: 1001}
+	entries := []HostEntry{{
+		ContainerID:     "ctr-a",
+		Hostname:        "app-a",
+		IP:              "172.20.0.2",
+		OwnerPID:        owner.PID,
+		OwnerStartTime:  owner.StartTime,
+		GenerationAware: true,
+	}}
+	got, changed, err := entriesWithRegistration(entries, owner, "ctr-a", "app-a", "172.20.0.2")
+	if err != nil {
 		t.Fatalf("same registrar registration: %v", err)
 	}
 	if changed {
-		t.Fatal("same registrar registration unexpectedly reported mutation")
+		t.Fatal("modern unbound same-registrar registration unexpectedly reported mutation")
 	}
 	if !reflect.DeepEqual(got, entries) {
 		t.Fatalf("same registrar changed entries: got=%+v want=%+v", got, entries)
@@ -81,7 +106,7 @@ func TestEntriesWithRegistrationAppendsDistinctRegistration(t *testing.T) {
 	if !changed || len(got) != 2 {
 		t.Fatalf("distinct registration got=%+v changed=%v", got, changed)
 	}
-	if got[1].ContainerID != "ctr-b" || got[1].Hostname != "app-b" || got[1].OwnerPID != owner.PID || got[1].OwnerStartTime != owner.StartTime {
+	if got[1].ContainerID != "ctr-b" || got[1].Hostname != "app-b" || got[1].OwnerPID != owner.PID || got[1].OwnerStartTime != owner.StartTime || !got[1].GenerationAware {
 		t.Fatalf("wrong appended registration: %+v", got[1])
 	}
 }

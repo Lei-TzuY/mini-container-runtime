@@ -1,0 +1,78 @@
+package dns
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
+// BindHostRegistrationGeneration durably upgrades a registrar-owned DNS entry
+// to exact child-generation ownership after bridge admission succeeds. A modern
+// entry is deliberately unbound before this point, so a registrar crash cannot
+// make a pre-admission registration authoritative.
+func BindHostRegistrationGeneration(networkName, containerID string, pid int, pidStartTime uint64) error {
+	if err := validateNetworkName(networkName); err != nil {
+		return err
+	}
+	if strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("container ID cannot be empty")
+	}
+	if pid <= 0 || pidStartTime == 0 {
+		return fmt.Errorf("invalid DNS child process identity %d/%d", pid, pidStartTime)
+	}
+	owner, err := currentRegistrarIdentity()
+	if err != nil {
+		return err
+	}
+
+	dnsMu.Lock()
+	defer dnsMu.Unlock()
+	dir, err := ensureDNSDir()
+	if err != nil {
+		return err
+	}
+	return withDNSNetworkLock(dir, networkName, func() error {
+		netFile := filepath.Join(dir, networkName+".json")
+		entries, exists, err := loadEntriesChecked(netFile, networkName)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("DNS registration for container %q does not exist", containerID)
+		}
+		for i, entry := range entries {
+			if entry.ContainerID != containerID {
+				continue
+			}
+			if entry.OwnerPID != owner.PID || entry.OwnerStartTime != owner.StartTime {
+				return fmt.Errorf(
+					"DNS registration for container %q is owned by registrar %d/%d, not current registrar %d/%d",
+					containerID,
+					entry.OwnerPID,
+					entry.OwnerStartTime,
+					owner.PID,
+					owner.StartTime,
+				)
+			}
+			if !entry.GenerationAware {
+				return fmt.Errorf("DNS registration for container %q is not generation-aware", containerID)
+			}
+			if entry.GenerationPID == pid && entry.GenerationStartTime == pidStartTime {
+				return nil
+			}
+			if entry.GenerationPID != 0 || entry.GenerationStartTime != 0 {
+				return fmt.Errorf(
+					"DNS registration for container %q is already bound to child generation %d/%d",
+					containerID,
+					entry.GenerationPID,
+					entry.GenerationStartTime,
+				)
+			}
+			updated := append([]HostEntry(nil), entries...)
+			updated[i].GenerationPID = pid
+			updated[i].GenerationStartTime = pidStartTime
+			return saveEntriesAtomic(dir, netFile, networkName, updated)
+		}
+		return fmt.Errorf("DNS registration for container %q does not exist", containerID)
+	})
+}

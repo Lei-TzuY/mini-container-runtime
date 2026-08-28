@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"minicontainer/internal/cgroups"
+	"minicontainer/internal/dns"
 	"minicontainer/internal/network"
 	"minicontainer/internal/ns"
 	"minicontainer/internal/rootfs"
@@ -322,6 +323,17 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted network resources after bridge setup failure: %w", cleanupErr))
 			}
 			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
+		}
+		if err := dns.BindHostRegistrationGeneration(defaultBridgeDNSNetwork, cfg.ContainerID, childPID, childStartTime); err != nil {
+			return abortRuntimeSetupFailure(
+				cmd,
+				writePipe,
+				lifecycleStore,
+				cfg.ContainerID,
+				childPID,
+				childStartTime,
+				fmt.Errorf("bind bridge DNS registration to child generation: %w", err),
+			)
 		}
 
 		baseBridgeCleanup := bridgeCleanup
