@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"minicontainer/internal/dns"
 	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
@@ -163,7 +164,18 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 
 // CleanupStoppedRuntimeResources retries every durable host-side cleanup token
 // currently known for a stopped generation. Independent failures are joined so
-// one resource class cannot prevent another from making progress.
+// one resource class cannot prevent another from making progress. DNS cleanup is
+// deliberately retry-mode: it may remove provably stale foreign registrations,
+// but it must preserve a registration owned by the current registrar because a
+// newer restart attempt can already have admitted it while state still reflects
+// the prior stopped generation.
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
-	return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
+	if c == nil {
+		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
+	}
+	return errors.Join(
+		CleanupStoppedCgroup(st, c),
+		CleanupStoppedNetwork(st, c),
+		dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false),
+	)
 }
