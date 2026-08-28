@@ -55,6 +55,32 @@ func (s *Store) readExitedIdentityUnlocked(id string) (exitedIdentity, bool, err
 	return identity, true, nil
 }
 
+// GetExitedIdentity returns the durable PID/start-time identity of the process
+// that produced the current stopped generation. The identity survives normal
+// exit-code reconciliation and is cleared only after a later running generation
+// is durable, allowing crash-retry teardown to remain generation-scoped.
+func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok bool, err error) {
+	if s == nil {
+		return 0, 0, false, fmt.Errorf("state store is nil")
+	}
+	if err := validateID(id); err != nil {
+		return 0, 0, false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return 0, 0, false, err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	if err != nil || !ok {
+		return 0, 0, ok, err
+	}
+	return identity.PID, identity.PIDStartTime, true, nil
+}
+
 func (s *Store) clearExitedIdentityUnlocked(id string) error {
 	if err := validateID(id); err != nil {
 		return err
