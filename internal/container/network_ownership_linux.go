@@ -164,11 +164,9 @@ func CleanupStoppedNetwork(st *state.Store, c *state.Container) error {
 
 // CleanupStoppedRuntimeResources retries every durable host-side cleanup token
 // currently known for a stopped generation. Independent failures are joined so
-// one resource class cannot prevent another from making progress. DNS cleanup is
-// deliberately retry-mode: it may remove provably stale foreign registrations,
-// but it must preserve a registration owned by the current registrar because a
-// newer restart attempt can already have admitted it while state still reflects
-// the prior stopped generation.
+// one resource class cannot prevent another from making progress. DNS teardown
+// is generation-scoped: a stopped snapshot can consume only the registration
+// bound to its own PID/start-time, never a newer restart attempt.
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	if c == nil {
 		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
@@ -176,6 +174,6 @@ func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	return errors.Join(
 		CleanupStoppedCgroup(st, c),
 		CleanupStoppedNetwork(st, c),
-		dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false),
+		dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, c.PID, c.PIDStartTime),
 	)
 }
