@@ -71,6 +71,23 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 				c.PIDStartTime,
 			)
 		}
+		// A generation-scoped host veth is direct bridge-admission proof. Older
+		// runtimes may leave rules-only sidecars, so preserve compatibility when
+		// at least one owned DNAT rule explicitly targets the same container IP
+		// as this DNS entry. A same-generation sidecar describing unrelated host
+		// networking must not be allowed to adopt the service-discovery record.
+		bridgeProof := networkOwner.VethHost != ""
+		if !bridgeProof {
+			for _, mapping := range networkOwner.Mappings {
+				if mapping.ContainerIP == entry.IP {
+					bridgeProof = true
+					break
+				}
+			}
+		}
+		if !bridgeProof {
+			return false, nil
+		}
 
 		childAlive, err := registrarGenerationAlive(c.PID, c.PIDStartTime)
 		if err != nil {
