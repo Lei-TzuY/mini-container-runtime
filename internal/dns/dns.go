@@ -331,8 +331,11 @@ func UnregisterHost(networkName, containerID string) error {
 
 // GenerateHostsContentChecked returns a consistent snapshot of one registry.
 // Dead process-owned entries are garbage-collected transactionally before the
-// snapshot is formatted. Corrupt, symlinked, unreadable, or unprobeable state is
-// reported so runtime setup can fail closed instead of using stale discovery.
+// snapshot is formatted. Generation-aware entries remain reservation-only until
+// bridge admission durably binds an exact child generation, so peers never learn
+// a hostname for a container that is not yet reachable on the bridge. Corrupt,
+// symlinked, unreadable, or unprobeable state is reported so runtime setup can
+// fail closed instead of using stale discovery.
 func GenerateHostsContentChecked(networkName string) (string, error) {
 	if err := validateNetworkName(networkName); err != nil {
 		return "", err
@@ -372,6 +375,9 @@ func GenerateHostsContentChecked(networkName string) (string, error) {
 		"# Mini Docker Network Service Discovery (" + networkName + ")",
 	}
 	for _, entry := range entries {
+		if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 {
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("%s\t%s", entry.IP, entry.Hostname))
 	}
 	return strings.Join(lines, "\n") + "\n", nil
