@@ -105,9 +105,12 @@ func validateNetworkOwnership(o NetworkOwnership) error {
 		if err := validatePortForwardingOwnership(mapping); err != nil {
 			return err
 		}
-		key := fmt.Sprintf("%s/%d/%d/%s", mapping.ContainerIP, mapping.HostPort, mapping.ContainerPort, mapping.Protocol)
+		// Host ingress ownership is exclusive by host port + protocol. Including
+		// the destination in this key would allow one sidecar to claim multiple
+		// competing DNAT targets for the same socket, making recovery ambiguous.
+		key := fmt.Sprintf("%d/%s", mapping.HostPort, mapping.Protocol)
 		if _, ok := seen[key]; ok {
-			return fmt.Errorf("duplicate network mapping %s", key)
+			return fmt.Errorf("duplicate network host ingress %s", key)
 		}
 		seen[key] = struct{}{}
 	}
