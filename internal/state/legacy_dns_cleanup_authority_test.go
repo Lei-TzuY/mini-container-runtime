@@ -19,6 +19,7 @@ func TestHistoricalStoppedPolicyPersistsLegacyDNSCleanupAuthorizationAtSameRevis
 	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, id)
 	before, err := st.Get(id)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,10 @@ func TestHistoricalStoppedPolicyPersistsLegacyDNSCleanupAuthorizationAtSameRevis
 	if !authorized {
 		t.Fatal("legacy DNS cleanup capability is not true")
 	}
+	var version uint32
+	if err := json.Unmarshal(raw["state_schema_version"], &version); err != nil || version != currentContainerStateSchemaVersion {
+		t.Fatalf("legacy classification did not migrate writer provenance: version=%d err=%v", version, err)
+	}
 }
 
 func TestHistoricalStoppedPolicyDoesNotClassifyStaleRevision(t *testing.T) {
@@ -68,6 +73,7 @@ func TestHistoricalStoppedPolicyDoesNotClassifyStaleRevision(t *testing.T) {
 	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, id)
 	currentState, err := st.Get(id)
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +97,9 @@ func TestHistoricalStoppedPolicyDoesNotClassifyStaleRevision(t *testing.T) {
 	}
 	if _, exists := raw["legacy_dns_cleanup_authorized"]; exists {
 		t.Fatal("stale revision durably classified the current stopped generation")
+	}
+	if _, exists := raw["state_schema_version"]; exists {
+		t.Fatal("stale revision rewrote historical writer provenance")
 	}
 }
 
@@ -142,6 +151,7 @@ func TestHistoricalStoppedPolicyRejectsSidecarAddedAfterLegacyAuthorization(t *t
 	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, id)
 	container, err := st.Get(id)
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,8 @@ const currentStoppedGenerationSchemaVersion uint32 = 1
 type stoppedGenerationTeardownSnapshot struct {
 	status                     Status
 	revision                   uint64
+	stateVersion               uint32
+	stateVersioned             bool
 	version                    uint32
 	versioned                  bool
 	required                   bool
@@ -24,6 +26,7 @@ type stoppedGenerationTeardownSnapshot struct {
 type stoppedGenerationLifecycleSnapshot struct {
 	status                     Status
 	revision                   uint64
+	stateVersion               json.RawMessage
 	version                    json.RawMessage
 	exitIdentityRequired       json.RawMessage
 	exitIdentity               json.RawMessage
@@ -46,6 +49,7 @@ func (s *Store) readStoppedGenerationLifecycleSnapshotUnlocked(id string) (stopp
 	var metadata struct {
 		Status                     Status          `json:"status"`
 		Revision                   uint64          `json:"revision"`
+		StateVersion               json.RawMessage `json:"state_schema_version"`
 		Version                    json.RawMessage `json:"stopped_generation_schema_version"`
 		ExitIdentityRequired       json.RawMessage `json:"exit_identity_required"`
 		ExitIdentity               json.RawMessage `json:"exit_identity"`
@@ -57,6 +61,7 @@ func (s *Store) readStoppedGenerationLifecycleSnapshotUnlocked(id string) (stopp
 	return stoppedGenerationLifecycleSnapshot{
 		status:                     metadata.Status,
 		revision:                   metadata.Revision,
+		stateVersion:               metadata.StateVersion,
 		version:                    metadata.Version,
 		exitIdentityRequired:       metadata.ExitIdentityRequired,
 		exitIdentity:               metadata.ExitIdentity,
@@ -68,6 +73,19 @@ func (raw stoppedGenerationLifecycleSnapshot) teardownSnapshot() (stoppedGenerat
 	snapshot := stoppedGenerationTeardownSnapshot{
 		status:   raw.status,
 		revision: raw.revision,
+	}
+
+	if len(raw.stateVersion) != 0 {
+		snapshot.stateVersioned = true
+		if err := json.Unmarshal(raw.stateVersion, &snapshot.stateVersion); err != nil {
+			return snapshot, fmt.Errorf("unmarshal container state schema version: %w", err)
+		}
+		if snapshot.stateVersion == 0 {
+			return snapshot, fmt.Errorf("invalid container state schema version 0")
+		}
+		if snapshot.stateVersion != currentContainerStateSchemaVersion {
+			return snapshot, fmt.Errorf("unsupported container state schema version %d (current %d)", snapshot.stateVersion, currentContainerStateSchemaVersion)
+		}
 	}
 
 	if len(raw.version) != 0 {
@@ -147,6 +165,9 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 	if snapshot.versioned || snapshot.legacyDNSCleanupPresent {
 		return snapshot, nil
 	}
+	if snapshot.stateVersioned {
+		return snapshot, fmt.Errorf("container state schema version %d lacks explicit stopped-generation teardown authority", snapshot.stateVersion)
+	}
 
 	identity := snapshot.identity
 	haveIdentity := snapshot.identityEmbedded
@@ -192,6 +213,8 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 		return snapshot, fmt.Errorf("migrate stopped generation teardown metadata: %w", err)
 	}
 
+	snapshot.stateVersion = currentContainerStateSchemaVersion
+	snapshot.stateVersioned = true
 	snapshot.version = currentStoppedGenerationSchemaVersion
 	snapshot.versioned = true
 	snapshot.required = true
@@ -203,24 +226,26 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 
 // authorizeLegacyDNSCleanupSnapshotUnlocked converts the one remaining implicit
 // historical policy (no schema, capability, or exact identity) into an explicit,
-// durable same-revision migration capability. The classification is allowed only
-// when neither legacy exact-identity sidecar is present; conflicting sidecar debris
-// fails closed rather than silently broadening teardown authority.
+// durable same-revision migration capability. Only records with no writer schema
+// provenance are historical; modern writer output can never acquire broad cleanup
+// authority merely because stopped-generation fields are absent.
 func (s *Store) authorizeLegacyDNSCleanupSnapshotUnlocked(id string, revision uint64, snapshot stoppedGenerationTeardownSnapshot) (stoppedGenerationTeardownSnapshot, error) {
 	if snapshot.versioned || snapshot.requirementPresent || snapshot.identityEmbedded || snapshot.legacyDNSCleanupPresent {
 		return snapshot, nil
+	}
+	if snapshot.stateVersioned {
+		return snapshot, fmt.Errorf("container state schema version %d lacks explicit stopped-generation teardown authority", snapshot.stateVersion)
 	}
 
 	required, err := s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
 		return snapshot, err
 	}
-	identity, identityPresent, err := s.readExitedIdentityUnlocked(id)
+	_, identityPresent, err := s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return snapshot, err
 	}
 	if required || identityPresent {
-		_ = identity
 		return snapshot, nil
 	}
 
@@ -233,8 +258,9 @@ func (s *Store) authorizeLegacyDNSCleanupSnapshotUnlocked(id string, revision ui
 	}
 	record := struct {
 		*Container
+		StateSchemaVersion             uint32 `json:"state_schema_version"`
 		LegacyDNSCleanupAuthorized bool `json:"legacy_dns_cleanup_authorized"`
-	}{Container: container, LegacyDNSCleanupAuthorized: true}
+	}{Container: container, StateSchemaVersion: currentContainerStateSchemaVersion, LegacyDNSCleanupAuthorized: true}
 	data, err := json.MarshalIndent(&record, "", "  ")
 	if err != nil {
 		return snapshot, fmt.Errorf("marshal legacy DNS cleanup migration state: %w", err)
@@ -244,6 +270,8 @@ func (s *Store) authorizeLegacyDNSCleanupSnapshotUnlocked(id string, revision ui
 		return snapshot, fmt.Errorf("persist legacy DNS cleanup migration state: %w", err)
 	}
 
+	snapshot.stateVersion = currentContainerStateSchemaVersion
+	snapshot.stateVersioned = true
 	snapshot.legacyDNSCleanupAuthorized = true
 	snapshot.legacyDNSCleanupPresent = true
 	return snapshot, nil
@@ -272,10 +300,10 @@ func (s *Store) validateLegacyDNSCleanupSidecarsUnlocked(id string, snapshot sto
 // authority. Stale callers return current=false without interpreting potentially
 // malformed authority metadata from a newer generation. Valid legacy exact
 // identities are upgraded once to the versioned embedded schema under the same
-// lock. Pure historical records are classified once into a durable same-revision
-// legacy DNS migration capability instead of repeatedly inferring authority from
-// missing fields. Once versioned lifecycle JSON is authoritative, legacy sidecars
-// are durably retired; interrupted cleanup is safe and retried by later readers.
+// lock. Pure pre-writer-schema records may be classified once into a durable
+// same-revision legacy DNS migration capability. Once versioned lifecycle JSON
+// is authoritative, legacy sidecars are durably retired; interrupted cleanup is
+// safe and retried by later readers.
 func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id string, revision uint64) (snapshot stoppedGenerationTeardownSnapshot, current bool, err error) {
 	raw, err := s.readStoppedGenerationLifecycleSnapshotUnlocked(id)
 	if err != nil {

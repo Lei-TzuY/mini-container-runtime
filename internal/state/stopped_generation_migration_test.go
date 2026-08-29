@@ -18,6 +18,7 @@ func TestStoppedGenerationPolicyMigratesLegacySidecarAtSameRevision(t *testing.T
 	if err := st.Save(&Container{ID: "legacy-migrate", Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, "legacy-migrate")
 	before, err := st.Get("legacy-migrate")
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +64,7 @@ func TestStoppedGenerationPolicyMigratesLegacySidecarAtSameRevision(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.versioned || snapshot.version != currentStoppedGenerationSchemaVersion || !snapshot.requirementPresent || !snapshot.required || !snapshot.identityEmbedded {
+	if !snapshot.stateVersioned || !snapshot.versioned || snapshot.version != currentStoppedGenerationSchemaVersion || !snapshot.requirementPresent || !snapshot.required || !snapshot.identityEmbedded {
 		t.Fatalf("legacy sidecar was not durably migrated: %+v", snapshot)
 	}
 	if snapshot.identity.PID != 4242 || snapshot.identity.PIDStartTime != 777 {
@@ -82,6 +83,7 @@ func TestStoppedGenerationPolicyRejectsUnmarkedLegacyIdentitySidecar(t *testing.
 	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, id)
 	before, err := st.Get(id)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +117,7 @@ func TestStoppedGenerationPolicyRejectsUnmarkedLegacyIdentitySidecar(t *testing.
 	if snapshotErr != nil {
 		t.Fatal(snapshotErr)
 	}
-	if snapshot.versioned || snapshot.identityEmbedded || snapshot.requirementPresent {
+	if snapshot.stateVersioned || snapshot.versioned || snapshot.identityEmbedded || snapshot.requirementPresent {
 		t.Fatalf("orphan legacy identity mutated lifecycle metadata: %+v", snapshot)
 	}
 	if sidecarErr != nil {
@@ -133,6 +135,7 @@ func TestStoppedGenerationPolicyDoesNotMigrateStaleRevision(t *testing.T) {
 	if err := st.Save(&Container{ID: "legacy-stale", Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, "legacy-stale")
 	currentState, err := st.Get("legacy-stale")
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +168,7 @@ func TestStoppedGenerationPolicyDoesNotMigrateStaleRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.versioned || snapshot.identityEmbedded || snapshot.requirementPresent {
+	if snapshot.stateVersioned || snapshot.versioned || snapshot.identityEmbedded || snapshot.requirementPresent {
 		t.Fatalf("stale revision mutated lifecycle metadata: %+v", snapshot)
 	}
 }
@@ -191,8 +194,8 @@ func TestStoppedGenerationPolicyMigratesPreVersionEmbeddedIdentity(t *testing.T)
 		st.mu.Unlock()
 		t.Fatal(err)
 	}
-	// Model the pre-version embedded format by writing the capability/identity
-	// and then removing only the schema key from the JSON fixture.
+	// Model the pre-version embedded format by writing current exact metadata and
+	// then removing both writer and stopped-generation schema keys from the fixture.
 	if err := st.writeContainerRevisionWithExitPolicyUnlocked(container, container.Revision, true, &identity); err != nil {
 		_ = unlockStateFile(st.lockFile)
 		st.mu.Unlock()
@@ -211,6 +214,7 @@ func TestStoppedGenerationPolicyMigratesPreVersionEmbeddedIdentity(t *testing.T)
 		st.mu.Unlock()
 		t.Fatal(err)
 	}
+	delete(raw, "state_schema_version")
 	delete(raw, "stopped_generation_schema_version")
 	data, err = json.MarshalIndent(raw, "", "  ")
 	if err != nil {
@@ -240,7 +244,7 @@ func TestStoppedGenerationPolicyMigratesPreVersionEmbeddedIdentity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.versioned || !snapshot.identityEmbedded || !snapshot.required {
+	if !snapshot.stateVersioned || !snapshot.versioned || !snapshot.identityEmbedded || !snapshot.required {
 		t.Fatalf("embedded pre-version record was not upgraded: %+v", snapshot)
 	}
 }

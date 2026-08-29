@@ -67,6 +67,7 @@ func TestLegacyExitRequiredMarkerRemainsFailClosedAfterUpgrade(t *testing.T) {
 	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, id)
 	legacy, err := st.Get(id)
 	if err != nil {
 		t.Fatal(err)
