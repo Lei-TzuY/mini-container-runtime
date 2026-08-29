@@ -9,22 +9,25 @@ import (
 const currentStoppedGenerationSchemaVersion uint32 = 1
 
 type stoppedGenerationTeardownSnapshot struct {
-	status             Status
-	revision           uint64
-	version            uint32
-	versioned          bool
-	required           bool
-	requirementPresent bool
-	identity           exitedIdentity
-	identityEmbedded   bool
+	status                     Status
+	revision                   uint64
+	version                    uint32
+	versioned                  bool
+	required                   bool
+	requirementPresent         bool
+	identity                   exitedIdentity
+	identityEmbedded           bool
+	legacyDNSCleanupAuthorized bool
+	legacyDNSCleanupPresent    bool
 }
 
 type stoppedGenerationLifecycleSnapshot struct {
-	status               Status
-	revision             uint64
-	version              json.RawMessage
-	exitIdentityRequired json.RawMessage
-	exitIdentity         json.RawMessage
+	status                     Status
+	revision                   uint64
+	version                    json.RawMessage
+	exitIdentityRequired       json.RawMessage
+	exitIdentity               json.RawMessage
+	legacyDNSCleanupAuthorized json.RawMessage
 }
 
 // readStoppedGenerationLifecycleSnapshotUnlocked reads the container lifecycle
@@ -41,21 +44,23 @@ func (s *Store) readStoppedGenerationLifecycleSnapshotUnlocked(id string) (stopp
 		return stoppedGenerationLifecycleSnapshot{}, err
 	}
 	var metadata struct {
-		Status               Status          `json:"status"`
-		Revision             uint64          `json:"revision"`
-		Version              json.RawMessage `json:"stopped_generation_schema_version"`
-		ExitIdentityRequired json.RawMessage `json:"exit_identity_required"`
-		ExitIdentity         json.RawMessage `json:"exit_identity"`
+		Status                     Status          `json:"status"`
+		Revision                   uint64          `json:"revision"`
+		Version                    json.RawMessage `json:"stopped_generation_schema_version"`
+		ExitIdentityRequired       json.RawMessage `json:"exit_identity_required"`
+		ExitIdentity               json.RawMessage `json:"exit_identity"`
+		LegacyDNSCleanupAuthorized json.RawMessage `json:"legacy_dns_cleanup_authorized"`
 	}
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return stoppedGenerationLifecycleSnapshot{}, fmt.Errorf("unmarshal stopped generation lifecycle snapshot: %w", err)
 	}
 	return stoppedGenerationLifecycleSnapshot{
-		status:               metadata.Status,
-		revision:             metadata.Revision,
-		version:              metadata.Version,
-		exitIdentityRequired: metadata.ExitIdentityRequired,
-		exitIdentity:         metadata.ExitIdentity,
+		status:                     metadata.Status,
+		revision:                   metadata.Revision,
+		version:                    metadata.Version,
+		exitIdentityRequired:       metadata.ExitIdentityRequired,
+		exitIdentity:               metadata.ExitIdentity,
+		legacyDNSCleanupAuthorized: metadata.LegacyDNSCleanupAuthorized,
 	}, nil
 }
 
@@ -104,6 +109,19 @@ func (raw stoppedGenerationLifecycleSnapshot) teardownSnapshot() (stoppedGenerat
 		}
 		snapshot.identityEmbedded = true
 	}
+
+	if len(raw.legacyDNSCleanupAuthorized) != 0 {
+		snapshot.legacyDNSCleanupPresent = true
+		if err := json.Unmarshal(raw.legacyDNSCleanupAuthorized, &snapshot.legacyDNSCleanupAuthorized); err != nil {
+			return snapshot, fmt.Errorf("unmarshal legacy DNS cleanup authorization: %w", err)
+		}
+		if !snapshot.legacyDNSCleanupAuthorized {
+			return snapshot, fmt.Errorf("invalid legacy DNS cleanup authorization: false")
+		}
+		if snapshot.versioned || snapshot.requirementPresent || snapshot.identityEmbedded {
+			return snapshot, fmt.Errorf("legacy DNS cleanup authorization conflicts with exact stopped-generation metadata")
+		}
+	}
 	return snapshot, nil
 }
 
@@ -126,7 +144,7 @@ func (s *Store) readStoppedGenerationTeardownSnapshotUnlocked(id string) (stoppe
 // JSON field or the older .exit-required marker. An orphan identity sidecar is
 // ambiguous debris and fails closed instead of acquiring teardown authority.
 func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uint64, snapshot stoppedGenerationTeardownSnapshot) (stoppedGenerationTeardownSnapshot, error) {
-	if snapshot.versioned {
+	if snapshot.versioned || snapshot.legacyDNSCleanupPresent {
 		return snapshot, nil
 	}
 
@@ -183,13 +201,81 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 	return snapshot, nil
 }
 
+// authorizeLegacyDNSCleanupSnapshotUnlocked converts the one remaining implicit
+// historical policy (no schema, capability, or exact identity) into an explicit,
+// durable same-revision migration capability. The classification is allowed only
+// when neither legacy exact-identity sidecar is present; conflicting sidecar debris
+// fails closed rather than silently broadening teardown authority.
+func (s *Store) authorizeLegacyDNSCleanupSnapshotUnlocked(id string, revision uint64, snapshot stoppedGenerationTeardownSnapshot) (stoppedGenerationTeardownSnapshot, error) {
+	if snapshot.versioned || snapshot.requirementPresent || snapshot.identityEmbedded || snapshot.legacyDNSCleanupPresent {
+		return snapshot, nil
+	}
+
+	required, err := s.exitedIdentityRequiredUnlocked(id)
+	if err != nil {
+		return snapshot, err
+	}
+	identity, identityPresent, err := s.readExitedIdentityUnlocked(id)
+	if err != nil {
+		return snapshot, err
+	}
+	if required || identityPresent {
+		_ = identity
+		return snapshot, nil
+	}
+
+	container, err := s.getUnlocked(id)
+	if err != nil {
+		return snapshot, err
+	}
+	if container.Status != StatusStopped || container.Revision != revision {
+		return stoppedGenerationTeardownSnapshot{status: container.Status, revision: container.Revision}, nil
+	}
+	record := struct {
+		*Container
+		LegacyDNSCleanupAuthorized bool `json:"legacy_dns_cleanup_authorized"`
+	}{Container: container, LegacyDNSCleanupAuthorized: true}
+	data, err := json.MarshalIndent(&record, "", "  ")
+	if err != nil {
+		return snapshot, fmt.Errorf("marshal legacy DNS cleanup migration state: %w", err)
+	}
+	path := filepath.Join(s.ctrDir, id+".json")
+	if err := atomicWriteFile(s.ctrDir, path, data); err != nil {
+		return snapshot, fmt.Errorf("persist legacy DNS cleanup migration state: %w", err)
+	}
+
+	snapshot.legacyDNSCleanupAuthorized = true
+	snapshot.legacyDNSCleanupPresent = true
+	return snapshot, nil
+}
+
+func (s *Store) validateLegacyDNSCleanupSidecarsUnlocked(id string, snapshot stoppedGenerationTeardownSnapshot) error {
+	if !snapshot.legacyDNSCleanupPresent || !snapshot.legacyDNSCleanupAuthorized {
+		return nil
+	}
+	required, err := s.exitedIdentityRequiredUnlocked(id)
+	if err != nil {
+		return err
+	}
+	_, identityPresent, err := s.readExitedIdentityUnlocked(id)
+	if err != nil {
+		return err
+	}
+	if required || identityPresent {
+		return fmt.Errorf("legacy DNS cleanup authorization conflicts with exited identity sidecar metadata")
+	}
+	return nil
+}
+
 // readStoppedGenerationTeardownSnapshotForRevisionUnlocked first checks the
 // caller's stopped revision against the same JSON snapshot that carries teardown
 // authority. Stale callers return current=false without interpreting potentially
 // malformed authority metadata from a newer generation. Valid legacy exact
 // identities are upgraded once to the versioned embedded schema under the same
-// lock. Once versioned lifecycle JSON is authoritative, legacy sidecars are
-// durably retired; interrupted cleanup is safe and retried by later readers.
+// lock. Pure historical records are classified once into a durable same-revision
+// legacy DNS migration capability instead of repeatedly inferring authority from
+// missing fields. Once versioned lifecycle JSON is authoritative, legacy sidecars
+// are durably retired; interrupted cleanup is safe and retried by later readers.
 func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id string, revision uint64) (snapshot stoppedGenerationTeardownSnapshot, current bool, err error) {
 	raw, err := s.readStoppedGenerationLifecycleSnapshotUnlocked(id)
 	if err != nil {
@@ -208,6 +294,12 @@ func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id stri
 		}
 		return snapshot, true, nil
 	}
+	if snapshot.legacyDNSCleanupPresent {
+		if err := s.validateLegacyDNSCleanupSidecarsUnlocked(id, snapshot); err != nil {
+			return snapshot, true, err
+		}
+		return snapshot, true, nil
+	}
 
 	migrated, err := s.migrateStoppedGenerationSnapshotUnlocked(id, revision, snapshot)
 	if err != nil {
@@ -220,8 +312,22 @@ func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id stri
 		if err := s.retireLegacyStoppedGenerationSidecarsUnlocked(id); err != nil {
 			return migrated, true, err
 		}
+		return migrated, true, nil
 	}
-	return migrated, true, nil
+
+	classified, err := s.authorizeLegacyDNSCleanupSnapshotUnlocked(id, revision, migrated)
+	if err != nil {
+		return migrated, true, err
+	}
+	if classified.status != StatusStopped || classified.revision != revision {
+		return classified, false, nil
+	}
+	if classified.legacyDNSCleanupPresent {
+		if err := s.validateLegacyDNSCleanupSidecarsUnlocked(id, classified); err != nil {
+			return classified, true, err
+		}
+	}
+	return classified, true, nil
 }
 
 // stoppedGenerationSchemaVersionUnlocked returns the explicitly persisted
