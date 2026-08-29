@@ -53,41 +53,65 @@ func (s *Store) writeContainerNextRevisionUnlocked(c *Container) error {
 	return s.writeContainerRevisionUnlocked(c, c.Revision+1)
 }
 
-// writeStoppedContainerNextRevisionUnlocked publishes a modern stopped
-// generation and its exit-identity requirement in the same atomic container
-// JSON replacement. The exact .exit identity is intentionally written first;
-// a failed JSON commit is rolled back by the lifecycle caller, while a durable
-// stopped JSON can never exist without declaring that missing identity must
-// fail closed.
-func (s *Store) writeStoppedContainerNextRevisionUnlocked(c *Container) error {
+// writeStoppedContainerNextRevisionUnlocked publishes stopped status, revision,
+// capability, and exact generation identity in one atomic JSON replacement.
+func (s *Store) writeStoppedContainerNextRevisionUnlocked(c *Container, pid int, pidStartTime uint64) error {
 	if c.Revision == math.MaxUint64 {
 		return fmt.Errorf("container %s revision overflow", c.ID)
 	}
-	return s.writeContainerRevisionWithExitPolicyUnlocked(c, c.Revision+1, true)
+	identity := exitedIdentity{PID: pid, PIDStartTime: pidStartTime}
+	if err := validateExitedIdentity(identity); err != nil {
+		return err
+	}
+	return s.writeContainerRevisionWithExitPolicyUnlocked(c, c.Revision+1, true, &identity)
 }
 
 func (s *Store) writeContainerRevisionUnlocked(c *Container, revision uint64) error {
-	// Preserve an already-published in-JSON capability across generic CAS writes
-	// (for example exit-code or health reconciliation). Unknown JSON fields are
-	// otherwise discarded when a Container is unmarshaled and re-encoded.
+	// Lifecycle-only metadata is preserved only while the target remains stopped.
+	// A transition to running intentionally drops it so stale stopped-generation
+	// authority cannot leak into a later generation.
+	if c.Status != StatusStopped {
+		return s.writeContainerRevisionWithExitPolicyUnlocked(c, revision, false, nil)
+	}
+
 	required, present, err := s.containerExitIdentityRequirementUnlocked(c.ID)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return s.writeContainerRevisionWithExitPolicyUnlocked(c, revision, present && required)
+	identity, identityPresent, err := s.containerEmbeddedExitedIdentityUnlocked(c.ID)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if identityPresent && (!present || !required) {
+		return fmt.Errorf("persisted exit identity exists without required lifecycle capability")
+	}
+	if identityPresent {
+		return s.writeContainerRevisionWithExitPolicyUnlocked(c, revision, true, &identity)
+	}
+	return s.writeContainerRevisionWithExitPolicyUnlocked(c, revision, present && required, nil)
 }
 
-func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revision uint64, requireExitIdentity bool) error {
+func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revision uint64, requireExitIdentity bool, identity *exitedIdentity) error {
 	copy := *c
 	copy.Revision = revision
+
+	if identity != nil {
+		if !requireExitIdentity {
+			return fmt.Errorf("exit identity requires lifecycle capability")
+		}
+		if err := validateExitedIdentity(*identity); err != nil {
+			return err
+		}
+	}
 
 	var data []byte
 	var err error
 	if requireExitIdentity {
 		record := struct {
 			*Container
-			ExitIdentityRequired bool `json:"exit_identity_required"`
-		}{Container: &copy, ExitIdentityRequired: true}
+			ExitIdentityRequired bool            `json:"exit_identity_required"`
+			ExitIdentity         *exitedIdentity `json:"exit_identity,omitempty"`
+		}{Container: &copy, ExitIdentityRequired: true, ExitIdentity: identity}
 		data, err = json.MarshalIndent(&record, "", "  ")
 	} else {
 		data, err = json.MarshalIndent(&copy, "", "  ")
