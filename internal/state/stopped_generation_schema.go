@@ -122,9 +122,9 @@ func (s *Store) readStoppedGenerationTeardownSnapshotUnlocked(id string) (stoppe
 // The caller holds the store lock and has already established that status/revision
 // still identify the intended stopped generation, so the rewrite is a revision-CAS
 // migration rather than a new lifecycle transition. Legacy .exit input is accepted
-// only when the historical .exit-required capability marker is also present; an
-// orphan identity sidecar is ambiguous debris and fails closed instead of acquiring
-// generation-specific teardown authority.
+// only when its capability is authenticated by either the pre-version lifecycle
+// JSON field or the older .exit-required marker. An orphan identity sidecar is
+// ambiguous debris and fails closed instead of acquiring teardown authority.
 func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uint64, snapshot stoppedGenerationTeardownSnapshot) (stoppedGenerationTeardownSnapshot, error) {
 	if snapshot.versioned {
 		return snapshot, nil
@@ -141,14 +141,18 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 		if err != nil {
 			return snapshot, err
 		}
-		legacyRequired, err := s.exitedIdentityRequiredUnlocked(id)
-		if err != nil {
-			return snapshot, err
-		}
 		if !ok {
 			return snapshot, nil
 		}
-		if !legacyRequired {
+
+		legacyAuthorized := snapshot.requirementPresent && snapshot.required
+		if !legacyAuthorized {
+			legacyAuthorized, err = s.exitedIdentityRequiredUnlocked(id)
+			if err != nil {
+				return snapshot, err
+			}
+		}
+		if !legacyAuthorized {
 			return snapshot, fmt.Errorf("legacy exited process identity exists without required capability marker")
 		}
 		identity = legacyIdentity
