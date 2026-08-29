@@ -1,7 +1,6 @@
 package state
 
 import (
-	"errors"
 	"fmt"
 	"time"
 )
@@ -77,9 +76,8 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
 		return err
 	}
-	// The exited identity belongs to the previous stopped generation. Clear it
-	// only after the new running state is durable so a crash can never destroy
-	// the sole exact-generation key needed by stopped-state recovery.
+	// Modern running JSON no longer contains stopped-generation authority. Clear
+	// any upgrade-era sidecar only after the new generation is durable.
 	_ = s.clearExitedIdentityUnlocked(id)
 	return nil
 }
@@ -87,11 +85,11 @@ func (s *Store) MarkRunning(id string, pid int, pidStartTime uint64, startedAt t
 // MarkStoppedIfIdentity atomically marks a running container stopped only when
 // the persisted process identity still matches the caller's observation.
 //
-// Every successful stop persists the exited process identity before committing
-// stopped state. This identity doubles as the exact-generation teardown key for
-// crash/retry cleanup. If an observer knows only that the process exited, it may
-// persist exitCode -1 and the process-owning reaper can later upgrade that code
-// only for the same PID/start-time lifecycle.
+// Every successful modern stop commits stopped status, revision, capability,
+// and exact PID/start-time teardown key in one atomic container JSON replace.
+// If an observer knows only that the process exited, it may persist exitCode -1
+// and the process-owning reaper can later upgrade that code only for the same
+// PID/start-time lifecycle.
 //
 // Returning changed=false is intentional: another lifecycle actor may already
 // have stopped/restarted the container, and stale observations must not win.
@@ -125,7 +123,7 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 		if c.ExitCode != -1 || exitCode == -1 {
 			return false, nil
 		}
-		exited, ok, err := s.readExitedIdentityUnlocked(id)
+		exited, ok, err := s.readCurrentExitedIdentityUnlocked(id)
 		if err != nil {
 			return false, fmt.Errorf("read exited identity for exit-code reconciliation: %w", err)
 		}
@@ -138,17 +136,11 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 		if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
 			return false, err
 		}
-		// Keep the exited identity until a later running generation is durable;
-		// stopped cleanup still needs the exact PID/start-time CAS key.
 		return true, nil
 	}
 
 	if c.Status != StatusRunning || c.PID != pid || c.PIDStartTime != pidStartTime {
 		return false, nil
-	}
-
-	if err := s.writeExitedIdentityUnlocked(id, pid, pidStartTime); err != nil {
-		return false, fmt.Errorf("persist exited identity before stopped state: %w", err)
 	}
 
 	c.Status = StatusStopped
@@ -157,12 +149,11 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 	c.FinishedAt = &finishedAt
 	c.ExitCode = exitCode
 
-	if err := s.writeStoppedContainerNextRevisionUnlocked(c); err != nil {
-		clearErr := s.clearExitedIdentityUnlocked(id)
-		if clearErr != nil {
-			return false, errors.Join(err, fmt.Errorf("rollback exited identity after failed stop transition: %w", clearErr))
-		}
+	if err := s.writeStoppedContainerNextRevisionUnlocked(c, pid, pidStartTime); err != nil {
 		return false, err
 	}
+	// An upgrade-era sidecar, if one somehow survived a prior running transition,
+	// is no longer authoritative once the embedded identity is durable.
+	_ = s.clearExitedIdentityUnlocked(id)
 	return true, nil
 }

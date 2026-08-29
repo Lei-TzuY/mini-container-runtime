@@ -54,12 +54,13 @@ func TestGetStoppedExitIdentityPolicyMissingModernIdentityFailsClosed(t *testing
 		t.Fatal(err)
 	}
 
+	// Remove only the embedded identity while retaining the in-JSON capability.
 	st.mu.Lock()
 	if err := lockStateFile(st.lockFile); err != nil {
 		st.mu.Unlock()
 		t.Fatal(err)
 	}
-	if err := st.clearExitedIdentityUnlocked("missing-policy"); err != nil {
+	if err := st.writeContainerRevisionWithExitPolicyUnlocked(stopped, stopped.Revision, true, nil); err != nil {
 		_ = unlockStateFile(st.lockFile)
 		st.mu.Unlock()
 		t.Fatal(err)
