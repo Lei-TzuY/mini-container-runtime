@@ -11,17 +11,10 @@ func TestDeleteIfNotRunningRejectsRunningGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Container{
-		ID:           "running-delete",
-		Status:       StatusRunning,
-		PID:          4242,
-		PIDStartTime: 88,
-		CreatedAt:    time.Now(),
-	}
+	c := &Container{ID: "running-delete", Status: StatusRunning, PID: 4242, PIDStartTime: 88, CreatedAt: time.Now()}
 	if err := st.Save(c); err != nil {
 		t.Fatal(err)
 	}
-
 	err = st.DeleteIfNotRunning(c.ID)
 	if err == nil || !strings.Contains(err.Error(), "refusing deletion") {
 		t.Fatalf("delete running error=%v, want refusal", err)
@@ -70,13 +63,9 @@ func TestDeleteIfNotRunningRechecksLatestLifecycleState(t *testing.T) {
 	if err := observer.Save(c); err != nil {
 		t.Fatal(err)
 	}
-
-	// The deleting caller may still hold the stopped snapshot above, while a
-	// separate lifecycle actor has already installed a new generation on disk.
 	if err := actor.MarkRunning(c.ID, 9001, 123, time.Now()); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-
 	if err := observer.DeleteIfNotRunning(c.ID); err == nil {
 		t.Fatal("stale stopped observer deleted a concurrently restarted container")
 	}
@@ -89,34 +78,29 @@ func TestDeleteIfNotRunningRechecksLatestLifecycleState(t *testing.T) {
 	}
 }
 
-func TestDeleteIfNotRunningRemovesExitedIdentityTombstone(t *testing.T) {
+func TestDeleteIfNotRunningRemovesEmbeddedExitedIdentity(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Container{
-		ID:           "delete-exited-proof",
-		Status:       StatusRunning,
-		PID:          5151,
-		PIDStartTime: 91,
-	}
+	c := &Container{ID: "delete-exited-proof", Status: StatusRunning, PID: 5151, PIDStartTime: 91}
 	if err := st.Save(c); err != nil {
 		t.Fatal(err)
 	}
 	if changed, err := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil || !changed {
 		t.Fatalf("mark stopped unknown exit: changed=%v err=%v", changed, err)
 	}
-
-	if _, ok, err := st.readExitedIdentityUnlocked(c.ID); err != nil || !ok {
-		t.Fatalf("expected exited identity before delete: ok=%v err=%v", ok, err)
+	if pid, start, ok, err := st.GetExitedIdentity(c.ID); err != nil || !ok || pid != c.PID || start != c.PIDStartTime {
+		t.Fatalf("expected embedded exited identity before delete: pid=%d start=%d ok=%v err=%v", pid, start, ok, err)
 	}
 	if err := st.DeleteIfNotRunning(c.ID); err != nil {
 		t.Fatalf("delete stopped container: %v", err)
 	}
-	if _, ok, err := st.readExitedIdentityUnlocked(c.ID); err != nil {
-		t.Fatalf("read exited identity after delete: %v", err)
-	} else if ok {
-		t.Fatal("exited identity tombstone survived container deletion")
+	if _, err := st.Get(c.ID); err == nil {
+		t.Fatal("container JSON carrying embedded exit identity survived deletion")
+	}
+	if _, ok, err := st.readExitedIdentityUnlocked(c.ID); err != nil || ok {
+		t.Fatalf("legacy sidecar appeared or survived delete: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -125,12 +109,7 @@ func TestDeleteIfNotRunningPreservesPendingCgroupOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Container{
-		ID:           "pending-cgroup-delete",
-		Status:       StatusRunning,
-		PID:          6161,
-		PIDStartTime: 101,
-	}
+	c := &Container{ID: "pending-cgroup-delete", Status: StatusRunning, PID: 6161, PIDStartTime: 101}
 	if err := st.Save(c); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +120,6 @@ func TestDeleteIfNotRunningPreservesPendingCgroupOwnership(t *testing.T) {
 	if changed, err := st.MarkStoppedIfIdentity(c.ID, c.PID, c.PIDStartTime, -1, time.Now()); err != nil || !changed {
 		t.Fatalf("mark stopped: changed=%v err=%v", changed, err)
 	}
-
 	err = st.DeleteIfNotRunning(c.ID)
 	if err == nil || !strings.Contains(err.Error(), "pending cgroup cleanup") {
 		t.Fatalf("delete with pending cgroup error=%v, want cleanup refusal", err)
