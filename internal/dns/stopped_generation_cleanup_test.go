@@ -35,6 +35,42 @@ func TestCleanupStoppedGenerationConsumesExactModernRegistration(t *testing.T) {
 	}
 }
 
+func TestCleanupStoppedGenerationRetiresOwnerlessLegacyInSamePolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	ownerless := HostEntry{
+		ContainerID: "target",
+		Hostname:    "old-target",
+		IP:          "172.20.0.2",
+	}
+	other := HostEntry{
+		ContainerID:         "other",
+		Hostname:            "other",
+		IP:                  "172.20.0.8",
+		OwnerPID:            808,
+		OwnerStartTime:      8008,
+		GenerationAware:     true,
+		GenerationPID:       909,
+		GenerationStartTime: 9009,
+	}
+	writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless, other})
+
+	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
+		"default",
+		"target",
+		childGenerationIdentity{PID: 202, StartTime: 2002},
+	)
+	if err != nil {
+		t.Fatalf("cleanup ownerless legacy under exact generation authority: %v", err)
+	}
+	entries := readOwnedDNSRegistry(t, "default")
+	if len(entries) != 1 || entries[0] != other {
+		t.Fatalf("ownerless migration cleanup changed unrelated modern entry: %+v", entries)
+	}
+}
+
 func TestCleanupStoppedGenerationPreservesNewerSameRegistrarGeneration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
