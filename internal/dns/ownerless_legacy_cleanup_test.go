@@ -4,7 +4,7 @@ package dns
 
 import "testing"
 
-func TestCleanupStoppedOwnerlessLegacyHostRegistrationIsMigrationScoped(t *testing.T) {
+func TestCleanupStoppedOwnerlessLegacyHostRegistrationRemovesOnlyTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -14,16 +14,54 @@ func TestCleanupStoppedOwnerlessLegacyHostRegistrationIsMigrationScoped(t *testi
 		Hostname:    "old-target",
 		IP:          "172.20.0.2",
 	}
-	registrarOwnedTarget := HostEntry{
+	otherOwnerless := HostEntry{
+		ContainerID: "other",
+		Hostname:    "other",
+		IP:          "172.20.0.5",
+	}
+	writeOwnedDNSRegistry(t, "default", []HostEntry{ownerlessTarget, otherOwnerless})
+
+	if err := CleanupStoppedOwnerlessLegacyHostRegistration("default", "target"); err != nil {
+		t.Fatalf("cleanup ownerless legacy registration: %v", err)
+	}
+
+	entries := readOwnedDNSRegistry(t, "default")
+	if len(entries) != 1 || entries[0] != otherOwnerless {
+		t.Fatalf("cleanup changed non-target ownerless entry: %+v", entries)
+	}
+}
+
+func TestCleanupStoppedOwnerlessLegacyHostRegistrationPreservesRegistrarOwnedTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	owned := HostEntry{
 		ContainerID:    "target",
-		Hostname:       "owned-target",
+		Hostname:       "target",
 		IP:             "172.20.0.3",
 		OwnerPID:       101,
 		OwnerStartTime: 1001,
 	}
-	modernTarget := HostEntry{
+	writeOwnedDNSRegistry(t, "default", []HostEntry{owned})
+
+	if err := CleanupStoppedOwnerlessLegacyHostRegistration("default", "target"); err != nil {
+		t.Fatalf("cleanup registrar-owned target: %v", err)
+	}
+	entries := readOwnedDNSRegistry(t, "default")
+	if len(entries) != 1 || entries[0] != owned {
+		t.Fatalf("registrar-owned target changed: %+v", entries)
+	}
+}
+
+func TestCleanupStoppedOwnerlessLegacyHostRegistrationPreservesModernTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	modern := HostEntry{
 		ContainerID:         "target",
-		Hostname:            "modern-target",
+		Hostname:            "target",
 		IP:                  "172.20.0.4",
 		OwnerPID:            202,
 		OwnerStartTime:      2002,
@@ -31,31 +69,14 @@ func TestCleanupStoppedOwnerlessLegacyHostRegistrationIsMigrationScoped(t *testi
 		GenerationPID:       303,
 		GenerationStartTime: 3003,
 	}
-	otherOwnerless := HostEntry{
-		ContainerID: "other",
-		Hostname:    "other",
-		IP:          "172.20.0.5",
-	}
-	writeOwnedDNSRegistry(t, "default", []HostEntry{
-		ownerlessTarget,
-		registrarOwnedTarget,
-		modernTarget,
-		otherOwnerless,
-	})
+	writeOwnedDNSRegistry(t, "default", []HostEntry{modern})
 
 	if err := CleanupStoppedOwnerlessLegacyHostRegistration("default", "target"); err != nil {
-		t.Fatalf("cleanup ownerless legacy registration: %v", err)
+		t.Fatalf("cleanup modern target: %v", err)
 	}
-
 	entries := readOwnedDNSRegistry(t, "default")
-	if len(entries) != 3 {
-		t.Fatalf("expected only one ownerless target entry removed, got %+v", entries)
-	}
-	want := []HostEntry{registrarOwnedTarget, modernTarget, otherOwnerless}
-	for i := range want {
-		if entries[i] != want[i] {
-			t.Fatalf("entry %d changed: got %+v want %+v", i, entries[i], want[i])
-		}
+	if len(entries) != 1 || entries[0] != modern {
+		t.Fatalf("modern target changed: %+v", entries)
 	}
 }
 
