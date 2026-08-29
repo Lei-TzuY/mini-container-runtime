@@ -159,10 +159,14 @@ func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	return true, nil
 }
 
-// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Legacy .exit is
-// consulted only when the embedded field is genuinely absent. Corrupt embedded
-// metadata never falls back to a potentially stale sidecar.
+// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Versioned
+// stopped generations are bound to their schema contract and never consult a
+// legacy .exit sidecar when embedded identity is absent or corrupt.
 func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
+	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	if err != nil {
+		return exitedIdentity{}, false, err
+	}
 	identity, embedded, err := s.containerEmbeddedExitedIdentityUnlocked(id)
 	if err != nil {
 		return exitedIdentity{}, false, err
@@ -176,6 +180,9 @@ func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bo
 			return exitedIdentity{}, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
 		}
 		return identity, true, nil
+	}
+	if versioned {
+		return exitedIdentity{}, false, fmt.Errorf("versioned stopped generation is missing embedded exit identity")
 	}
 	return s.readExitedIdentityUnlocked(id)
 }
@@ -263,6 +270,10 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return 0, 0, false, false, false, nil
 	}
 
+	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
 	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -271,6 +282,15 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 	if err != nil {
 		return 0, 0, true, false, false, err
 	}
+	if versioned {
+		if !present || !required {
+			return 0, 0, true, false, false, fmt.Errorf("versioned stopped generation is missing required exit identity capability")
+		}
+		if !embedded {
+			return 0, 0, true, false, true, fmt.Errorf("versioned stopped generation is missing embedded exit identity")
+		}
+		return identity.PID, identity.PIDStartTime, true, true, true, nil
+	}
 	if embedded {
 		if !present || !required {
 			return 0, 0, true, false, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
@@ -278,8 +298,9 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return identity.PID, identity.PIDStartTime, true, true, true, nil
 	}
 
-	// Upgrade compatibility for #247-era and older stopped records: only a
-	// genuinely absent embedded field may consult the historical .exit sidecar.
+	// Upgrade compatibility for #247-era and older stopped records: only an
+	// unversioned record with a genuinely absent embedded field may consult the
+	// historical .exit sidecar.
 	identity, ok, err = s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -325,9 +346,19 @@ func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64
 	if c.Status != StatusStopped || c.Revision != revision {
 		return false, false, nil
 	}
+	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	if err != nil {
+		return true, false, err
+	}
 	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
 	if err != nil {
 		return true, false, err
+	}
+	if versioned {
+		if !present || !required {
+			return true, false, fmt.Errorf("versioned stopped generation is missing required exit identity capability")
+		}
+		return true, true, nil
 	}
 	if present {
 		return true, required, nil
