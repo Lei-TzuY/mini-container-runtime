@@ -36,6 +36,43 @@ func TestContainerWritesStampCurrentStateSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestCurrentStoppedWritePublishesExplicitBroadCleanupAuthority(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const id = "modern-broad-policy"
+	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	container, err := st.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, current, ok, required, err := st.GetStoppedExitIdentityPolicy(id, container.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current || ok || required {
+		t.Fatalf("unexpected explicit broad policy: current=%v ok=%v required=%v", current, ok, required)
+	}
+
+	data, err := readRegularStateFile(filepath.Join(st.ctrDir, id+".json"), "container state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var authorized bool
+	if err := json.Unmarshal(raw["legacy_dns_cleanup_authorized"], &authorized); err != nil || !authorized {
+		t.Fatalf("current stopped writer did not publish explicit broad policy: authorized=%v err=%v", authorized, err)
+	}
+}
+
 func TestModernStoppedRecordWithoutAuthorityFailsClosed(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
@@ -44,11 +81,16 @@ func TestModernStoppedRecordWithoutAuthorityFailsClosed(t *testing.T) {
 	defer st.Close()
 
 	const id = "modern-missing-authority"
-	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
+	container := &Container{ID: id, Revision: 3, Status: StatusStopped, CreatedAt: time.Now()}
+	record := struct {
+		*Container
+		StateSchemaVersion uint32 `json:"state_schema_version"`
+	}{Container: container, StateSchemaVersion: currentContainerStateSchemaVersion}
+	data, err := json.MarshalIndent(&record, "", "  ")
+	if err != nil {
 		t.Fatal(err)
 	}
-	container, err := st.Get(id)
-	if err != nil {
+	if err := atomicWriteFile(st.ctrDir, filepath.Join(st.ctrDir, id+".json"), data); err != nil {
 		t.Fatal(err)
 	}
 
