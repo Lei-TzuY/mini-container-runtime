@@ -8,15 +8,34 @@ import (
 )
 
 func TestCleanupStoppedLegacyHostRegistrationsScopesMigrationAuthority(t *testing.T) {
-	t.Run("reclaims ownerless and stale registrar records atomically", func(t *testing.T) {
+	t.Run("reclaims ownerless legacy without probing", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 
 		ownerless := HostEntry{ContainerID: "target", Hostname: "ownerless", IP: "172.20.0.2"}
-		stale := HostEntry{ContainerID: "target", Hostname: "stale", IP: "172.20.0.3", OwnerPID: 101, OwnerStartTime: 1001}
 		foreign := HostEntry{ContainerID: "other", Hostname: "foreign", IP: "172.20.0.6", OwnerPID: 505, OwnerStartTime: 5005}
-		writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless, stale, foreign})
+		writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless, foreign})
+
+		if err := cleanupStoppedLegacyHostRegistrationsWith("default", "target", func(HostEntry) (bool, error) {
+			t.Fatal("liveness probe called for ownerless legacy entry")
+			return false, nil
+		}); err != nil {
+			t.Fatalf("cleanup ownerless legacy DNS: %v", err)
+		}
+		got := readOwnedDNSRegistry(t, "default")
+		if len(got) != 1 || got[0] != foreign {
+			t.Fatalf("cleanup result=%+v, want only foreign entry", got)
+		}
+	})
+
+	t.Run("reclaims stale registrar-owned legacy", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		stale := HostEntry{ContainerID: "target", Hostname: "stale", IP: "172.20.0.3", OwnerPID: 101, OwnerStartTime: 1001}
+		writeOwnedDNSRegistry(t, "default", []HostEntry{stale})
 
 		probes := 0
 		if err := cleanupStoppedLegacyHostRegistrationsWith("default", "target", func(entry HostEntry) (bool, error) {
@@ -26,25 +45,23 @@ func TestCleanupStoppedLegacyHostRegistrationsScopesMigrationAuthority(t *testin
 			}
 			return false, nil
 		}); err != nil {
-			t.Fatalf("cleanup legacy DNS migration records: %v", err)
+			t.Fatalf("cleanup stale legacy registrar DNS: %v", err)
 		}
 		if probes != 1 {
 			t.Fatalf("liveness probes=%d, want 1", probes)
 		}
-		got := readOwnedDNSRegistry(t, "default")
-		if len(got) != 1 || got[0] != foreign {
-			t.Fatalf("cleanup result=%+v, want only foreign entry", got)
+		if got := readOwnedDNSRegistry(t, "default"); len(got) != 0 {
+			t.Fatalf("stale legacy entry remains: %+v", got)
 		}
 	})
 
-	t.Run("preserves live legacy owner while retiring ownerless debris", func(t *testing.T) {
+	t.Run("preserves live legacy owner", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 
-		ownerless := HostEntry{ContainerID: "target", Hostname: "ownerless", IP: "172.20.0.2"}
 		live := HostEntry{ContainerID: "target", Hostname: "live", IP: "172.20.0.3", OwnerPID: 202, OwnerStartTime: 2002}
-		writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless, live})
+		writeOwnedDNSRegistry(t, "default", []HostEntry{live})
 
 		if err := cleanupStoppedLegacyHostRegistrationsWith("default", "target", func(entry HostEntry) (bool, error) {
 			if entry != live {
@@ -86,9 +103,8 @@ func TestCleanupStoppedLegacyHostRegistrationsProbeErrorFailsClosed(t *testing.T
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	ownerless := HostEntry{ContainerID: "target", Hostname: "ownerless", IP: "172.20.0.2"}
-	owned := HostEntry{ContainerID: "target", Hostname: "legacy", IP: "172.20.0.3", OwnerPID: 101, OwnerStartTime: 1001}
-	writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless, owned})
+	entry := HostEntry{ContainerID: "target", Hostname: "legacy", IP: "172.20.0.3", OwnerPID: 101, OwnerStartTime: 1001}
+	writeOwnedDNSRegistry(t, "default", []HostEntry{entry})
 	probeErr := errors.New("probe failed")
 
 	err := cleanupStoppedLegacyHostRegistrationsWith("default", "target", func(HostEntry) (bool, error) {
@@ -98,7 +114,7 @@ func TestCleanupStoppedLegacyHostRegistrationsProbeErrorFailsClosed(t *testing.T
 		t.Fatalf("cleanup error=%v, want probe error", err)
 	}
 	got := readOwnedDNSRegistry(t, "default")
-	if len(got) != 2 || got[0] != ownerless || got[1] != owned {
-		t.Fatalf("probe failure partially mutated registry: %+v", got)
+	if len(got) != 1 || got[0] != entry {
+		t.Fatalf("probe failure mutated registry: %+v", got)
 	}
 }
