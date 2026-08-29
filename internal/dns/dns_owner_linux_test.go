@@ -154,19 +154,30 @@ func TestDNSRegistryPrunesPIDReuseMismatch(t *testing.T) {
 	}
 }
 
-func TestDNSRegistryRetainsLegacyUnownedEntry(t *testing.T) {
+func TestDNSRegistryPrunesLegacyUnownedEntryWithoutState(t *testing.T) {
 	useTempDNSHome(t)
 	dir, err := ensureDNSDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	legacy := HostEntry{ContainerID: "legacy", Hostname: "legacy-host", IP: "10.0.0.5"}
-	if err := saveEntriesAtomic(dir, filepath.Join(dir, "default.json"), "default", []HostEntry{legacy}); err != nil {
+	path := filepath.Join(dir, "default.json")
+	if err := saveEntriesAtomic(dir, path, "default", []HostEntry{legacy}); err != nil {
 		t.Fatal(err)
 	}
 	content, err := GenerateHostsContentChecked("default")
-	if err != nil || !strings.Contains(content, "10.0.0.5\tlegacy-host") {
-		t.Fatalf("legacy entry lost: content=%q err=%v", content, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "10.0.0.5\tlegacy-host") {
+		t.Fatalf("orphaned ownerless legacy entry remained authoritative: %q", content)
+	}
+	entries, ok, err := loadEntriesChecked(path, "default")
+	if err != nil || !ok {
+		t.Fatalf("load pruned registry: entries=%+v ok=%v err=%v", entries, ok, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("orphaned ownerless legacy entry remained on disk: %+v", entries)
 	}
 }
 
