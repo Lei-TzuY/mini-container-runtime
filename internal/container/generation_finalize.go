@@ -33,10 +33,10 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 	}
 
 	// A delayed finalizer can observe a later generation that has independently
-	// restarted and stopped. Before allowing migration-only ownerless DNS cleanup,
-	// bind destructive external cleanup to the durable stopped revision's exited
-	// PID/start-time identity. This is stronger than status alone and turns a stale
-	// A-generation actor into a no-op after B has become the current stopped state.
+	// restarted and stopped. Bind destructive external cleanup to the durable
+	// stopped revision's exited PID/start-time identity. This is stronger than
+	// status alone and turns a stale A-generation actor into a no-op after B has
+	// become the current stopped state.
 	exitedPID, exitedStartTime, revisionCurrent, identityOK, identityErr := st.GetExitedIdentityForStoppedRevision(current.ID, current.Revision)
 	if identityErr != nil {
 		return changed, errors.Join(cgroupErr, fmt.Errorf("validate stopped generation identity before external cleanup: %w", identityErr))
@@ -67,11 +67,7 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 		cleanupNetworkGenerationIfOwned,
 		dns.CleanupStoppedHostRegistrationGeneration,
 	)
-	legacyDNSErr := dns.CleanupStoppedOwnerlessLegacyHostRegistration(defaultBridgeDNSNetwork, c.ID)
-	if legacyDNSErr != nil {
-		legacyDNSErr = fmt.Errorf("cleanup ownerless legacy bridge DNS registration for stopped container %s: %w", c.ID, legacyDNSErr)
-	}
-	return changed, errors.Join(cgroupErr, externalErr, legacyDNSErr)
+	return changed, errors.Join(cgroupErr, externalErr)
 }
 
 func cleanupStoppedGenerationExternalResourcesWith(

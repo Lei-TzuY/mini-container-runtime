@@ -16,19 +16,20 @@ func (g childGenerationIdentity) valid() bool {
 	return g.PID > 0 && g.StartTime != 0
 }
 
-// CleanupStoppedHostRegistrationGeneration removes only DNS state that can be
-// proven to belong to the exact stopped child PID/start-time generation. Modern
-// generation-aware entries are treated as a CAS token: an entry bound to a
-// different child generation, or still unbound during a newer admission, is
+// CleanupStoppedHostRegistrationGeneration removes DNS state that can be
+// retired under authority for one exact stopped child PID/start-time generation.
+// Modern generation-aware entries are treated as a CAS token: an entry bound to
+// a different child generation, or still unbound during a newer admission, is
 // never consumed merely because its registrar matches or is stale.
 //
 // Exact generation teardown deliberately has no dependency on the registrar
 // process identity. Crash/reconciliation cleanup may run after that registrar is
 // gone or when its identity cannot be resolved; the durable child PID/start-time
-// pair is the destructive authority. Generation-unaware registrar-owned entries
-// are migration-only records because modern registration always writes
-// generation-aware ownership. Truly ownerless legacy entries are handled by the
-// separately revision-guarded ownerless migration cleanup.
+// pair is the destructive authority. Generation-unaware entries are migration
+// debris because current admission always writes generation-aware ownership;
+// once the caller has exact stopped-generation authority, both registrar-owned
+// and pre-ownership ownerless legacy records can be retired in this same registry
+// transaction without granting authority over a concurrent modern restart.
 func CleanupStoppedHostRegistrationGeneration(networkName, containerID string, generationPID int, generationStartTime uint64) error {
 	generation := childGenerationIdentity{PID: generationPID, StartTime: generationStartTime}
 	return cleanupStoppedHostRegistrationWithGenerationPolicy(networkName, containerID, generation)
@@ -114,19 +115,11 @@ func cleanupStoppedHostRegistrationWithGenerationPolicy(
 				continue
 			}
 
-			// Truly legacy entries have no ownership proof at all. They are
-			// retired by the separately revision-guarded ownerless migration path.
-			if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
-				updated = append(updated, entry)
-				continue
-			}
-
-			// Generation-unaware registrar ownership can only come from a legacy
-			// runtime: modern admission always writes GenerationAware=true. Once the
-			// caller has established exact stopped-generation authority, retaining
-			// this migration record based on registrar liveness can only prolong a
-			// stale hostname reservation. A concurrent modern restart is still safe:
-			// its generation-aware replacement is preserved by the branch above.
+			// Current admission never creates generation-unaware records. With an
+			// exact stopped-generation proof, every such record for this container
+			// is migration debris, whether registrar-owned or pre-ownership. Retire
+			// it inside this transaction instead of opening a second ownerless-only
+			// cleanup window after the modern CAS decision.
 			removed = true
 		}
 		return updated, removed, nil

@@ -188,11 +188,10 @@ func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
 		return dns.CleanupStoppedLegacyHostRegistrations(defaultBridgeDNSNetwork, c.ID)
 	}
 
-	generationErr := dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, pid, pidStartTime)
-	// Exact modern teardown deliberately preserves ownerless pre-ownership debris.
-	// The same stopped-revision proof authorizes that independent migration class.
-	legacyErr := dns.CleanupStoppedOwnerlessLegacyHostRegistration(defaultBridgeDNSNetwork, c.ID)
-	return errors.Join(generationErr, legacyErr)
+	// The stopped revision and durable exited identity authorize one DNS registry
+	// transaction. It retires the exact modern generation plus any historical
+	// generation-unaware debris while preserving unbound or newer modern attempts.
+	return dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, pid, pidStartTime)
 }
 
 // CleanupStoppedRuntimeResources retries every durable host-side cleanup token
