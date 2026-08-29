@@ -1,7 +1,6 @@
 package state
 
 import (
-	"os"
 	"testing"
 	"time"
 )
@@ -34,8 +33,9 @@ func TestUnknownExitCodeCanBeUpgradedForSameExitedIdentity(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("unknown stop: changed=%v err=%v", changed, err)
 	}
-	if _, err := os.Stat(exitedIdentityPath(st.ctrDir, id)); err != nil {
-		t.Fatalf("expected exited-identity tombstone: %v", err)
+	gotPID, gotStart, ok, err := st.GetExitedIdentity(id)
+	if err != nil || !ok || gotPID != pid || gotStart != start {
+		t.Fatalf("expected embedded stopped identity: pid=%d start=%d ok=%v err=%v", gotPID, gotStart, ok, err)
 	}
 
 	authoritativeFinished := fallbackFinished.Add(time.Second)
@@ -54,7 +54,7 @@ func TestUnknownExitCodeCanBeUpgradedForSameExitedIdentity(t *testing.T) {
 	if got.FinishedAt == nil || !got.FinishedAt.Equal(authoritativeFinished) {
 		t.Fatalf("finished_at=%v, want %v", got.FinishedAt, authoritativeFinished)
 	}
-	gotPID, gotStart, ok, err := st.GetExitedIdentity(id)
+	gotPID, gotStart, ok, err = st.GetExitedIdentity(id)
 	if err != nil || !ok || gotPID != pid || gotStart != start {
 		t.Fatalf("stopped generation identity lost after reconciliation: pid=%d start=%d ok=%v err=%v", gotPID, gotStart, ok, err)
 	}
@@ -126,7 +126,7 @@ func TestUnknownExitCodeRejectsDifferentExitedIdentity(t *testing.T) {
 	}
 }
 
-func TestRestartClearsExitedIdentityTombstone(t *testing.T) {
+func TestRestartClearsStoppedGenerationIdentity(t *testing.T) {
 	const id = "ctr-exit-restart"
 	st := newLifecycleTestStore(t, id)
 	if err := st.MarkRunning(id, 100, 200, time.Now()); err != nil {
@@ -138,8 +138,8 @@ func TestRestartClearsExitedIdentityTombstone(t *testing.T) {
 	if err := st.MarkRunning(id, 300, 400, time.Now()); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	if _, err := os.Stat(exitedIdentityPath(st.ctrDir, id)); !os.IsNotExist(err) {
-		t.Fatalf("old exited identity survived restart: %v", err)
+	if _, _, ok, err := st.GetExitedIdentity(id); err != nil || ok {
+		t.Fatalf("old stopped identity survived restart: ok=%v err=%v", ok, err)
 	}
 
 	changed, err := st.MarkStoppedIfIdentity(id, 100, 200, 9, time.Now())
@@ -155,7 +155,7 @@ func TestRestartClearsExitedIdentityTombstone(t *testing.T) {
 	}
 }
 
-func TestDeleteRemovesExitedIdentityTombstone(t *testing.T) {
+func TestDeleteRemovesStoppedGenerationIdentity(t *testing.T) {
 	const id = "ctr-exit-delete"
 	st := newLifecycleTestStore(t, id)
 	if err := st.MarkRunning(id, 100, 200, time.Now()); err != nil {
@@ -164,14 +164,16 @@ func TestDeleteRemovesExitedIdentityTombstone(t *testing.T) {
 	if changed, err := st.MarkStoppedIfIdentity(id, 100, 200, 0, time.Now()); err != nil || !changed {
 		t.Fatalf("stop: changed=%v err=%v", changed, err)
 	}
-	path := exitedIdentityPath(st.ctrDir, id)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("expected tombstone before delete: %v", err)
+	if pid, start, ok, err := st.GetExitedIdentity(id); err != nil || !ok || pid != 100 || start != 200 {
+		t.Fatalf("expected embedded identity before delete: pid=%d start=%d ok=%v err=%v", pid, start, ok, err)
 	}
 	if err := st.Delete(id); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("tombstone survived container delete: %v", err)
+	if _, err := st.Get(id); err == nil {
+		t.Fatal("container state carrying stopped generation identity survived delete")
+	}
+	if _, ok, err := st.readExitedIdentityUnlocked(id); err != nil || ok {
+		t.Fatalf("legacy sidecar appeared or survived delete: ok=%v err=%v", ok, err)
 	}
 }
