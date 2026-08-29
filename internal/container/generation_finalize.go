@@ -67,7 +67,11 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 		cleanupNetworkGenerationIfOwned,
 		dns.CleanupStoppedHostRegistrationGeneration,
 	)
-	return changed, errors.Join(cgroupErr, externalErr)
+	legacyDNSErr := dns.CleanupStoppedOwnerlessLegacyHostRegistration(defaultBridgeDNSNetwork, c.ID)
+	if legacyDNSErr != nil {
+		legacyDNSErr = fmt.Errorf("cleanup ownerless legacy bridge DNS registration for stopped container %s: %w", c.ID, legacyDNSErr)
+	}
+	return changed, errors.Join(cgroupErr, externalErr, legacyDNSErr)
 }
 
 func cleanupStoppedGenerationExternalResourcesWith(
@@ -85,22 +89,13 @@ func cleanupStoppedGenerationExternalResourcesWith(
 		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", containerID, err)
 	}
 
-	// Exact-generation cleanup intentionally preserves ownerless records because
-	// they carry no child identity. Reaching this function from FinalizeStoppedGeneration
-	// now means the current stopped revision has already been matched to this exact
-	// exited generation, so it is safe to retire only the pre-ownership legacy class.
-	var legacyDNSErr error
-	if err := dns.CleanupStoppedOwnerlessLegacyHostRegistration(defaultBridgeDNSNetwork, containerID); err != nil {
-		legacyDNSErr = fmt.Errorf("cleanup ownerless legacy bridge DNS registration for stopped container %s: %w", containerID, err)
-	}
-
 	var networkErr error
 	if networkCleanup == nil {
 		networkErr = fmt.Errorf("network generation cleanup function is nil")
 	} else if err := networkCleanup(st, containerID, pid, pidStartTime, false); err != nil {
 		networkErr = err
 	}
-	return errors.Join(dnsErr, legacyDNSErr, networkErr)
+	return errors.Join(dnsErr, networkErr)
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
