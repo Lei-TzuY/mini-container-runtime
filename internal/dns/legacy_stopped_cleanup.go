@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+type legacyHostEntryActiveProbe func(HostEntry) (bool, error)
+
 // CleanupStoppedLegacyRegistrarHostRegistration retires only generation-unaware
 // registrar-owned DNS records for a stopped container. It is migration-only:
 // modern generation-aware records and pre-ownership ownerless records are never
@@ -17,7 +19,7 @@ func CleanupStoppedLegacyRegistrarHostRegistration(networkName, containerID stri
 
 func cleanupStoppedLegacyRegistrarHostRegistrationWith(
 	networkName, containerID string,
-	ownerActive hostEntryActiveProbe,
+	ownerActive legacyHostEntryActiveProbe,
 ) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
