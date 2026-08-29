@@ -7,17 +7,17 @@ import (
 
 type legacyHostEntryActiveProbe func(HostEntry) (bool, error)
 
-// CleanupStoppedLegacyRegistrarHostRegistration retires only generation-unaware
-// registrar-owned DNS records for a stopped container. It is migration-only:
-// modern generation-aware records and pre-ownership ownerless records are never
-// consumed here. Unlike the older compatibility path, recovery does not need to
-// resolve the identity of the process performing cleanup; each legacy owner is
-// judged solely by its own liveness.
-func CleanupStoppedLegacyRegistrarHostRegistration(networkName, containerID string) error {
-	return cleanupStoppedLegacyRegistrarHostRegistrationWith(networkName, containerID, hostEntryOwnerActive)
+// CleanupStoppedLegacyHostRegistrations retires every generation-unaware DNS
+// record class for a historical stopped container in one registry transaction.
+// Ownerless pre-ownership records are always migration debris once the caller
+// has established an authoritative stopped lifecycle revision. Registrar-owned
+// legacy records are removed only when their recorded owner is no longer active.
+// Modern generation-aware records are never consumed by this compatibility path.
+func CleanupStoppedLegacyHostRegistrations(networkName, containerID string) error {
+	return cleanupStoppedLegacyHostRegistrationsWith(networkName, containerID, hostEntryOwnerActive)
 }
 
-func cleanupStoppedLegacyRegistrarHostRegistrationWith(
+func cleanupStoppedLegacyHostRegistrationsWith(
 	networkName, containerID string,
 	ownerActive legacyHostEntryActiveProbe,
 ) error {
@@ -39,8 +39,12 @@ func cleanupStoppedLegacyRegistrarHostRegistrationWith(
 				updated = append(updated, entry)
 				continue
 			}
+
+			// Pre-ownership records cannot be recreated by current runtimes. The
+			// caller's stopped-revision proof is therefore sufficient authority to
+			// retire them without any process-liveness dependency.
 			if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
-				updated = append(updated, entry)
+				removed = true
 				continue
 			}
 
