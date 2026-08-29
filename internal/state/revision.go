@@ -27,7 +27,7 @@ func (s *Store) saveContainerCASUnlocked(c *Container) error {
 	switch {
 	case err == nil:
 		var current Container
-		if err := json.Unmarshal(data, &current); err != nil {
+		if err := unmarshalContainerStateForID(data, c.ID, &current); err != nil {
 			return fmt.Errorf("unmarshal current container state: %w", err)
 		}
 		if current.Revision != c.Revision {
