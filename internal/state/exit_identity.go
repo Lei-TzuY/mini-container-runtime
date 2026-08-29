@@ -280,7 +280,7 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 
 	// Upgrade compatibility for #247-era and older stopped records: only a
 	// genuinely absent embedded field may consult the historical .exit sidecar.
-	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	identity, ok, err = s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
 	}
