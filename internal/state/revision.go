@@ -54,7 +54,8 @@ func (s *Store) writeContainerNextRevisionUnlocked(c *Container) error {
 }
 
 // writeStoppedContainerNextRevisionUnlocked publishes stopped status, revision,
-// capability, and exact generation identity in one atomic JSON replacement.
+// capability, schema version, and exact generation identity in one atomic JSON
+// replacement.
 func (s *Store) writeStoppedContainerNextRevisionUnlocked(c *Container, pid int, pidStartTime uint64) error {
 	if c.Revision == math.MaxUint64 {
 		return fmt.Errorf("container %s revision overflow", c.ID)
@@ -109,9 +110,16 @@ func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revis
 	if requireExitIdentity {
 		record := struct {
 			*Container
-			ExitIdentityRequired bool            `json:"exit_identity_required"`
-			ExitIdentity         *exitedIdentity `json:"exit_identity,omitempty"`
+			StoppedGenerationSchemaVersion uint32          `json:"stopped_generation_schema_version,omitempty"`
+			ExitIdentityRequired           bool            `json:"exit_identity_required"`
+			ExitIdentity                   *exitedIdentity `json:"exit_identity,omitempty"`
 		}{Container: &copy, ExitIdentityRequired: true, ExitIdentity: identity}
+		// Only exact-identity modern stopped commits publish the schema version.
+		// A nil identity is retained solely for tests/upgrade fixtures that model
+		// the pre-version capability+sidecar format.
+		if identity != nil {
+			record.StoppedGenerationSchemaVersion = currentStoppedGenerationSchemaVersion
+		}
 		data, err = json.MarshalIndent(&record, "", "  ")
 	} else {
 		data, err = json.MarshalIndent(&copy, "", "  ")
