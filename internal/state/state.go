@@ -268,7 +268,7 @@ func (s *Store) getUnlocked(id string) (*Container, error) {
 	}
 
 	var c Container
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := unmarshalContainerStateForID(data, id, &c); err != nil {
 		return nil, fmt.Errorf("unmarshal container state: %w", err)
 	}
 	return &c, nil
