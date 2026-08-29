@@ -53,6 +53,49 @@ func TestModernStoppedGenerationPublishesSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestStoppedGenerationTeardownSnapshotIsCoherent(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "schema-snapshot"
+	createModernStoppedForExitIdentityTest(t, st, id, 612, 6012)
+
+	snapshot, err := st.readStoppedGenerationTeardownSnapshotUnlocked(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.versioned || snapshot.version != currentStoppedGenerationSchemaVersion {
+		t.Fatalf("version=%d versioned=%v", snapshot.version, snapshot.versioned)
+	}
+	if !snapshot.requirementPresent || !snapshot.required {
+		t.Fatalf("requirement present=%v required=%v", snapshot.requirementPresent, snapshot.required)
+	}
+	if !snapshot.identityEmbedded || snapshot.identity.PID != 612 || snapshot.identity.PIDStartTime != 6012 {
+		t.Fatalf("identity embedded=%v value=%+v", snapshot.identityEmbedded, snapshot.identity)
+	}
+}
+
+func TestStoppedGenerationTeardownSnapshotRejectsMalformedMixedMetadata(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "schema-snapshot-malformed"
+	stopped := createModernStoppedForExitIdentityTest(t, st, id, 613, 6013)
+	rewriteStoppedGenerationRecordForTest(t, st, id, func(record map[string]json.RawMessage) {
+		record["exit_identity_required"] = json.RawMessage(`"true"`)
+	})
+
+	_, _, current, ok, required, err := st.GetStoppedExitIdentityPolicy(id, stopped.Revision)
+	if err == nil || !strings.Contains(err.Error(), "unmarshal stopped generation teardown metadata") {
+		t.Fatalf("expected typed snapshot parse error, got current=%v ok=%v required=%v err=%v", current, ok, required, err)
+	}
+	if !current || ok || required {
+		t.Fatalf("malformed mixed metadata did not fail closed: current=%v ok=%v required=%v", current, ok, required)
+	}
+}
+
 func TestVersionedStoppedGenerationMissingIdentityNeverFallsBack(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
