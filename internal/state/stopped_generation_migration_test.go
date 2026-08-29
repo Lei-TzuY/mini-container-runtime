@@ -2,6 +2,8 @@ package state
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +29,11 @@ func TestStoppedGenerationPolicyMigratesLegacySidecarAtSameRevision(t *testing.T
 		t.Fatal(err)
 	}
 	if err := st.writeExitedIdentityUnlocked("legacy-migrate", 4242, 777); err != nil {
+		_ = unlockStateFile(st.lockFile)
+		st.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(st.ctrDir, exitedIdentityRequiredPath(st.ctrDir, "legacy-migrate"), []byte("1\n")); err != nil {
 		_ = unlockStateFile(st.lockFile)
 		st.mu.Unlock()
 		t.Fatal(err)
@@ -61,6 +68,58 @@ func TestStoppedGenerationPolicyMigratesLegacySidecarAtSameRevision(t *testing.T
 	}
 	if snapshot.identity.PID != 4242 || snapshot.identity.PIDStartTime != 777 {
 		t.Fatalf("wrong embedded identity after migration: %+v", snapshot.identity)
+	}
+}
+
+func TestStoppedGenerationPolicyRejectsUnmarkedLegacyIdentitySidecar(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const id = "legacy-unmarked"
+	if err := st.Save(&Container{ID: id, Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st.mu.Lock()
+	if err := lockStateFile(st.lockFile); err != nil {
+		st.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := st.writeExitedIdentityUnlocked(id, 4343, 778); err != nil {
+		_ = unlockStateFile(st.lockFile)
+		st.mu.Unlock()
+		t.Fatal(err)
+	}
+	_ = unlockStateFile(st.lockFile)
+	st.mu.Unlock()
+
+	_, _, current, ok, required, err := st.GetStoppedExitIdentityPolicy(id, before.Revision)
+	if err == nil || !strings.Contains(err.Error(), "without required capability marker") {
+		t.Fatalf("expected orphan legacy identity to fail closed, got current=%v ok=%v required=%v err=%v", current, ok, required, err)
+	}
+	if !current || ok || required {
+		t.Fatalf("orphan legacy identity acquired teardown authority: current=%v ok=%v required=%v", current, ok, required)
+	}
+
+	st.mu.Lock()
+	snapshot, snapshotErr := st.readStoppedGenerationTeardownSnapshotUnlocked(id)
+	_, sidecarErr := os.Lstat(exitedIdentityPath(st.ctrDir, id))
+	st.mu.Unlock()
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
+	if snapshot.versioned || snapshot.identityEmbedded || snapshot.requirementPresent {
+		t.Fatalf("orphan legacy identity mutated lifecycle metadata: %+v", snapshot)
+	}
+	if sidecarErr != nil {
+		t.Fatalf("failed migration unexpectedly retired evidence sidecar: %v", sidecarErr)
 	}
 }
 
