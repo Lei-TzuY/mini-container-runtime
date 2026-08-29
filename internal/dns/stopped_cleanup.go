@@ -39,21 +39,16 @@ func CleanupStoppedHostRegistrationForFinalization(networkName, containerID stri
 // different child generation, or still unbound during a newer admission, is
 // never consumed merely because its registrar matches or is stale.
 //
-// Generation-unaware registrar-owned entries are migration-only records: modern
-// registration always writes generation-aware ownership, so an authoritative
-// exact stopped-generation finalizer may retire them without consulting registrar
-// liveness. Truly legacy entries without registrar ownership are handled by the
+// Exact generation teardown deliberately has no dependency on the registrar
+// process identity. Crash/reconciliation cleanup may run after that registrar is
+// gone or when its identity cannot be resolved; the durable child PID/start-time
+// pair is the destructive authority. Generation-unaware registrar-owned entries
+// are migration-only records because modern registration always writes
+// generation-aware ownership. Truly ownerless legacy entries are handled by the
 // separately revision-guarded ownerless migration cleanup.
 func CleanupStoppedHostRegistrationGeneration(networkName, containerID string, generationPID int, generationStartTime uint64) error {
-	owner, err := currentRegistrarIdentity()
-	if err != nil {
-		return err
-	}
 	generation := childGenerationIdentity{PID: generationPID, StartTime: generationStartTime}
-	if !generation.valid() {
-		return fmt.Errorf("invalid DNS child process identity %d/%d", generationPID, generationStartTime)
-	}
-	return cleanupStoppedHostRegistrationWithGenerationPolicy(networkName, containerID, owner, generation, hostEntryOwnerActive)
+	return cleanupStoppedHostRegistrationWithGenerationPolicy(networkName, containerID, generation)
 }
 
 func cleanupStoppedHostRegistrationForFinalization(networkName, containerID string, consumeCurrentOwner bool) error {
@@ -73,17 +68,24 @@ func cleanupStoppedHostRegistrationWith(
 }
 
 func validateStoppedCleanupInputs(networkName, containerID string, currentOwner registrarIdentity, ownerActive hostEntryActiveProbe) error {
-	if err := validateNetworkName(networkName); err != nil {
+	if err := validateStoppedGenerationCleanupInputs(networkName, containerID); err != nil {
 		return err
-	}
-	if strings.TrimSpace(containerID) == "" {
-		return fmt.Errorf("container ID cannot be empty")
 	}
 	if currentOwner.PID <= 0 || currentOwner.StartTime == 0 {
 		return fmt.Errorf("invalid current DNS registrar process identity %d/%d", currentOwner.PID, currentOwner.StartTime)
 	}
 	if ownerActive == nil {
 		return fmt.Errorf("DNS ownership activity probe is nil")
+	}
+	return nil
+}
+
+func validateStoppedGenerationCleanupInputs(networkName, containerID string) error {
+	if err := validateNetworkName(networkName); err != nil {
+		return err
+	}
+	if strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("container ID cannot be empty")
 	}
 	return nil
 }
@@ -180,11 +182,9 @@ func cleanupStoppedHostRegistrationWithPolicy(
 
 func cleanupStoppedHostRegistrationWithGenerationPolicy(
 	networkName, containerID string,
-	currentOwner registrarIdentity,
 	generation childGenerationIdentity,
-	ownerActive hostEntryActiveProbe,
 ) error {
-	if err := validateStoppedCleanupInputs(networkName, containerID, currentOwner, ownerActive); err != nil {
+	if err := validateStoppedGenerationCleanupInputs(networkName, containerID); err != nil {
 		return err
 	}
 	if !generation.valid() {
