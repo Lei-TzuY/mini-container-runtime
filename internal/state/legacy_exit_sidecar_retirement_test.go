@@ -16,6 +16,7 @@ func TestStoppedGenerationMigrationRetiresLegacySidecars(t *testing.T) {
 	if err := st.Save(&Container{ID: "retire-migrate", Status: StatusStopped, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	rewriteAsPreSchemaStoppedFixture(t, st, "retire-migrate")
 	container, err := st.Get("retire-migrate")
 	if err != nil {
 		t.Fatal(err)
