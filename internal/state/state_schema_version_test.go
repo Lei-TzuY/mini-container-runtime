@@ -8,6 +8,28 @@ import (
 	"time"
 )
 
+func rewriteAsPreSchemaStoppedFixture(t *testing.T, st *Store, id string) {
+	t.Helper()
+	path := filepath.Join(st.ctrDir, id+".json")
+	data, err := readRegularStateFile(path, "container state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	delete(raw, "state_schema_version")
+	delete(raw, "legacy_dns_cleanup_authorized")
+	data, err = json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(st.ctrDir, path, data); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContainerWritesStampCurrentStateSchemaVersion(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
