@@ -109,22 +109,46 @@ func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revis
 
 	var data []byte
 	var err error
-	if requireExitIdentity {
+	switch {
+	case requireExitIdentity && identity != nil:
 		record := struct {
 			*Container
 			StateSchemaVersion             uint32          `json:"state_schema_version"`
-			StoppedGenerationSchemaVersion uint32          `json:"stopped_generation_schema_version,omitempty"`
+			StoppedGenerationSchemaVersion uint32          `json:"stopped_generation_schema_version"`
 			ExitIdentityRequired           bool            `json:"exit_identity_required"`
-			ExitIdentity                   *exitedIdentity `json:"exit_identity,omitempty"`
-		}{Container: &copy, StateSchemaVersion: currentContainerStateSchemaVersion, ExitIdentityRequired: true, ExitIdentity: identity}
-		// Only exact-identity modern stopped commits publish the stopped-generation
-		// schema version. A nil identity is retained solely for tests/upgrade
-		// fixtures that model the pre-version capability+sidecar format.
-		if identity != nil {
-			record.StoppedGenerationSchemaVersion = currentStoppedGenerationSchemaVersion
+			ExitIdentity                   *exitedIdentity `json:"exit_identity"`
+		}{
+			Container:                      &copy,
+			StateSchemaVersion:             currentContainerStateSchemaVersion,
+			StoppedGenerationSchemaVersion: currentStoppedGenerationSchemaVersion,
+			ExitIdentityRequired:           true,
+			ExitIdentity:                   identity,
 		}
 		data, err = json.MarshalIndent(&record, "", "  ")
-	} else {
+	case requireExitIdentity:
+		// A capability without an embedded identity exists only as an upgrade/test
+		// fixture for the historical capability+sidecar format. Do not stamp modern
+		// writer provenance onto that deliberately pre-schema representation.
+		record := struct {
+			*Container
+			ExitIdentityRequired bool `json:"exit_identity_required"`
+		}{Container: &copy, ExitIdentityRequired: true}
+		data, err = json.MarshalIndent(&record, "", "  ")
+	case copy.Status == StatusStopped:
+		// A current writer that persists a stopped record without exact process
+		// identity must make its broad cleanup policy explicit. Field absence is
+		// reserved for genuinely pre-schema historical state.
+		record := struct {
+			*Container
+			StateSchemaVersion             uint32 `json:"state_schema_version"`
+			LegacyDNSCleanupAuthorized bool   `json:"legacy_dns_cleanup_authorized"`
+		}{
+			Container:                      &copy,
+			StateSchemaVersion:             currentContainerStateSchemaVersion,
+			LegacyDNSCleanupAuthorized:     true,
+		}
+		data, err = json.MarshalIndent(&record, "", "  ")
+	default:
 		record := struct {
 			*Container
 			StateSchemaVersion uint32 `json:"state_schema_version"`
