@@ -157,6 +157,54 @@ func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) 
 	return identity.PID, identity.PIDStartTime, true, true, nil
 }
 
+// GetStoppedExitIdentityPolicy validates one stopped revision and reads both its
+// exact exited process identity and its legacy-compatibility policy under the
+// same state lock. This prevents cleanup callers from having to drop the lock
+// between observing a missing .exit sidecar and deciding whether that absence
+// is historical or fail-closed modern state.
+//
+// current=false means the supplied stopped snapshot is stale. When current is
+// true, ok reports whether an exact PID/start-time identity exists. required is
+// meaningful when ok=false: required=true means the missing identity is
+// corruption and must not acquire legacy migration cleanup authority.
+func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, required bool, err error) {
+	if s == nil {
+		return 0, 0, false, false, false, fmt.Errorf("state store is nil")
+	}
+	if err := validateID(id); err != nil {
+		return 0, 0, false, false, false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := lockStateFile(s.lockFile); err != nil {
+		return 0, 0, false, false, false, err
+	}
+	defer func() { _ = unlockStateFile(s.lockFile) }()
+
+	c, err := s.getUnlocked(id)
+	if err != nil {
+		return 0, 0, false, false, false, err
+	}
+	if c.Status != StatusStopped || c.Revision != revision {
+		return 0, 0, false, false, false, nil
+	}
+
+	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
+	if ok {
+		return identity.PID, identity.PIDStartTime, true, true, true, nil
+	}
+
+	required, err = s.exitedIdentityRequiredUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
+	return 0, 0, true, false, required, nil
+}
+
 // StoppedRevisionRequiresExitedIdentity revalidates a stopped snapshot and
 // reports whether it belongs to a runtime generation that supports durable exit
 // identities. current=false means the caller's snapshot became stale. A current
