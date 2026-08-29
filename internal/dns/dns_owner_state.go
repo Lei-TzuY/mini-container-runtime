@@ -13,8 +13,11 @@ import (
 // once that generation is durably bound after bridge admission; registrar
 // liveness matters only while a modern registration is still unbound. Legacy
 // registrations retain the older registrar/state/network proof path for
-// backward compatibility. State/probe uncertainty fails closed rather than
-// deleting a possibly-live container's discovery record.
+// backward compatibility. Truly old entries without registrar identity use a
+// conservative durable-state proof so deleted/stopped containers do not pin a
+// hostname forever, while any running or uncertain matching generation remains
+// protected. State/probe uncertainty fails closed rather than deleting a
+// possibly-live container's discovery record.
 func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 	if entry.GenerationAware {
 		boundPID := entry.GenerationPID != 0
@@ -50,6 +53,16 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 			return false, err
 		}
 		return alive, nil
+	}
+
+	// Pre-ownership registries did not persist registrar PID/start-time at all.
+	// They cannot be process-CAS'd, but durable lifecycle state can still prove
+	// an entry obsolete when its container is gone, stopped/created, or has been
+	// recreated with a different hostname. For a matching running container we
+	// deliberately require only exact child liveness and otherwise preserve the
+	// entry; old runtimes may predate durable network-ownership sidecars.
+	if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
+		return ownerlessLegacyHostEntryActive(entry)
 	}
 
 	alive, err := registrarGenerationAlive(entry.OwnerPID, entry.OwnerStartTime)
@@ -126,5 +139,40 @@ func hostEntryOwnerActive(entry HostEntry) (bool, error) {
 		return false, nil
 	default:
 		return false, fmt.Errorf("container %s has unknown lifecycle status %q while recovering DNS ownership", c.ID, c.Status)
+	}
+}
+
+func ownerlessLegacyHostEntryActive(entry HostEntry) (bool, error) {
+	st, err := state.Open(state.DefaultDir())
+	if err != nil {
+		return false, fmt.Errorf("open state while recovering ownerless DNS entry for container %s: %w", entry.ContainerID, err)
+	}
+	defer st.Close()
+
+	c, err := st.Get(entry.ContainerID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read state while recovering ownerless DNS entry for container %s: %w", entry.ContainerID, err)
+	}
+
+	switch c.Status {
+	case state.StatusCreated, state.StatusStopped:
+		return false, nil
+	case state.StatusRunning:
+		if c.Hostname != entry.Hostname {
+			return false, nil
+		}
+		if c.PID <= 0 || c.PIDStartTime == 0 {
+			return false, fmt.Errorf("running container %s has invalid process identity %d/%d", c.ID, c.PID, c.PIDStartTime)
+		}
+		alive, err := registrarGenerationAlive(c.PID, c.PIDStartTime)
+		if err != nil {
+			return false, fmt.Errorf("probe ownerless legacy container generation %s %d/%d: %w", c.ID, c.PID, c.PIDStartTime, err)
+		}
+		return alive, nil
+	default:
+		return false, fmt.Errorf("container %s has unknown lifecycle status %q while recovering ownerless DNS entry", c.ID, c.Status)
 	}
 }
