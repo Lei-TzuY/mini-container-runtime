@@ -39,9 +39,11 @@ func CleanupStoppedHostRegistrationForFinalization(networkName, containerID stri
 // different child generation, or still unbound during a newer admission, is
 // never consumed merely because its registrar matches or is stale.
 //
-// Generation-unaware registrar-owned entries are retained for migration
-// compatibility and use the historical registrar policy. Truly legacy entries
-// without registrar ownership are never guessed stale.
+// Generation-unaware registrar-owned entries are migration-only records: modern
+// registration always writes generation-aware ownership, so an authoritative
+// exact stopped-generation finalizer may retire them without consulting registrar
+// liveness. Truly legacy entries without registrar ownership are handled by the
+// separately revision-guarded ownerless migration cleanup.
 func CleanupStoppedHostRegistrationGeneration(networkName, containerID string, generationPID int, generationStartTime uint64) error {
 	owner, err := currentRegistrarIdentity()
 	if err != nil {
@@ -217,26 +219,19 @@ func cleanupStoppedHostRegistrationWithGenerationPolicy(
 				continue
 			}
 
-			// Truly legacy entries have no ownership proof at all.
+			// Truly legacy entries have no ownership proof at all. They are
+			// retired by the separately revision-guarded ownerless migration path.
 			if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
 				updated = append(updated, entry)
 				continue
 			}
 
-			// Generation-unaware registrar ownership predates child binding.
-			// Preserve compatibility by using the historical policy only here.
-			if entry.OwnerPID == currentOwner.PID && entry.OwnerStartTime == currentOwner.StartTime {
-				removed = true
-				continue
-			}
-			active, err := ownerActive(entry)
-			if err != nil {
-				return nil, false, fmt.Errorf("resolve DNS ownership before stopped generation cleanup for container %s: %w", containerID, err)
-			}
-			if active {
-				updated = append(updated, entry)
-				continue
-			}
+			// Generation-unaware registrar ownership can only come from a legacy
+			// runtime: modern admission always writes GenerationAware=true. Once the
+			// caller has established exact stopped-generation authority, retaining
+			// this migration record based on registrar liveness can only prolong a
+			// stale hostname reservation. A concurrent modern restart is still safe:
+			// its generation-aware replacement is preserved by the branch above.
 			removed = true
 		}
 		return updated, removed, nil
