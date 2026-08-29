@@ -20,11 +20,11 @@ type stoppedGenerationTeardownSnapshot struct {
 }
 
 type stoppedGenerationLifecycleSnapshot struct {
-	status               Status
-	revision             uint64
-	version               json.RawMessage
-	exitIdentityRequired  json.RawMessage
-	exitIdentity          json.RawMessage
+	status              Status
+	revision            uint64
+	version             json.RawMessage
+	exitIdentityRequired json.RawMessage
+	exitIdentity         json.RawMessage
 }
 
 // readStoppedGenerationLifecycleSnapshotUnlocked reads the container lifecycle
@@ -51,9 +51,9 @@ func (s *Store) readStoppedGenerationLifecycleSnapshotUnlocked(id string) (stopp
 		return stoppedGenerationLifecycleSnapshot{}, fmt.Errorf("unmarshal stopped generation lifecycle snapshot: %w", err)
 	}
 	return stoppedGenerationLifecycleSnapshot{
-		status:              metadata.Status,
-		revision:            metadata.Revision,
-		version:             metadata.Version,
+		status:               metadata.Status,
+		revision:             metadata.Revision,
+		version:              metadata.Version,
 		exitIdentityRequired: metadata.ExitIdentityRequired,
 		exitIdentity:         metadata.ExitIdentity,
 	}, nil
@@ -85,7 +85,7 @@ func (raw stoppedGenerationLifecycleSnapshot) teardownSnapshot() (stoppedGenerat
 	if len(raw.exitIdentityRequired) != 0 {
 		snapshot.requirementPresent = true
 		if err := json.Unmarshal(raw.exitIdentityRequired, &snapshot.required); err != nil {
-			return snapshot, fmt.Errorf("unmarshal persisted exit identity requirement: %w", err)
+			return snapshot, fmt.Errorf("unmarshal stopped generation teardown metadata: unmarshal persisted exit identity requirement: %w", err)
 		}
 		if !snapshot.required {
 			return snapshot, fmt.Errorf("invalid persisted exit identity requirement: false")
