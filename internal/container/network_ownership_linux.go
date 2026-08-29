@@ -183,10 +183,11 @@ func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
 		generationErr = dns.CleanupStoppedHostRegistrationGeneration(defaultBridgeDNSNetwork, c.ID, pid, pidStartTime)
 	} else {
 		// Historical stopped records may predate durable exited identity. They
-		// cannot participate in exact CAS teardown, so retain the conservative
-		// registrar-scoped fallback only while this exact stopped revision remains
-		// current at the authority-selection point.
-		generationErr = dns.CleanupStoppedHostRegistrationForFinalization(defaultBridgeDNSNetwork, c.ID, false)
+		// cannot participate in exact CAS teardown. Restrict recovery to the
+		// migration-only registrar-owned legacy class and judge each owner by its
+		// own liveness; cleanup no longer depends on resolving the identity of the
+		// process performing reconciliation.
+		generationErr = dns.CleanupStoppedLegacyRegistrarHostRegistration(defaultBridgeDNSNetwork, c.ID)
 	}
 
 	// The same revision check also authorizes migration-only cleanup of records
@@ -201,7 +202,7 @@ func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
 // currently known for a stopped generation. Independent failures are joined so
 // one resource class cannot prevent another from making progress. Modern DNS
 // teardown uses the durable exited PID/start-time identity; legacy stopped
-// records without that sidecar fall back to conservative registrar recovery.
+// records without that sidecar use migration-only owner-liveness recovery.
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	if c == nil {
 		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
