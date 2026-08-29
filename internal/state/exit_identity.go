@@ -38,17 +38,9 @@ func (s *Store) writeExitedIdentityUnlocked(id string, pid int, pidStartTime uin
 		return fmt.Errorf("marshal exited process identity: %w", err)
 	}
 
-	// Persist the durable capability marker first. Once an exact identity has
-	// ever been published by this runtime, a later missing/corrupt .exit must
-	// fail closed instead of being mistaken for historical state. Publishing the
-	// marker before the generation key also guarantees that a marker-write error
-	// cannot leave a new unclassified .exit sidecar behind. The marker is a
-	// container capability (not generation ownership), so it intentionally
-	// survives a failed stopped-state commit and is removed only with the
-	// container.
-	if err := atomicWriteFile(s.ctrDir, exitedIdentityRequiredPath(s.ctrDir, id), []byte("1\n")); err != nil {
-		return fmt.Errorf("persist exited identity requirement: %w", err)
-	}
+	// Modern stopped-state capability is committed in the container JSON. The
+	// exact generation key is published first and rolled back if that JSON
+	// commit fails, eliminating the old cross-file .exit-required publication.
 	if err := atomicWriteFile(s.ctrDir, exitedIdentityPath(s.ctrDir, id), data); err != nil {
 		return fmt.Errorf("persist exited process identity: %w", err)
 	}
@@ -77,6 +69,37 @@ func (s *Store) readExitedIdentityUnlocked(id string) (exitedIdentity, bool, err
 	return identity, true, nil
 }
 
+// containerExitIdentityRequirementUnlocked reads the lifecycle capability from
+// the container JSON itself. present=false identifies records written before the
+// in-JSON capability existed. An explicit false is rejected rather than being
+// allowed to downgrade teardown authority.
+func (s *Store) containerExitIdentityRequirementUnlocked(id string) (required bool, present bool, err error) {
+	if err := validateID(id); err != nil {
+		return false, false, err
+	}
+	path := filepath.Join(s.ctrDir, id+".json")
+	data, err := readRegularStateFile(path, "container state")
+	if err != nil {
+		return false, false, err
+	}
+	var policy struct {
+		ExitIdentityRequired *bool `json:"exit_identity_required"`
+	}
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return false, false, fmt.Errorf("unmarshal container exit identity policy: %w", err)
+	}
+	if policy.ExitIdentityRequired == nil {
+		return false, false, nil
+	}
+	if !*policy.ExitIdentityRequired {
+		return false, true, fmt.Errorf("invalid persisted exit identity requirement: false")
+	}
+	return true, true, nil
+}
+
+// exitedIdentityRequiredUnlocked is retained as read-only upgrade compatibility
+// for containers stopped by releases that persisted the capability in a
+// .exit-required sidecar. New lifecycle transitions never create this marker.
 func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	if err := validateID(id); err != nil {
 		return false, err
@@ -124,9 +147,7 @@ func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok b
 // GetExitedIdentityForStoppedRevision atomically validates that revision still
 // names the current stopped lifecycle and, only then, reads its durable exited
 // PID/start-time identity. Callers use current=false as a stale-snapshot no-op;
-// current=true with ok=false denotes a stopped record without a sidecar. Such a
-// record is legacy only when StoppedRevisionRequiresExitedIdentity reports
-// required=false.
+// current=true with ok=false denotes a stopped record without a sidecar.
 func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, fmt.Errorf("state store is nil")
@@ -198,6 +219,17 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return identity.PID, identity.PIDStartTime, true, true, true, nil
 	}
 
+	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
+	if present {
+		return 0, 0, true, false, required, nil
+	}
+
+	// Upgrade compatibility: releases before the in-JSON capability used the
+	// sidecar marker. Its presence must remain fail-closed even when .exit is
+	// missing; otherwise an upgrade could accidentally grant legacy cleanup.
 	required, err = s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -231,6 +263,13 @@ func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64
 	}
 	if c.Status != StatusStopped || c.Revision != revision {
 		return false, false, nil
+	}
+	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
+	if err != nil {
+		return true, false, err
+	}
+	if present {
+		return true, required, nil
 	}
 	required, err = s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
