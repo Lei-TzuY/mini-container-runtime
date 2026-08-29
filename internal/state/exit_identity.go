@@ -18,6 +18,13 @@ type exitedIdentity struct {
 	PIDStartTime uint64 `json:"pid_start_time"`
 }
 
+func validateExitedIdentity(identity exitedIdentity) error {
+	if identity.PID <= 0 || identity.PIDStartTime == 0 {
+		return fmt.Errorf("invalid persisted exited process identity %d/%d", identity.PID, identity.PIDStartTime)
+	}
+	return nil
+}
+
 func exitedIdentityPath(containerDir, id string) string {
 	return filepath.Join(containerDir, id+exitedIdentitySuffix)
 }
@@ -26,21 +33,21 @@ func exitedIdentityRequiredPath(containerDir, id string) string {
 	return filepath.Join(containerDir, id+exitedIdentityRequiredSuffix)
 }
 
+// writeExitedIdentityUnlocked is retained for upgrade-compatibility tests and
+// legacy records. Modern stopped transitions embed the exact identity directly
+// in the atomic container JSON and never publish a new .exit sidecar.
 func (s *Store) writeExitedIdentityUnlocked(id string, pid int, pidStartTime uint64) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
-	if pid <= 0 || pidStartTime == 0 {
-		return fmt.Errorf("invalid exited process identity %d/%d", pid, pidStartTime)
+	identity := exitedIdentity{PID: pid, PIDStartTime: pidStartTime}
+	if err := validateExitedIdentity(identity); err != nil {
+		return err
 	}
-	data, err := json.Marshal(exitedIdentity{PID: pid, PIDStartTime: pidStartTime})
+	data, err := json.Marshal(identity)
 	if err != nil {
 		return fmt.Errorf("marshal exited process identity: %w", err)
 	}
-
-	// Modern stopped-state capability is committed in the container JSON. The
-	// exact generation key is published first and rolled back if that JSON
-	// commit fails, eliminating the old cross-file .exit-required publication.
 	if err := atomicWriteFile(s.ctrDir, exitedIdentityPath(s.ctrDir, id), data); err != nil {
 		return fmt.Errorf("persist exited process identity: %w", err)
 	}
@@ -63,8 +70,42 @@ func (s *Store) readExitedIdentityUnlocked(id string) (exitedIdentity, bool, err
 	if err := json.Unmarshal(data, &identity); err != nil {
 		return exitedIdentity{}, false, fmt.Errorf("unmarshal exited process identity: %w", err)
 	}
-	if identity.PID <= 0 || identity.PIDStartTime == 0 {
-		return exitedIdentity{}, false, fmt.Errorf("invalid persisted exited process identity %d/%d", identity.PID, identity.PIDStartTime)
+	if err := validateExitedIdentity(identity); err != nil {
+		return exitedIdentity{}, false, err
+	}
+	return identity, true, nil
+}
+
+// containerEmbeddedExitedIdentityUnlocked reads only the modern in-JSON exact
+// generation key. A present-but-null, malformed, or invalid field is corruption
+// and must fail closed rather than falling back to a legacy sidecar.
+func (s *Store) containerEmbeddedExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
+	if err := validateID(id); err != nil {
+		return exitedIdentity{}, false, err
+	}
+	path := filepath.Join(s.ctrDir, id+".json")
+	data, err := readRegularStateFile(path, "container state")
+	if err != nil {
+		return exitedIdentity{}, false, err
+	}
+	var metadata struct {
+		ExitIdentity json.RawMessage `json:"exit_identity"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return exitedIdentity{}, false, fmt.Errorf("unmarshal container exit identity: %w", err)
+	}
+	if len(metadata.ExitIdentity) == 0 {
+		return exitedIdentity{}, false, nil
+	}
+	if string(metadata.ExitIdentity) == "null" {
+		return exitedIdentity{}, false, fmt.Errorf("invalid persisted exit identity: null")
+	}
+	var identity exitedIdentity
+	if err := json.Unmarshal(metadata.ExitIdentity, &identity); err != nil {
+		return exitedIdentity{}, false, fmt.Errorf("unmarshal embedded exited process identity: %w", err)
+	}
+	if err := validateExitedIdentity(identity); err != nil {
+		return exitedIdentity{}, false, err
 	}
 	return identity, true, nil
 }
@@ -118,10 +159,30 @@ func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	return true, nil
 }
 
+// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Legacy .exit is
+// consulted only when the embedded field is genuinely absent. Corrupt embedded
+// metadata never falls back to a potentially stale sidecar.
+func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
+	identity, embedded, err := s.containerEmbeddedExitedIdentityUnlocked(id)
+	if err != nil {
+		return exitedIdentity{}, false, err
+	}
+	if embedded {
+		required, present, err := s.containerExitIdentityRequirementUnlocked(id)
+		if err != nil {
+			return exitedIdentity{}, false, err
+		}
+		if !present || !required {
+			return exitedIdentity{}, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
+		}
+		return identity, true, nil
+	}
+	return s.readExitedIdentityUnlocked(id)
+}
+
 // GetExitedIdentity returns the durable PID/start-time identity of the process
-// that produced the current stopped generation. The identity survives normal
-// exit-code reconciliation and is cleared only after a later running generation
-// is durable, allowing crash-retry teardown to remain generation-scoped.
+// that produced the current stopped generation. Modern records read it from the
+// container JSON; legacy .exit sidecars remain read-only upgrade compatibility.
 func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok bool, err error) {
 	if s == nil {
 		return 0, 0, false, fmt.Errorf("state store is nil")
@@ -137,7 +198,7 @@ func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok b
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	identity, ok, err := s.readCurrentExitedIdentityUnlocked(id)
 	if err != nil || !ok {
 		return 0, 0, ok, err
 	}
@@ -145,9 +206,8 @@ func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok b
 }
 
 // GetExitedIdentityForStoppedRevision atomically validates that revision still
-// names the current stopped lifecycle and, only then, reads its durable exited
-// PID/start-time identity. Callers use current=false as a stale-snapshot no-op;
-// current=true with ok=false denotes a stopped record without a sidecar.
+// names the current stopped lifecycle and only then reads its durable exact
+// generation identity. current=false is a stale-snapshot no-op.
 func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, fmt.Errorf("state store is nil")
@@ -171,23 +231,15 @@ func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) 
 		return 0, 0, false, false, nil
 	}
 
-	identity, ok, err := s.readExitedIdentityUnlocked(id)
+	identity, ok, err := s.readCurrentExitedIdentityUnlocked(id)
 	if err != nil || !ok {
 		return 0, 0, true, ok, err
 	}
 	return identity.PID, identity.PIDStartTime, true, true, nil
 }
 
-// GetStoppedExitIdentityPolicy validates one stopped revision and reads both its
-// exact exited process identity and its legacy-compatibility policy under the
-// same state lock. This prevents cleanup callers from having to drop the lock
-// between observing a missing .exit sidecar and deciding whether that absence
-// is historical or fail-closed modern state.
-//
-// current=false means the supplied stopped snapshot is stale. When current is
-// true, ok reports whether an exact PID/start-time identity exists. required is
-// meaningful when ok=false: required=true means the missing identity is
-// corruption and must not acquire legacy migration cleanup authority.
+// GetStoppedExitIdentityPolicy validates one stopped revision and reads its
+// exact identity plus legacy-compatibility policy under the same state lock.
 func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, required bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, false, fmt.Errorf("state store is nil")
@@ -211,6 +263,23 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return 0, 0, false, false, false, nil
 	}
 
+	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
+	identity, embedded, err := s.containerEmbeddedExitedIdentityUnlocked(id)
+	if err != nil {
+		return 0, 0, true, false, false, err
+	}
+	if embedded {
+		if !present || !required {
+			return 0, 0, true, false, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
+		}
+		return identity.PID, identity.PIDStartTime, true, true, true, nil
+	}
+
+	// Upgrade compatibility for #247-era and older stopped records: only a
+	// genuinely absent embedded field may consult the historical .exit sidecar.
 	identity, ok, err := s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -218,18 +287,12 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 	if ok {
 		return identity.PID, identity.PIDStartTime, true, true, true, nil
 	}
-
-	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
-	if err != nil {
-		return 0, 0, true, false, false, err
-	}
 	if present {
 		return 0, 0, true, false, required, nil
 	}
 
-	// Upgrade compatibility: releases before the in-JSON capability used the
-	// sidecar marker. Its presence must remain fail-closed even when .exit is
-	// missing; otherwise an upgrade could accidentally grant legacy cleanup.
+	// Older releases used an .exit-required marker. Its presence must continue
+	// to make a missing identity fail closed rather than grant legacy cleanup.
 	required, err = s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -238,10 +301,8 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 }
 
 // StoppedRevisionRequiresExitedIdentity revalidates a stopped snapshot and
-// reports whether it belongs to a runtime generation that supports durable exit
-// identities. current=false means the caller's snapshot became stale. A current
-// stopped revision with required=true but no .exit sidecar is corruption and
-// must fail closed rather than acquiring legacy migration authority.
+// reports whether it belongs to a runtime generation that requires exact exit
+// identity. current=false means the caller's snapshot became stale.
 func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64) (current bool, required bool, err error) {
 	if s == nil {
 		return false, false, fmt.Errorf("state store is nil")
