@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 )
 
+const currentContainerStateSchemaVersion uint32 = 1
+
 // ErrRevisionConflict means the caller is trying to persist a stale container
 // snapshot. Callers must reload the current record instead of overwriting a
 // newer lifecycle transition or recreating a record that was deleted.
@@ -110,19 +112,24 @@ func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revis
 	if requireExitIdentity {
 		record := struct {
 			*Container
+			StateSchemaVersion             uint32          `json:"state_schema_version"`
 			StoppedGenerationSchemaVersion uint32          `json:"stopped_generation_schema_version,omitempty"`
 			ExitIdentityRequired           bool            `json:"exit_identity_required"`
 			ExitIdentity                   *exitedIdentity `json:"exit_identity,omitempty"`
-		}{Container: &copy, ExitIdentityRequired: true, ExitIdentity: identity}
-		// Only exact-identity modern stopped commits publish the schema version.
-		// A nil identity is retained solely for tests/upgrade fixtures that model
-		// the pre-version capability+sidecar format.
+		}{Container: &copy, StateSchemaVersion: currentContainerStateSchemaVersion, ExitIdentityRequired: true, ExitIdentity: identity}
+		// Only exact-identity modern stopped commits publish the stopped-generation
+		// schema version. A nil identity is retained solely for tests/upgrade
+		// fixtures that model the pre-version capability+sidecar format.
 		if identity != nil {
 			record.StoppedGenerationSchemaVersion = currentStoppedGenerationSchemaVersion
 		}
 		data, err = json.MarshalIndent(&record, "", "  ")
 	} else {
-		data, err = json.MarshalIndent(&copy, "", "  ")
+		record := struct {
+			*Container
+			StateSchemaVersion uint32 `json:"state_schema_version"`
+		}{Container: &copy, StateSchemaVersion: currentContainerStateSchemaVersion}
+		data, err = json.MarshalIndent(&record, "", "  ")
 	}
 	if err != nil {
 		return fmt.Errorf("marshal container: %w", err)
