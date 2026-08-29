@@ -20,11 +20,11 @@ func TestExitedIdentityReadRejectsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := st.readExitedIdentityUnlocked("ctr-exit-symlink-read"); err == nil {
-		t.Fatal("expected symlink exited-identity tombstone to be rejected")
+		t.Fatal("expected symlink legacy exited-identity sidecar to be rejected")
 	}
 }
 
-func TestUnknownStopReplacesSymlinkTombstoneWithoutTouchingTarget(t *testing.T) {
+func TestModernStopRemovesSymlinkSidecarWithoutTouchingTarget(t *testing.T) {
 	const id = "ctr-exit-symlink-write"
 	st := newLifecycleTestStore(t, id)
 	if err := st.MarkRunning(id, 123, 456, time.Now()); err != nil {
@@ -51,11 +51,11 @@ func TestUnknownStopReplacesSymlinkTombstoneWithoutTouchingTarget(t *testing.T) 
 	if string(got) != "unchanged" {
 		t.Fatalf("symlink target was modified: %q", got)
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("legacy sidecar symlink survived modern stop: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		t.Fatalf("tombstone was not replaced by a regular file: %v", info.Mode())
+	pid, start, ok, err := st.GetExitedIdentity(id)
+	if err != nil || !ok || pid != 123 || start != 456 {
+		t.Fatalf("embedded identity missing after symlink cleanup: pid=%d start=%d ok=%v err=%v", pid, start, ok, err)
 	}
 }
