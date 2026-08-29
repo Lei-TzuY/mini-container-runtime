@@ -122,10 +122,6 @@ func pruneStaleOwnedEntries(entries []HostEntry) ([]HostEntry, bool, error) {
 	kept := make([]HostEntry, 0, len(entries))
 	changed := false
 	for _, entry := range entries {
-		if entry.OwnerPID == 0 && entry.OwnerStartTime == 0 {
-			kept = append(kept, entry)
-			continue
-		}
 		active, err := hostEntryOwnerActive(entry)
 		if err != nil {
 			return nil, false, fmt.Errorf("resolve DNS ownership for container %s: %w", entry.ContainerID, err)
