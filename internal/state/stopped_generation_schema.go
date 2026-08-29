@@ -20,9 +20,9 @@ type stoppedGenerationTeardownSnapshot struct {
 }
 
 type stoppedGenerationLifecycleSnapshot struct {
-	status              Status
-	revision            uint64
-	version             json.RawMessage
+	status               Status
+	revision             uint64
+	version              json.RawMessage
 	exitIdentityRequired json.RawMessage
 	exitIdentity         json.RawMessage
 }
@@ -117,10 +117,64 @@ func (s *Store) readStoppedGenerationTeardownSnapshotUnlocked(id string) (stoppe
 	return raw.teardownSnapshot()
 }
 
+// migrateStoppedGenerationSnapshotUnlocked upgrades a valid unversioned exact
+// stopped-generation identity in place without advancing the lifecycle revision.
+// The caller holds the store lock and has already established that status/revision
+// still identify the intended stopped generation, so the rewrite is a revision-CAS
+// migration rather than a new lifecycle transition.
+func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uint64, snapshot stoppedGenerationTeardownSnapshot) (stoppedGenerationTeardownSnapshot, error) {
+	if snapshot.versioned {
+		return snapshot, nil
+	}
+
+	identity := snapshot.identity
+	haveIdentity := snapshot.identityEmbedded
+	if haveIdentity {
+		if !snapshot.requirementPresent || !snapshot.required {
+			return snapshot, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
+		}
+	} else {
+		legacyIdentity, ok, err := s.readExitedIdentityUnlocked(id)
+		if err != nil {
+			return snapshot, err
+		}
+		if !ok {
+			return snapshot, nil
+		}
+		identity = legacyIdentity
+		haveIdentity = true
+	}
+
+	if !haveIdentity {
+		return snapshot, nil
+	}
+
+	container, err := s.getUnlocked(id)
+	if err != nil {
+		return snapshot, err
+	}
+	if container.Status != StatusStopped || container.Revision != revision {
+		return stoppedGenerationTeardownSnapshot{status: container.Status, revision: container.Revision}, nil
+	}
+	if err := s.writeContainerRevisionWithExitPolicyUnlocked(container, revision, true, &identity); err != nil {
+		return snapshot, fmt.Errorf("migrate stopped generation teardown metadata: %w", err)
+	}
+
+	snapshot.version = currentStoppedGenerationSchemaVersion
+	snapshot.versioned = true
+	snapshot.required = true
+	snapshot.requirementPresent = true
+	snapshot.identity = identity
+	snapshot.identityEmbedded = true
+	return snapshot, nil
+}
+
 // readStoppedGenerationTeardownSnapshotForRevisionUnlocked first checks the
 // caller's stopped revision against the same JSON snapshot that carries teardown
 // authority. Stale callers return current=false without interpreting potentially
-// malformed authority metadata from a newer generation.
+// malformed authority metadata from a newer generation. Valid legacy exact
+// identities are upgraded once to the versioned embedded schema under the same
+// lock, so sidecars become migration inputs rather than durable teardown authority.
 func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id string, revision uint64) (snapshot stoppedGenerationTeardownSnapshot, current bool, err error) {
 	raw, err := s.readStoppedGenerationLifecycleSnapshotUnlocked(id)
 	if err != nil {
@@ -133,7 +187,18 @@ func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id stri
 	if err != nil {
 		return snapshot, true, err
 	}
-	return snapshot, true, nil
+	if snapshot.versioned {
+		return snapshot, true, nil
+	}
+
+	migrated, err := s.migrateStoppedGenerationSnapshotUnlocked(id, revision, snapshot)
+	if err != nil {
+		return snapshot, true, err
+	}
+	if migrated.status != StatusStopped || migrated.revision != revision {
+		return migrated, false, nil
+	}
+	return migrated, true, nil
 }
 
 // stoppedGenerationSchemaVersionUnlocked returns the explicitly persisted
