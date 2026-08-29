@@ -21,12 +21,7 @@ func TestCleanupStoppedGenerationRetiresRegistrarOwnedLegacyWithoutLivenessProbe
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		registrarIdentity{PID: 808, StartTime: 8008},
 		childGenerationIdentity{PID: 707, StartTime: 7007},
-		func(HostEntry) (bool, error) {
-			t.Fatal("legacy migration cleanup must not depend on registrar liveness")
-			return true, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup registrar-owned legacy registration: %v", err)
@@ -56,12 +51,7 @@ func TestCleanupStoppedGenerationPreservesModernReplacementWhileRetiringLegacyPo
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		registrarIdentity{PID: 808, StartTime: 8008},
 		childGenerationIdentity{PID: 707, StartTime: 7007},
-		func(HostEntry) (bool, error) {
-			t.Fatal("modern replacement must never fall back to registrar liveness")
-			return false, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup stale stopped generation: %v", err)
