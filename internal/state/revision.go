@@ -53,10 +53,45 @@ func (s *Store) writeContainerNextRevisionUnlocked(c *Container) error {
 	return s.writeContainerRevisionUnlocked(c, c.Revision+1)
 }
 
+// writeStoppedContainerNextRevisionUnlocked publishes a modern stopped
+// generation and its exit-identity requirement in the same atomic container
+// JSON replacement. The exact .exit identity is intentionally written first;
+// a failed JSON commit is rolled back by the lifecycle caller, while a durable
+// stopped JSON can never exist without declaring that missing identity must
+// fail closed.
+func (s *Store) writeStoppedContainerNextRevisionUnlocked(c *Container) error {
+	if c.Revision == math.MaxUint64 {
+		return fmt.Errorf("container %s revision overflow", c.ID)
+	}
+	return s.writeContainerRevisionWithExitPolicyUnlocked(c, c.Revision+1, true)
+}
+
 func (s *Store) writeContainerRevisionUnlocked(c *Container, revision uint64) error {
+	// Preserve an already-published in-JSON capability across generic CAS writes
+	// (for example exit-code or health reconciliation). Unknown JSON fields are
+	// otherwise discarded when a Container is unmarshaled and re-encoded.
+	required, present, err := s.containerExitIdentityRequirementUnlocked(c.ID)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return s.writeContainerRevisionWithExitPolicyUnlocked(c, revision, present && required)
+}
+
+func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revision uint64, requireExitIdentity bool) error {
 	copy := *c
 	copy.Revision = revision
-	data, err := json.MarshalIndent(&copy, "", "  ")
+
+	var data []byte
+	var err error
+	if requireExitIdentity {
+		record := struct {
+			*Container
+			ExitIdentityRequired bool `json:"exit_identity_required"`
+		}{Container: &copy, ExitIdentityRequired: true}
+		data, err = json.MarshalIndent(&record, "", "  ")
+	} else {
+		data, err = json.MarshalIndent(&copy, "", "  ")
+	}
 	if err != nil {
 		return fmt.Errorf("marshal container: %w", err)
 	}
