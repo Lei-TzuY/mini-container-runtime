@@ -76,9 +76,6 @@ func (s *Store) readExitedIdentityUnlocked(id string) (exitedIdentity, bool, err
 	return identity, true, nil
 }
 
-// containerEmbeddedExitedIdentityUnlocked reads only the modern in-JSON exact
-// generation key. A present-but-null, malformed, or invalid field is corruption
-// and must fail closed rather than falling back to a legacy sidecar.
 func (s *Store) containerEmbeddedExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
 	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
@@ -87,10 +84,6 @@ func (s *Store) containerEmbeddedExitedIdentityUnlocked(id string) (exitedIdenti
 	return snapshot.identity, snapshot.identityEmbedded, nil
 }
 
-// containerExitIdentityRequirementUnlocked reads the lifecycle capability from
-// the container JSON itself. present=false identifies records written before the
-// in-JSON capability existed. An explicit false is rejected rather than being
-// allowed to downgrade teardown authority.
 func (s *Store) containerExitIdentityRequirementUnlocked(id string) (required bool, present bool, err error) {
 	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
@@ -99,9 +92,6 @@ func (s *Store) containerExitIdentityRequirementUnlocked(id string) (required bo
 	return snapshot.required, snapshot.requirementPresent, nil
 }
 
-// exitedIdentityRequiredUnlocked is retained as read-only upgrade compatibility
-// for containers stopped by releases that persisted the capability in a
-// .exit-required sidecar. New lifecycle transitions never create this marker.
 func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	if err := validateID(id); err != nil {
 		return false, err
@@ -120,9 +110,6 @@ func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	return true, nil
 }
 
-// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Schema,
-// capability, and embedded identity are taken from one parsed file snapshot.
-// Versioned stopped generations never consult a legacy .exit sidecar.
 func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
 	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
@@ -140,9 +127,6 @@ func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bo
 	return s.readExitedIdentityUnlocked(id)
 }
 
-// GetExitedIdentity returns the durable PID/start-time identity of the process
-// that produced the current stopped generation. Modern records read it from the
-// container JSON; legacy .exit sidecars remain read-only upgrade compatibility.
 func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok bool, err error) {
 	if s == nil {
 		return 0, 0, false, fmt.Errorf("state store is nil")
@@ -165,9 +149,6 @@ func (s *Store) GetExitedIdentity(id string) (pid int, pidStartTime uint64, ok b
 	return identity.PID, identity.PIDStartTime, true, nil
 }
 
-// GetExitedIdentityForStoppedRevision atomically validates that revision still
-// names the current stopped lifecycle and only then reads its durable exact
-// generation identity. current=false is a stale-snapshot no-op.
 func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, fmt.Errorf("state store is nil")
@@ -183,24 +164,26 @@ func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) 
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	c, err := s.getUnlocked(id)
-	if err != nil {
-		return 0, 0, false, false, err
+	snapshot, current, err := s.readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id, revision)
+	if err != nil || !current {
+		return 0, 0, current, false, err
 	}
-	if c.Status != StatusStopped || c.Revision != revision {
-		return 0, 0, false, false, nil
+	if snapshot.identityEmbedded {
+		if !snapshot.requirementPresent || !snapshot.required {
+			return 0, 0, true, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
+		}
+		return snapshot.identity.PID, snapshot.identity.PIDStartTime, true, true, nil
 	}
-
-	identity, ok, err := s.readCurrentExitedIdentityUnlocked(id)
+	if snapshot.versioned {
+		return 0, 0, true, false, fmt.Errorf("versioned stopped generation is missing embedded exit identity")
+	}
+	identity, ok, err := s.readExitedIdentityUnlocked(id)
 	if err != nil || !ok {
 		return 0, 0, true, ok, err
 	}
 	return identity.PID, identity.PIDStartTime, true, true, nil
 }
 
-// GetStoppedExitIdentityPolicy validates one stopped revision and reads its
-// exact identity plus legacy-compatibility policy under the same state lock and
-// from one typed container-state snapshot.
 func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, required bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, false, fmt.Errorf("state store is nil")
@@ -216,17 +199,9 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	c, err := s.getUnlocked(id)
-	if err != nil {
-		return 0, 0, false, false, false, err
-	}
-	if c.Status != StatusStopped || c.Revision != revision {
-		return 0, 0, false, false, false, nil
-	}
-
-	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
-	if err != nil {
-		return 0, 0, true, false, false, err
+	snapshot, current, err := s.readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id, revision)
+	if err != nil || !current {
+		return 0, 0, current, false, false, err
 	}
 	if snapshot.versioned {
 		if !snapshot.requirementPresent || !snapshot.required {
@@ -244,9 +219,6 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return snapshot.identity.PID, snapshot.identity.PIDStartTime, true, true, true, nil
 	}
 
-	// Upgrade compatibility for #247-era and older stopped records: only an
-	// unversioned record with a genuinely absent embedded field may consult the
-	// historical .exit sidecar.
 	identity, ok, err := s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -258,8 +230,6 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return 0, 0, true, false, snapshot.required, nil
 	}
 
-	// Older releases used an .exit-required marker. Its presence must continue
-	// to make a missing identity fail closed rather than grant legacy cleanup.
 	required, err = s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
@@ -267,9 +237,6 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 	return 0, 0, true, false, required, nil
 }
 
-// StoppedRevisionRequiresExitedIdentity revalidates a stopped snapshot and
-// reports whether it belongs to a runtime generation that requires exact exit
-// identity. current=false means the caller's snapshot became stale.
 func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64) (current bool, required bool, err error) {
 	if s == nil {
 		return false, false, fmt.Errorf("state store is nil")
@@ -285,16 +252,9 @@ func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64
 	}
 	defer func() { _ = unlockStateFile(s.lockFile) }()
 
-	c, err := s.getUnlocked(id)
-	if err != nil {
-		return false, false, err
-	}
-	if c.Status != StatusStopped || c.Revision != revision {
-		return false, false, nil
-	}
-	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
-	if err != nil {
-		return true, false, err
+	snapshot, current, err := s.readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id, revision)
+	if err != nil || !current {
+		return current, false, err
 	}
 	if snapshot.versioned {
 		if !snapshot.requirementPresent || !snapshot.required {
