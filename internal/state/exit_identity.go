@@ -80,34 +80,11 @@ func (s *Store) readExitedIdentityUnlocked(id string) (exitedIdentity, bool, err
 // generation key. A present-but-null, malformed, or invalid field is corruption
 // and must fail closed rather than falling back to a legacy sidecar.
 func (s *Store) containerEmbeddedExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
-	if err := validateID(id); err != nil {
-		return exitedIdentity{}, false, err
-	}
-	path := filepath.Join(s.ctrDir, id+".json")
-	data, err := readRegularStateFile(path, "container state")
+	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
 		return exitedIdentity{}, false, err
 	}
-	var metadata struct {
-		ExitIdentity json.RawMessage `json:"exit_identity"`
-	}
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return exitedIdentity{}, false, fmt.Errorf("unmarshal container exit identity: %w", err)
-	}
-	if len(metadata.ExitIdentity) == 0 {
-		return exitedIdentity{}, false, nil
-	}
-	if string(metadata.ExitIdentity) == "null" {
-		return exitedIdentity{}, false, fmt.Errorf("invalid persisted exit identity: null")
-	}
-	var identity exitedIdentity
-	if err := json.Unmarshal(metadata.ExitIdentity, &identity); err != nil {
-		return exitedIdentity{}, false, fmt.Errorf("unmarshal embedded exited process identity: %w", err)
-	}
-	if err := validateExitedIdentity(identity); err != nil {
-		return exitedIdentity{}, false, err
-	}
-	return identity, true, nil
+	return snapshot.identity, snapshot.identityEmbedded, nil
 }
 
 // containerExitIdentityRequirementUnlocked reads the lifecycle capability from
@@ -115,27 +92,11 @@ func (s *Store) containerEmbeddedExitedIdentityUnlocked(id string) (exitedIdenti
 // in-JSON capability existed. An explicit false is rejected rather than being
 // allowed to downgrade teardown authority.
 func (s *Store) containerExitIdentityRequirementUnlocked(id string) (required bool, present bool, err error) {
-	if err := validateID(id); err != nil {
-		return false, false, err
-	}
-	path := filepath.Join(s.ctrDir, id+".json")
-	data, err := readRegularStateFile(path, "container state")
+	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
 		return false, false, err
 	}
-	var policy struct {
-		ExitIdentityRequired *bool `json:"exit_identity_required"`
-	}
-	if err := json.Unmarshal(data, &policy); err != nil {
-		return false, false, fmt.Errorf("unmarshal container exit identity policy: %w", err)
-	}
-	if policy.ExitIdentityRequired == nil {
-		return false, false, nil
-	}
-	if !*policy.ExitIdentityRequired {
-		return false, true, fmt.Errorf("invalid persisted exit identity requirement: false")
-	}
-	return true, true, nil
+	return snapshot.required, snapshot.requirementPresent, nil
 }
 
 // exitedIdentityRequiredUnlocked is retained as read-only upgrade compatibility
@@ -159,29 +120,21 @@ func (s *Store) exitedIdentityRequiredUnlocked(id string) (bool, error) {
 	return true, nil
 }
 
-// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Versioned
-// stopped generations are bound to their schema contract and never consult a
-// legacy .exit sidecar when embedded identity is absent or corrupt.
+// readCurrentExitedIdentityUnlocked prefers the lifecycle JSON. Schema,
+// capability, and embedded identity are taken from one parsed file snapshot.
+// Versioned stopped generations never consult a legacy .exit sidecar.
 func (s *Store) readCurrentExitedIdentityUnlocked(id string) (exitedIdentity, bool, error) {
-	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
 		return exitedIdentity{}, false, err
 	}
-	identity, embedded, err := s.containerEmbeddedExitedIdentityUnlocked(id)
-	if err != nil {
-		return exitedIdentity{}, false, err
-	}
-	if embedded {
-		required, present, err := s.containerExitIdentityRequirementUnlocked(id)
-		if err != nil {
-			return exitedIdentity{}, false, err
-		}
-		if !present || !required {
+	if snapshot.identityEmbedded {
+		if !snapshot.requirementPresent || !snapshot.required {
 			return exitedIdentity{}, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
 		}
-		return identity, true, nil
+		return snapshot.identity, true, nil
 	}
-	if versioned {
+	if snapshot.versioned {
 		return exitedIdentity{}, false, fmt.Errorf("versioned stopped generation is missing embedded exit identity")
 	}
 	return s.readExitedIdentityUnlocked(id)
@@ -246,7 +199,8 @@ func (s *Store) GetExitedIdentityForStoppedRevision(id string, revision uint64) 
 }
 
 // GetStoppedExitIdentityPolicy validates one stopped revision and reads its
-// exact identity plus legacy-compatibility policy under the same state lock.
+// exact identity plus legacy-compatibility policy under the same state lock and
+// from one typed container-state snapshot.
 func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid int, pidStartTime uint64, current bool, ok bool, required bool, err error) {
 	if s == nil {
 		return 0, 0, false, false, false, fmt.Errorf("state store is nil")
@@ -270,46 +224,38 @@ func (s *Store) GetStoppedExitIdentityPolicy(id string, revision uint64) (pid in
 		return 0, 0, false, false, false, nil
 	}
 
-	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
 	}
-	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
-	if err != nil {
-		return 0, 0, true, false, false, err
-	}
-	identity, embedded, err := s.containerEmbeddedExitedIdentityUnlocked(id)
-	if err != nil {
-		return 0, 0, true, false, false, err
-	}
-	if versioned {
-		if !present || !required {
+	if snapshot.versioned {
+		if !snapshot.requirementPresent || !snapshot.required {
 			return 0, 0, true, false, false, fmt.Errorf("versioned stopped generation is missing required exit identity capability")
 		}
-		if !embedded {
+		if !snapshot.identityEmbedded {
 			return 0, 0, true, false, true, fmt.Errorf("versioned stopped generation is missing embedded exit identity")
 		}
-		return identity.PID, identity.PIDStartTime, true, true, true, nil
+		return snapshot.identity.PID, snapshot.identity.PIDStartTime, true, true, true, nil
 	}
-	if embedded {
-		if !present || !required {
+	if snapshot.identityEmbedded {
+		if !snapshot.requirementPresent || !snapshot.required {
 			return 0, 0, true, false, false, fmt.Errorf("persisted exit identity exists without required lifecycle capability")
 		}
-		return identity.PID, identity.PIDStartTime, true, true, true, nil
+		return snapshot.identity.PID, snapshot.identity.PIDStartTime, true, true, true, nil
 	}
 
 	// Upgrade compatibility for #247-era and older stopped records: only an
 	// unversioned record with a genuinely absent embedded field may consult the
 	// historical .exit sidecar.
-	identity, ok, err = s.readExitedIdentityUnlocked(id)
+	identity, ok, err := s.readExitedIdentityUnlocked(id)
 	if err != nil {
 		return 0, 0, true, false, false, err
 	}
 	if ok {
 		return identity.PID, identity.PIDStartTime, true, true, true, nil
 	}
-	if present {
-		return 0, 0, true, false, required, nil
+	if snapshot.requirementPresent {
+		return 0, 0, true, false, snapshot.required, nil
 	}
 
 	// Older releases used an .exit-required marker. Its presence must continue
@@ -346,22 +292,18 @@ func (s *Store) StoppedRevisionRequiresExitedIdentity(id string, revision uint64
 	if c.Status != StatusStopped || c.Revision != revision {
 		return false, false, nil
 	}
-	_, versioned, err := s.stoppedGenerationSchemaVersionUnlocked(id)
+	snapshot, err := s.readStoppedGenerationTeardownSnapshotUnlocked(id)
 	if err != nil {
 		return true, false, err
 	}
-	required, present, err := s.containerExitIdentityRequirementUnlocked(id)
-	if err != nil {
-		return true, false, err
-	}
-	if versioned {
-		if !present || !required {
+	if snapshot.versioned {
+		if !snapshot.requirementPresent || !snapshot.required {
 			return true, false, fmt.Errorf("versioned stopped generation is missing required exit identity capability")
 		}
 		return true, true, nil
 	}
-	if present {
-		return true, required, nil
+	if snapshot.requirementPresent {
+		return true, snapshot.required, nil
 	}
 	required, err = s.exitedIdentityRequiredUnlocked(id)
 	if err != nil {
