@@ -25,12 +25,7 @@ func TestCleanupStoppedGenerationConsumesExactModernRegistration(t *testing.T) {
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		owner,
 		childGenerationIdentity{PID: 202, StartTime: 2002},
-		func(HostEntry) (bool, error) {
-			t.Fatal("registrar activity probe called for exact modern generation")
-			return false, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup exact modern generation: %v", err)
@@ -61,12 +56,7 @@ func TestCleanupStoppedGenerationPreservesNewerSameRegistrarGeneration(t *testin
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		owner,
 		childGenerationIdentity{PID: 202, StartTime: 2002},
-		func(HostEntry) (bool, error) {
-			t.Fatal("registrar activity probe called for modern generation mismatch")
-			return false, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup stale finalizer against replacement: %v", err)
@@ -96,12 +86,7 @@ func TestCleanupStoppedGenerationPreservesUnboundNewAttempt(t *testing.T) {
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		owner,
 		childGenerationIdentity{PID: 202, StartTime: 2002},
-		func(HostEntry) (bool, error) {
-			t.Fatal("registrar activity probe called for unbound modern registration")
-			return false, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup stale finalizer against unbound attempt: %v", err)
@@ -132,12 +117,7 @@ func TestCleanupStoppedGenerationUsesChildIdentityAcrossRegistrarDeath(t *testin
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		registrarIdentity{PID: 808, StartTime: 8008},
 		childGenerationIdentity{PID: 707, StartTime: 7007},
-		func(HostEntry) (bool, error) {
-			t.Fatal("registrar activity probe called despite exact child-generation proof")
-			return false, nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("cleanup exact child generation across registrar death: %v", err)
@@ -155,9 +135,7 @@ func TestCleanupStoppedGenerationRejectsIncompleteIdentity(t *testing.T) {
 	err := cleanupStoppedHostRegistrationWithGenerationPolicy(
 		"default",
 		"target",
-		registrarIdentity{PID: 909, StartTime: 9009},
 		childGenerationIdentity{PID: 0, StartTime: 1},
-		func(HostEntry) (bool, error) { return false, nil },
 	)
 	if err == nil {
 		t.Fatal("incomplete child generation unexpectedly accepted")
