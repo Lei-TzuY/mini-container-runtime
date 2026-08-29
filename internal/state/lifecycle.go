@@ -157,7 +157,7 @@ func (s *Store) MarkStoppedIfIdentity(id string, pid int, pidStartTime uint64, e
 	c.FinishedAt = &finishedAt
 	c.ExitCode = exitCode
 
-	if err := s.writeContainerNextRevisionUnlocked(c); err != nil {
+	if err := s.writeStoppedContainerNextRevisionUnlocked(c); err != nil {
 		clearErr := s.clearExitedIdentityUnlocked(id)
 		if clearErr != nil {
 			return false, errors.Join(err, fmt.Errorf("rollback exited identity after failed stop transition: %w", clearErr))
