@@ -25,12 +25,14 @@ func TestStoppedRevisionRequiresExitedIdentityAfterModernStop(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Simulate corruption of a modern record: capability remains durable while
+	// its exact embedded generation key is missing.
 	st.mu.Lock()
 	if err := lockStateFile(st.lockFile); err != nil {
 		st.mu.Unlock()
 		t.Fatal(err)
 	}
-	if err := st.clearExitedIdentityUnlocked("modern"); err != nil {
+	if err := st.writeContainerRevisionWithExitPolicyUnlocked(stopped, stopped.Revision, true, nil); err != nil {
 		_ = unlockStateFile(st.lockFile)
 		st.mu.Unlock()
 		t.Fatal(err)
