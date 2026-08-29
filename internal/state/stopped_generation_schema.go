@@ -174,7 +174,8 @@ func (s *Store) migrateStoppedGenerationSnapshotUnlocked(id string, revision uin
 // authority. Stale callers return current=false without interpreting potentially
 // malformed authority metadata from a newer generation. Valid legacy exact
 // identities are upgraded once to the versioned embedded schema under the same
-// lock, so sidecars become migration inputs rather than durable teardown authority.
+// lock. Once versioned lifecycle JSON is authoritative, legacy sidecars are
+// durably retired; interrupted cleanup is safe and retried by later readers.
 func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id string, revision uint64) (snapshot stoppedGenerationTeardownSnapshot, current bool, err error) {
 	raw, err := s.readStoppedGenerationLifecycleSnapshotUnlocked(id)
 	if err != nil {
@@ -188,6 +189,9 @@ func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id stri
 		return snapshot, true, err
 	}
 	if snapshot.versioned {
+		if err := s.retireLegacyStoppedGenerationSidecarsUnlocked(id); err != nil {
+			return snapshot, true, err
+		}
 		return snapshot, true, nil
 	}
 
@@ -197,6 +201,11 @@ func (s *Store) readStoppedGenerationTeardownSnapshotForRevisionUnlocked(id stri
 	}
 	if migrated.status != StatusStopped || migrated.revision != revision {
 		return migrated, false, nil
+	}
+	if migrated.versioned {
+		if err := s.retireLegacyStoppedGenerationSidecarsUnlocked(id); err != nil {
+			return migrated, true, err
+		}
 	}
 	return migrated, true, nil
 }
