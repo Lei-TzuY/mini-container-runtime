@@ -179,12 +179,23 @@ func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
 	}
 
 	if !ok {
-		// Historical stopped records may predate durable exited identity. They
-		// cannot participate in exact CAS teardown. Reconcile both legacy DNS
-		// ownership classes in one registry transaction: ownerless pre-ownership
-		// debris is retired immediately, while registrar-owned records are removed
-		// only when their recorded owner is no longer active. Modern registrations
-		// remain outside this migration-only authority.
+		current, required, err := st.StoppedRevisionRequiresExitedIdentity(c.ID, c.Revision)
+		if err != nil {
+			return fmt.Errorf("read stopped exit-identity policy for DNS cleanup: %w", err)
+		}
+		if !current {
+			return nil
+		}
+		if required {
+			return fmt.Errorf("stopped container %s revision %d is missing required exited process identity", c.ID, c.Revision)
+		}
+
+		// Historical stopped records may predate durable exited identity. Only
+		// records without the durable capability marker can acquire this migration
+		// authority. Reconcile both legacy DNS ownership classes in one registry
+		// transaction: ownerless debris is retired immediately, registrar-owned
+		// records only when their owner is inactive, and modern registrations remain
+		// outside this migration-only authority.
 		return dns.CleanupStoppedLegacyHostRegistrations(defaultBridgeDNSNetwork, c.ID)
 	}
 
@@ -197,9 +208,9 @@ func cleanupStoppedDNSRegistration(st *state.Store, c *state.Container) error {
 // CleanupStoppedRuntimeResources retries every durable host-side cleanup token
 // currently known for a stopped generation. Independent failures are joined so
 // one resource class cannot prevent another from making progress. Modern DNS
-// teardown uses the durable exited PID/start-time identity; legacy stopped
-// records without that sidecar use one migration transaction for ownerless and
-// registrar-owned historical records.
+// teardown uses the durable exited PID/start-time identity. A modern stopped
+// record missing that required sidecar fails closed; only records that predate
+// the durable capability marker may use legacy DNS migration recovery.
 func CleanupStoppedRuntimeResources(st *state.Store, c *state.Container) error {
 	if c == nil {
 		return errors.Join(CleanupStoppedCgroup(st, c), CleanupStoppedNetwork(st, c))
