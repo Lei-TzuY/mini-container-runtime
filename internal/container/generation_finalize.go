@@ -32,6 +32,19 @@ func FinalizeStoppedGeneration(st *state.Store, c *state.Container, exitCode int
 		return changed, cgroupErr
 	}
 
+	// A delayed finalizer can observe a later generation that has independently
+	// restarted and stopped. Before allowing migration-only ownerless DNS cleanup,
+	// bind destructive external cleanup to the durable stopped revision's exited
+	// PID/start-time identity. This is stronger than status alone and turns a stale
+	// A-generation actor into a no-op after B has become the current stopped state.
+	exitedPID, exitedStartTime, revisionCurrent, identityOK, identityErr := st.GetExitedIdentityForStoppedRevision(current.ID, current.Revision)
+	if identityErr != nil {
+		return changed, errors.Join(cgroupErr, fmt.Errorf("validate stopped generation identity before external cleanup: %w", identityErr))
+	}
+	if !revisionCurrent || !identityOK || exitedPID != c.PID || exitedStartTime != c.PIDStartTime {
+		return changed, cgroupErr
+	}
+
 	// Die is generation-scoped, just like MarkStoppedIfIdentity. Emit it only
 	// for the actor that actually transitioned this exact PID/start-time record;
 	// retries/reconcilers observing an already-stopped record cannot duplicate it.
@@ -72,13 +85,22 @@ func cleanupStoppedGenerationExternalResourcesWith(
 		dnsErr = fmt.Errorf("cleanup bridge DNS registration for stopped container %s: %w", containerID, err)
 	}
 
+	// Exact-generation cleanup intentionally preserves ownerless records because
+	// they carry no child identity. Reaching this function from FinalizeStoppedGeneration
+	// now means the current stopped revision has already been matched to this exact
+	// exited generation, so it is safe to retire only the pre-ownership legacy class.
+	var legacyDNSErr error
+	if err := dns.CleanupStoppedOwnerlessLegacyHostRegistration(defaultBridgeDNSNetwork, containerID); err != nil {
+		legacyDNSErr = fmt.Errorf("cleanup ownerless legacy bridge DNS registration for stopped container %s: %w", containerID, err)
+	}
+
 	var networkErr error
 	if networkCleanup == nil {
 		networkErr = fmt.Errorf("network generation cleanup function is nil")
 	} else if err := networkCleanup(st, containerID, pid, pidStartTime, false); err != nil {
 		networkErr = err
 	}
-	return errors.Join(dnsErr, networkErr)
+	return errors.Join(dnsErr, legacyDNSErr, networkErr)
 }
 
 func validateOwnedGenerationName(containerID string, ownership state.CgroupOwnership) error {
