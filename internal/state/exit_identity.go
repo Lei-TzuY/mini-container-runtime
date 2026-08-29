@@ -37,15 +37,20 @@ func (s *Store) writeExitedIdentityUnlocked(id string, pid int, pidStartTime uin
 	if err != nil {
 		return fmt.Errorf("marshal exited process identity: %w", err)
 	}
-	if err := atomicWriteFile(s.ctrDir, exitedIdentityPath(s.ctrDir, id), data); err != nil {
-		return err
-	}
-	// A successful modern stop must never be mistaken for a pre-sidecar legacy
-	// record if the exact identity is later lost or corrupted. Persist a durable
-	// capability marker before stopped state commits; unlike the generation key,
-	// this marker survives restarts and is removed only with the container.
+
+	// Persist the durable capability marker first. Once an exact identity has
+	// ever been published by this runtime, a later missing/corrupt .exit must
+	// fail closed instead of being mistaken for historical state. Publishing the
+	// marker before the generation key also guarantees that a marker-write error
+	// cannot leave a new unclassified .exit sidecar behind. The marker is a
+	// container capability (not generation ownership), so it intentionally
+	// survives a failed stopped-state commit and is removed only with the
+	// container.
 	if err := atomicWriteFile(s.ctrDir, exitedIdentityRequiredPath(s.ctrDir, id), []byte("1\n")); err != nil {
 		return fmt.Errorf("persist exited identity requirement: %w", err)
+	}
+	if err := atomicWriteFile(s.ctrDir, exitedIdentityPath(s.ctrDir, id), data); err != nil {
+		return fmt.Errorf("persist exited process identity: %w", err)
 	}
 	return nil
 }
