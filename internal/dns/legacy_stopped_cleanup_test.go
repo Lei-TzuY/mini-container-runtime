@@ -8,45 +8,95 @@ import (
 )
 
 func TestCleanupStoppedLegacyRegistrarHostRegistrationScopesMigrationAuthority(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	t.Run("reclaims stale legacy owner and preserves foreign container", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 
-	stale := HostEntry{ContainerID: "target", Hostname: "stale", IP: "172.20.0.2", OwnerPID: 101, OwnerStartTime: 1001}
-	live := HostEntry{ContainerID: "target", Hostname: "live", IP: "172.20.0.3", OwnerPID: 202, OwnerStartTime: 2002}
-	modern := HostEntry{ContainerID: "target", Hostname: "modern", IP: "172.20.0.4", OwnerPID: 303, OwnerStartTime: 3003, GenerationAware: true, GenerationPID: 404, GenerationStartTime: 4004}
-	ownerless := HostEntry{ContainerID: "target", Hostname: "ownerless", IP: "172.20.0.5"}
-	foreign := HostEntry{ContainerID: "other", Hostname: "foreign", IP: "172.20.0.6", OwnerPID: 505, OwnerStartTime: 5005}
-	writeOwnedDNSRegistry(t, "default", []HostEntry{stale, live, modern, ownerless, foreign})
+		stale := HostEntry{ContainerID: "target", Hostname: "stale", IP: "172.20.0.2", OwnerPID: 101, OwnerStartTime: 1001}
+		foreign := HostEntry{ContainerID: "other", Hostname: "foreign", IP: "172.20.0.6", OwnerPID: 505, OwnerStartTime: 5005}
+		writeOwnedDNSRegistry(t, "default", []HostEntry{stale, foreign})
 
-	probes := 0
-	if err := cleanupStoppedLegacyRegistrarHostRegistrationWith("default", "target", func(entry HostEntry) (bool, error) {
-		probes++
-		switch entry.Hostname {
-		case stale.Hostname:
+		probes := 0
+		if err := cleanupStoppedLegacyRegistrarHostRegistrationWith("default", "target", func(entry HostEntry) (bool, error) {
+			probes++
+			if entry != stale {
+				t.Fatalf("probed entry=%+v, want stale target", entry)
+			}
 			return false, nil
-		case live.Hostname:
+		}); err != nil {
+			t.Fatalf("cleanup legacy registrar DNS: %v", err)
+		}
+		if probes != 1 {
+			t.Fatalf("liveness probes=%d, want 1", probes)
+		}
+		got := readOwnedDNSRegistry(t, "default")
+		if len(got) != 1 || got[0] != foreign {
+			t.Fatalf("cleanup result=%+v, want only foreign entry", got)
+		}
+	})
+
+	t.Run("preserves live legacy owner", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		live := HostEntry{ContainerID: "target", Hostname: "live", IP: "172.20.0.3", OwnerPID: 202, OwnerStartTime: 2002}
+		writeOwnedDNSRegistry(t, "default", []HostEntry{live})
+
+		if err := cleanupStoppedLegacyRegistrarHostRegistrationWith("default", "target", func(entry HostEntry) (bool, error) {
+			if entry != live {
+				t.Fatalf("probed entry=%+v, want live target", entry)
+			}
 			return true, nil
-		default:
-			t.Fatalf("unexpected liveness probe for %+v", entry)
-			return false, nil
+		}); err != nil {
+			t.Fatalf("cleanup live legacy registrar DNS: %v", err)
 		}
-	}); err != nil {
-		t.Fatalf("cleanup legacy registrar DNS: %v", err)
-	}
-	if probes != 2 {
-		t.Fatalf("liveness probes=%d, want 2", probes)
-	}
+		got := readOwnedDNSRegistry(t, "default")
+		if len(got) != 1 || got[0] != live {
+			t.Fatalf("live legacy entry changed: %+v", got)
+		}
+	})
 
-	got := readOwnedDNSRegistry(t, "default")
-	if len(got) != 4 {
-		t.Fatalf("entries after cleanup=%+v, want four preserved entries", got)
-	}
-	for _, entry := range got {
-		if entry == stale {
-			t.Fatalf("stale legacy registrar entry survived: %+v", got)
+	t.Run("preserves modern generation without probing legacy owner", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		modern := HostEntry{ContainerID: "target", Hostname: "modern", IP: "172.20.0.4", OwnerPID: 303, OwnerStartTime: 3003, GenerationAware: true, GenerationPID: 404, GenerationStartTime: 4004}
+		writeOwnedDNSRegistry(t, "default", []HostEntry{modern})
+
+		if err := cleanupStoppedLegacyRegistrarHostRegistrationWith("default", "target", func(HostEntry) (bool, error) {
+			t.Fatal("liveness probe called for modern generation-aware entry")
+			return false, nil
+		}); err != nil {
+			t.Fatalf("cleanup modern DNS: %v", err)
 		}
-	}
+		got := readOwnedDNSRegistry(t, "default")
+		if len(got) != 1 || got[0] != modern {
+			t.Fatalf("modern generation changed: %+v", got)
+		}
+	})
+
+	t.Run("preserves ownerless legacy without probing", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		ownerless := HostEntry{ContainerID: "target", Hostname: "ownerless", IP: "172.20.0.5"}
+		writeOwnedDNSRegistry(t, "default", []HostEntry{ownerless})
+
+		if err := cleanupStoppedLegacyRegistrarHostRegistrationWith("default", "target", func(HostEntry) (bool, error) {
+			t.Fatal("liveness probe called for ownerless legacy entry")
+			return false, nil
+		}); err != nil {
+			t.Fatalf("cleanup ownerless DNS: %v", err)
+		}
+		got := readOwnedDNSRegistry(t, "default")
+		if len(got) != 1 || got[0] != ownerless {
+			t.Fatalf("ownerless legacy entry changed: %+v", got)
+		}
+	})
 }
 
 func TestCleanupStoppedLegacyRegistrarHostRegistrationProbeErrorFailsClosed(t *testing.T) {
