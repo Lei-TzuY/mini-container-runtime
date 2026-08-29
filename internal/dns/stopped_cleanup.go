@@ -18,21 +18,6 @@ func (g childGenerationIdentity) valid() bool {
 	return g.PID > 0 && g.StartTime != 0
 }
 
-// CleanupStoppedHostRegistration removes service-discovery state after an
-// authoritative stopped-container finalization. This compatibility entry point
-// retains the registrar-scoped policy used by older callers. Runtime generation
-// finalization should use CleanupStoppedHostRegistrationGeneration instead.
-func CleanupStoppedHostRegistration(networkName, containerID string) error {
-	return cleanupStoppedHostRegistrationForFinalization(networkName, containerID, true)
-}
-
-// CleanupStoppedHostRegistrationForFinalization lets compatibility callers
-// distinguish the actor that actually committed stopped state from a later
-// retry. Modern runtime finalizers should prefer exact child-generation cleanup.
-func CleanupStoppedHostRegistrationForFinalization(networkName, containerID string, consumeCurrentOwner bool) error {
-	return cleanupStoppedHostRegistrationForFinalization(networkName, containerID, consumeCurrentOwner)
-}
-
 // CleanupStoppedHostRegistrationGeneration removes only DNS state that can be
 // proven to belong to the exact stopped child PID/start-time generation. Modern
 // generation-aware entries are treated as a CAS token: an entry bound to a
@@ -49,14 +34,6 @@ func CleanupStoppedHostRegistrationForFinalization(networkName, containerID stri
 func CleanupStoppedHostRegistrationGeneration(networkName, containerID string, generationPID int, generationStartTime uint64) error {
 	generation := childGenerationIdentity{PID: generationPID, StartTime: generationStartTime}
 	return cleanupStoppedHostRegistrationWithGenerationPolicy(networkName, containerID, generation)
-}
-
-func cleanupStoppedHostRegistrationForFinalization(networkName, containerID string, consumeCurrentOwner bool) error {
-	owner, err := currentRegistrarIdentity()
-	if err != nil {
-		return err
-	}
-	return cleanupStoppedHostRegistrationWithPolicy(networkName, containerID, owner, hostEntryOwnerActive, consumeCurrentOwner)
 }
 
 func cleanupStoppedHostRegistrationWith(
