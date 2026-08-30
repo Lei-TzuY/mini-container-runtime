@@ -70,9 +70,46 @@ func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, er
 	if !ok {
 		return nil, fmt.Errorf("DNS registry missing entries")
 	}
-	var entries []HostEntry
-	if err := json.Unmarshal(rawEntries, &entries); err != nil {
+	entries, err := decodeCurrentRegistryEntries(rawEntries)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// A current registry envelope is a provenance boundary. Once network-level
+// schema/key provenance says the file is current, every authority-bearing entry
+// inside it must also carry explicit current entry schema provenance. Accepting a
+// schema-less entry here would let a partially downgraded/corrupted envelope
+// regain legacy interpretation and bypass the migration restrictions applied to
+// non-empty historical arrays.
+func decodeCurrentRegistryEntries(data []byte) ([]HostEntry, error) {
+	var rawEntries []json.RawMessage
+	if err := json.Unmarshal(data, &rawEntries); err != nil {
 		return nil, fmt.Errorf("decode DNS registry entries: %w", err)
+	}
+	entries := make([]HostEntry, 0, len(rawEntries))
+	for i, rawEntry := range rawEntries {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawEntry, &fields); err != nil {
+			return nil, fmt.Errorf("decode DNS registry entry %d: %w", i, err)
+		}
+		rawVersion, ok := fields["schema_version"]
+		if !ok {
+			return nil, fmt.Errorf("DNS registry entry %d missing schema provenance", i)
+		}
+		var version int
+		if err := json.Unmarshal(rawVersion, &version); err != nil {
+			return nil, fmt.Errorf("invalid DNS registry entry %d schema version: %w", i, err)
+		}
+		if version != currentHostEntrySchemaVersion {
+			return nil, fmt.Errorf("unsupported DNS registry entry %d schema version %d", i, version)
+		}
+		var entry HostEntry
+		if err := json.Unmarshal(rawEntry, &entry); err != nil {
+			return nil, fmt.Errorf("decode DNS registry entry %d: %w", i, err)
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
