@@ -58,6 +58,9 @@ func dnsTempName(networkName string) (string, error) {
 }
 
 func saveDNSRegistryFileAtomicAt(dirFD int, name, networkName string, data []byte) error {
+	if err := validateDNSNetworkFilenameLengthAt(dirFD, networkName); err != nil {
+		return err
+	}
 	var tmpName string
 	var fd int
 	var err error
