@@ -14,10 +14,6 @@ type dnsRegistryEnvelope struct {
 	Entries       []HostEntry `json:"entries"`
 }
 
-// decodeDNSRegistry binds current registry contents to the network storage key.
-// Historical bare arrays have no network provenance. An empty array carries no
-// registration or cleanup authority and is therefore safe to migrate; non-empty
-// arrays fail closed because their original network cannot be authenticated.
 func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -27,6 +23,9 @@ func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, er
 	if trimmed[0] == '[' {
 		var entries []HostEntry
 		if err := json.Unmarshal(trimmed, &entries); err != nil {
+			return nil, err
+		}
+		if err := validateDNSRegistryEntryCount(len(entries)); err != nil {
 			return nil, err
 		}
 		if len(entries) != 0 {
@@ -77,16 +76,13 @@ func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, er
 	return entries, nil
 }
 
-// A current registry envelope is a provenance boundary. Once network-level
-// schema/key provenance says the file is current, every authority-bearing entry
-// inside it must also carry explicit current entry schema provenance. Accepting a
-// schema-less entry here would let a partially downgraded/corrupted envelope
-// regain legacy interpretation and bypass the migration restrictions applied to
-// non-empty historical arrays.
 func decodeCurrentRegistryEntries(data []byte) ([]HostEntry, error) {
 	var rawEntries []json.RawMessage
 	if err := json.Unmarshal(data, &rawEntries); err != nil {
 		return nil, fmt.Errorf("decode DNS registry entries: %w", err)
+	}
+	if err := validateDNSRegistryEntryCount(len(rawEntries)); err != nil {
+		return nil, err
 	}
 	entries := make([]HostEntry, 0, len(rawEntries))
 	for i, rawEntry := range rawEntries {
@@ -115,6 +111,9 @@ func decodeCurrentRegistryEntries(data []byte) ([]HostEntry, error) {
 }
 
 func encodeDNSRegistry(networkName string, entries []HostEntry) ([]byte, error) {
+	if err := validateDNSRegistryEntryCount(len(entries)); err != nil {
+		return nil, err
+	}
 	return json.MarshalIndent(dnsRegistryEnvelope{
 		SchemaVersion: currentDNSRegistrySchemaVersion,
 		NetworkName:   networkName,
