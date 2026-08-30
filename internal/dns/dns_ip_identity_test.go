@@ -19,6 +19,16 @@ func TestCanonicalIPAddressCollapsesEquivalentIPv6Spellings(t *testing.T) {
 	}
 }
 
+func TestCanonicalIPAddressPreservesMappedIPv6Family(t *testing.T) {
+	got, err := canonicalIPAddress("::ffff:192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "::ffff:192.0.2.1" {
+		t.Fatalf("mapped IPv6 canonical form = %q, want family-preserving ::ffff:192.0.2.1", got)
+	}
+}
+
 func TestEntriesWithRegistrationCanonicalizesIPAddress(t *testing.T) {
 	owner := registrarIdentity{PID: 100, StartTime: 200}
 	entries, changed, err := entriesWithRegistration(nil, owner, "c1", "host-a", "2001:0db8:0:0:0:0:0:1", false)
