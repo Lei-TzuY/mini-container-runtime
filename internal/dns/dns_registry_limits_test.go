@@ -30,7 +30,8 @@ func TestDNSRegistryDecodeRejectsEntryCountOverflow(t *testing.T) {
 	}
 	b.WriteByte(']')
 
-	if _, err := decodeCurrentRegistryEntries([]byte(b.String())); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+	data := strings.ReplaceAll(b.String(), `\"`, `"`)
+	if _, err := decodeCurrentRegistryEntries([]byte(data)); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
 		t.Fatalf("entry overflow error=%v, want cardinality rejection", err)
 	}
 }
