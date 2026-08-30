@@ -24,7 +24,7 @@ func TestDNSNetworkLockRejectsMultipleHardLinks(t *testing.T) {
 	}
 
 	called := false
-	err := withDNSNetworkLock(dir, networkName, func() error {
+	err := withDNSNetworkLock(dir, networkName, func(_ int) error {
 		called = true
 		return nil
 	})
@@ -41,7 +41,7 @@ func TestDNSNetworkLockDetectsUnlinkReplacementDuringCriticalSection(t *testing.
 	const networkName = "default"
 	lockPath := filepath.Join(dir, networkName+".lock")
 
-	err := withDNSNetworkLock(dir, networkName, func() error {
+	err := withDNSNetworkLock(dir, networkName, func(_ int) error {
 		if err := os.Remove(lockPath); err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func TestDNSNetworkLockRejectsSymlink(t *testing.T) {
 	}
 
 	called := false
-	if err := withDNSNetworkLock(dir, networkName, func() error {
+	if err := withDNSNetworkLock(dir, networkName, func(_ int) error {
 		called = true
 		return nil
 	}); err == nil {
@@ -99,7 +99,7 @@ func TestDNSNetworkLockRejectsSymlinkedRegistryDirectory(t *testing.T) {
 	}
 
 	called := false
-	err := withDNSNetworkLock(dir, "default", func() error {
+	err := withDNSNetworkLock(dir, "default", func(_ int) error {
 		called = true
 		return nil
 	})
@@ -119,7 +119,7 @@ func TestDNSNetworkLockDetectsDirectoryReplacementDuringCriticalSection(t *testi
 	}
 	moved := filepath.Join(parent, "dns-old")
 
-	err := withDNSNetworkLock(dir, "default", func() error {
+	err := withDNSNetworkLock(dir, "default", func(_ int) error {
 		if err := os.Rename(dir, moved); err != nil {
 			return err
 		}
@@ -130,6 +130,36 @@ func TestDNSNetworkLockDetectsDirectoryReplacementDuringCriticalSection(t *testi
 	})
 	if err == nil || !strings.Contains(err.Error(), "directory for \"default\" changed while locked") {
 		t.Fatalf("replaced directory error=%v, want directory identity rejection", err)
+	}
+}
+
+func TestDNSRegistryPublicationStaysBoundToPinnedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dns")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "dns-old")
+	const networkName = "default"
+	entry := HostEntry{ContainerID: "c1", Hostname: "c1", IP: "10.0.0.2", OwnerPID: 1, OwnerStartTime: 1, GenerationAware: true, AdmissionPending: true}
+
+	err := withDNSNetworkLock(dir, networkName, func(dirFD int) error {
+		if err := os.Rename(dir, moved); err != nil {
+			return err
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return err
+		}
+		return saveEntriesAtomicAt(dirFD, networkName+".json", networkName, []HostEntry{entry})
+	})
+	if err == nil || !strings.Contains(err.Error(), "directory for \"default\" changed while locked") {
+		t.Fatalf("replacement directory error=%v, want integrity rejection", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, networkName+".json")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement directory received registry: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(moved, networkName+".json")); statErr != nil {
+		t.Fatalf("pinned directory did not receive registry: %v", statErr)
 	}
 }
 

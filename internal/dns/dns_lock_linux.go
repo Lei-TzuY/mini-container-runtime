@@ -51,13 +51,10 @@ func verifyDNSLockPath(dirFD, fd int, lockName, networkName string) error {
 }
 
 // withDNSNetworkLock serializes one DNS registry across independent minictl
-// processes. The registry directory and lock file are both opened without
-// following terminal symlinks and their path identities remain pinned for the
-// full critical section. Lock creation and identity verification are relative
-// to the already-verified directory descriptor, so a pathname swap cannot move
-// lock authority to a replacement directory between directory validation and
-// lock acquisition.
-func withDNSNetworkLock(dir, networkName string, fn func() error) error {
+// processes. The callback receives the already-verified registry-directory fd;
+// registry reads and publication must stay relative to that descriptor so a
+// pathname replacement cannot redirect I/O after lock acquisition.
+func withDNSNetworkLock(dir, networkName string, fn func(dirFD int) error) error {
 	if fn == nil {
 		return fmt.Errorf("DNS lock callback is nil")
 	}
@@ -103,7 +100,7 @@ func withDNSNetworkLock(dir, networkName string, fn func() error) error {
 		return err
 	}
 
-	callbackErr := fn()
+	callbackErr := fn(dirFD)
 	dirIntegrityErr := verifyDNSDirPath(dirFD, dir, networkName)
 	lockIntegrityErr := verifyDNSLockPath(dirFD, fd, lockName, networkName)
 	unlockErr := unix.Flock(fd, unix.LOCK_UN)
