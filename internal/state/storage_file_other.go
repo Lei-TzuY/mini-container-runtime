@@ -4,7 +4,6 @@ package state
 
 import (
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -31,9 +30,5 @@ func readRegularStateFile(path, label string) ([]byte, error) {
 	if err := file.Chmod(0o600); err != nil {
 		return nil, fmt.Errorf("secure %s permissions: %w", label, err)
 	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", label, err)
-	}
-	return data, nil
+	return readBoundedStateFile(file, openedInfo.Size(), label)
 }
