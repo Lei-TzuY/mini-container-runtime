@@ -12,6 +12,8 @@ import (
 	"minicontainer/internal/state"
 )
 
+const maxDNSHostnameBytes = 253
+
 var (
 	dnsMu                 sync.Mutex
 	validNetworkNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
@@ -55,6 +57,9 @@ func validateNetworkName(name string) error {
 func validateHostAndIP(hostname, ipAddr string) error {
 	if hostname == "" {
 		return fmt.Errorf("hostname cannot be empty")
+	}
+	if len(hostname) > maxDNSHostnameBytes {
+		return fmt.Errorf("invalid hostname %q: exceeds %d-byte DNS name limit", hostname, maxDNSHostnameBytes)
 	}
 	if strings.ContainsAny(hostname, " \t\r\n\x00") || !validHostnameRegex.MatchString(hostname) {
 		return fmt.Errorf("invalid hostname %q: must be a valid DNS name without whitespace or control characters", hostname)
@@ -105,11 +110,12 @@ func validateEntries(networkName string, entries []HostEntry) error {
 		if _, ok := seenContainers[entry.ContainerID]; ok {
 			return fmt.Errorf("DNS registry %q has duplicate container ID %q", networkName, entry.ContainerID)
 		}
-		if _, ok := seenHostnames[entry.Hostname]; ok {
-			return fmt.Errorf("DNS registry %q has duplicate hostname %q", networkName, entry.Hostname)
+		hostnameKey := strings.ToLower(entry.Hostname)
+		if _, ok := seenHostnames[hostnameKey]; ok {
+			return fmt.Errorf("DNS registry %q has duplicate hostname %q under case-insensitive DNS matching", networkName, entry.Hostname)
 		}
 		seenContainers[entry.ContainerID] = struct{}{}
-		seenHostnames[entry.Hostname] = struct{}{}
+		seenHostnames[hostnameKey] = struct{}{}
 	}
 	return nil
 }
@@ -249,10 +255,11 @@ func saveEntriesAtomicAt(dirFD int, name, networkName string, entries []HostEntr
 
 func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string, admissionPending bool) ([]HostEntry, bool, error) {
 	for i, entry := range entries {
-		if entry.ContainerID != containerID && entry.Hostname != hostname {
+		hostnameMatches := strings.EqualFold(entry.Hostname, hostname)
+		if entry.ContainerID != containerID && !hostnameMatches {
 			continue
 		}
-		if entry.ContainerID == containerID && entry.Hostname == hostname && entry.IP == ipAddr && entry.OwnerPID == owner.PID && entry.OwnerStartTime == owner.StartTime {
+		if entry.ContainerID == containerID && hostnameMatches && entry.IP == ipAddr && entry.OwnerPID == owner.PID && entry.OwnerStartTime == owner.StartTime {
 			if entry.GenerationAware && entry.GenerationPID == 0 && entry.GenerationStartTime == 0 && entry.AdmissionPending == admissionPending {
 				return entries, false, nil
 			}
