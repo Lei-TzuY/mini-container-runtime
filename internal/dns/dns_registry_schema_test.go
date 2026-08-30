@@ -60,14 +60,24 @@ func TestDNSRegistryDecodeRejectsInvalidEnvelopeProvenance(t *testing.T) {
 	}
 }
 
-func TestDNSRegistryDecodePreservesHistoricalArrayCompatibility(t *testing.T) {
-	const historical = `[{"container_id":"legacy","hostname":"legacy-host","ip":"10.0.0.3"}]`
-	entries, err := decodeDNSRegistry([]byte(historical), "net-a")
+func TestDNSRegistryDecodeAllowsOnlyAuthorityFreeHistoricalArray(t *testing.T) {
+	entries, err := decodeDNSRegistry([]byte(`[]`), "net-a")
 	if err != nil {
-		t.Fatalf("historical registry rejected: %v", err)
+		t.Fatalf("empty historical registry rejected: %v", err)
 	}
-	if len(entries) != 1 || entries[0].ContainerID != "legacy" {
+	if len(entries) != 0 {
 		t.Fatalf("decoded entries=%+v", entries)
+	}
+}
+
+func TestDNSRegistryDecodeRejectsNonEmptyHistoricalArrayWithoutNetworkProvenance(t *testing.T) {
+	for _, historical := range []string{
+		`[{"container_id":"legacy","hostname":"legacy-host","ip":"10.0.0.3"}]`,
+		`[{"schema_version":1,"container_id":"transitional","hostname":"host-a","ip":"10.0.0.4","owner_pid":123,"owner_start_time":456}]`,
+	} {
+		if _, err := decodeDNSRegistry([]byte(historical), "net-b"); err == nil || !strings.Contains(err.Error(), "lacks network provenance") {
+			t.Fatalf("unbound historical registry unexpectedly authoritative: data=%s err=%v", historical, err)
+		}
 	}
 }
 
