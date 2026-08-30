@@ -10,6 +10,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func verifyDNSDirPath(fd int, dir, networkName string) error {
+	var held unix.Stat_t
+	if err := unix.Fstat(fd, &held); err != nil {
+		return fmt.Errorf("inspect DNS registry directory for %q: %w", networkName, err)
+	}
+	if held.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fmt.Errorf("DNS registry path for %q must be a real directory", networkName)
+	}
+
+	var current unix.Stat_t
+	if err := unix.Lstat(dir, &current); err != nil {
+		return fmt.Errorf("verify DNS registry directory for %q path identity: %w", networkName, err)
+	}
+	if current.Mode&unix.S_IFMT != unix.S_IFDIR || current.Dev != held.Dev || current.Ino != held.Ino {
+		return fmt.Errorf("DNS registry directory for %q changed while locked", networkName)
+	}
+	return nil
+}
+
 func verifyDNSLockPath(fd int, lockPath, networkName string) error {
 	var held unix.Stat_t
 	if err := unix.Fstat(fd, &held); err != nil {
@@ -33,14 +52,28 @@ func verifyDNSLockPath(fd int, lockPath, networkName string) error {
 }
 
 // withDNSNetworkLock serializes one DNS registry across independent minictl
-// processes. The lock file is private, non-symlinked, single-linked, and lives
-// beside the registry so every process using the same state root contends on
-// one flock. Path identity is checked after acquisition and before release so
-// unlink/replacement cannot silently split lock authority across inodes.
+// processes. The registry directory and lock file are both opened without
+// following terminal symlinks and their path identities remain pinned for the
+// full critical section. This prevents directory replacement from silently
+// moving lock authority to a different filesystem object while a callback is
+// mutating registry state.
 func withDNSNetworkLock(dir, networkName string, fn func() error) error {
 	if fn == nil {
 		return fmt.Errorf("DNS lock callback is nil")
 	}
+
+	dirFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open DNS registry directory for %q: %w", networkName, err)
+	}
+	defer unix.Close(dirFD)
+	if err := unix.Fchmod(dirFD, 0o700); err != nil {
+		return fmt.Errorf("chmod DNS registry directory for %q: %w", networkName, err)
+	}
+	if err := verifyDNSDirPath(dirFD, dir, networkName); err != nil {
+		return err
+	}
+
 	lockPath := filepath.Join(dir, networkName+".lock")
 	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
 	if err != nil {
@@ -61,16 +94,21 @@ func withDNSNetworkLock(dir, networkName string, fn func() error) error {
 	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
 		return fmt.Errorf("lock DNS network %q: %w", networkName, err)
 	}
+	if err := verifyDNSDirPath(dirFD, dir, networkName); err != nil {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		return err
+	}
 	if err := verifyDNSLockPath(fd, lockPath, networkName); err != nil {
 		_ = unix.Flock(fd, unix.LOCK_UN)
 		return err
 	}
 
 	callbackErr := fn()
-	integrityErr := verifyDNSLockPath(fd, lockPath, networkName)
+	dirIntegrityErr := verifyDNSDirPath(dirFD, dir, networkName)
+	lockIntegrityErr := verifyDNSLockPath(fd, lockPath, networkName)
 	unlockErr := unix.Flock(fd, unix.LOCK_UN)
 	if unlockErr != nil {
 		unlockErr = fmt.Errorf("unlock DNS network %q: %w", networkName, unlockErr)
 	}
-	return errors.Join(callbackErr, integrityErr, unlockErr)
+	return errors.Join(callbackErr, dirIntegrityErr, lockIntegrityErr, unlockErr)
 }
