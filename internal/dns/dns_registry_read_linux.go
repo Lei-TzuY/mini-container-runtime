@@ -4,18 +4,11 @@ package dns
 
 import (
 	"fmt"
-	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
 
-// readDNSRegistryFile opens, validates, and reads a registry through one file
-// descriptor. O_NOFOLLOW prevents a terminal symlink from being followed and
-// O_NONBLOCK prevents a substituted FIFO/device from blocking before Fstat can
-// reject it. Reading from the same descriptor closes the Lstat/open TOCTOU gap.
-// Requiring a single link prevents one registry inode from carrying authority
-// through multiple pathnames.
 func readDNSRegistryFile(path, networkName string) ([]byte, bool, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
@@ -45,9 +38,9 @@ func readDNSRegistryFile(path, networkName string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("DNS registry %q must be a single-linked regular file", networkName)
 	}
 
-	data, err := io.ReadAll(file)
+	data, err := readDNSRegistryContents(file, st.Size, networkName)
 	if err != nil {
-		return nil, false, fmt.Errorf("read DNS registry %q: %w", networkName, err)
+		return nil, false, err
 	}
 	return data, true, nil
 }

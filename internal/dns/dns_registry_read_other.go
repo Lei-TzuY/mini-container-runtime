@@ -18,9 +18,14 @@ func readDNSRegistryFile(path, networkName string) ([]byte, bool, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, false, fmt.Errorf("DNS registry %q must be a regular file", networkName)
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("read DNS registry %q: %w", networkName, err)
+		return nil, false, fmt.Errorf("open DNS registry %q: %w", networkName, err)
+	}
+	defer file.Close()
+	data, err := readDNSRegistryContents(file, info.Size(), networkName)
+	if err != nil {
+		return nil, false, err
 	}
 	return data, true, nil
 }
