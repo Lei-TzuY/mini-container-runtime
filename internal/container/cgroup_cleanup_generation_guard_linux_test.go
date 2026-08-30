@@ -54,8 +54,7 @@ func TestCleanupStoppedCgroupRejectsStaleSameContainerGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownershipJSON := fmt.Sprintf(`{"name":%q,"pid":%d,"pid_start_time":%d}`, staleName, stalePID, staleStart)
-	ownershipJSON = strings.ReplaceAll(ownershipJSON, `\"`, `"`)
+	ownershipJSON := fmt.Sprintf("{\"name\":%q,\"pid\":%d,\"pid_start_time\":%d}", staleName, stalePID, staleStart)
 	ownershipPath := filepath.Join(root, "containers", id+".cgroup")
 	if err := os.WriteFile(ownershipPath, []byte(ownershipJSON), 0o600); err != nil {
 		t.Fatalf("inject stale ownership: %v", err)
