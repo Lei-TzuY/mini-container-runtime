@@ -60,6 +60,48 @@ func TestDNSRegistryDecodeRejectsInvalidEnvelopeProvenance(t *testing.T) {
 	}
 }
 
+func TestDNSRegistryDecodeRejectsDowngradedEntryProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		entry string
+	}{
+		{name: "missing schema", entry: `{"container_id":"c1","hostname":"host-a","ip":"10.0.0.2"}`},
+		{name: "zero schema", entry: `{"schema_version":0,"container_id":"c1","hostname":"host-a","ip":"10.0.0.2"}`},
+		{name: "future schema", entry: `{"schema_version":2,"container_id":"c1","hostname":"host-a","ip":"10.0.0.2"}`},
+		{name: "null schema", entry: `{"schema_version":null,"container_id":"c1","hostname":"host-a","ip":"10.0.0.2"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(`{"schema_version":1,"network_name":"net-a","entries":[` + tc.entry + `]}`)
+			if _, err := decodeDNSRegistry(data, "net-a"); err == nil {
+				t.Fatalf("current registry unexpectedly accepted downgraded entry: %s", data)
+			}
+		})
+	}
+}
+
+func TestDNSRegistryDecodeAcceptsCurrentEntryProvenance(t *testing.T) {
+	data, err := encodeDNSRegistry("net-a", []HostEntry{{
+		ContainerID:         "c1",
+		Hostname:            "host-a",
+		IP:                  "10.0.0.2",
+		OwnerPID:            123,
+		OwnerStartTime:      456,
+		GenerationAware:     true,
+		GenerationPID:       789,
+		GenerationStartTime: 987,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := decodeDNSRegistry(data, "net-a")
+	if err != nil {
+		t.Fatalf("current registry rejected: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ContainerID != "c1" || entries[0].GenerationPID != 789 {
+		t.Fatalf("decoded entries=%+v", entries)
+	}
+}
+
 func TestDNSRegistryDecodeAllowsOnlyAuthorityFreeHistoricalArray(t *testing.T) {
 	entries, err := decodeDNSRegistry([]byte(`[]`), "net-a")
 	if err != nil {
@@ -94,6 +136,9 @@ func TestSaveEntriesAtomicUpgradesRegistryEnvelopeAndLoadChecksKey(t *testing.T)
 	}
 	if !strings.Contains(string(data), `"network_name": "net-a"`) {
 		t.Fatalf("versioned registry provenance missing: %s", data)
+	}
+	if !strings.Contains(string(data), `"schema_version": 1`) {
+		t.Fatalf("entry schema provenance missing: %s", data)
 	}
 	got, exists, err := loadEntriesChecked(path, "net-a")
 	if err != nil || !exists || len(got) != 1 || got[0].ContainerID != "c1" {
