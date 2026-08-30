@@ -47,7 +47,15 @@ func writeDNSRecoveryEntries(t *testing.T, entries []dns.HostEntry) string {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.MarshalIndent(entries, "", "  ")
+	data, err := json.MarshalIndent(struct {
+		SchemaVersion int             `json:"schema_version"`
+		NetworkName   string          `json:"network_name"`
+		Entries       []dns.HostEntry `json:"entries"`
+	}{
+		SchemaVersion: 1,
+		NetworkName:   defaultBridgeDNSNetwork,
+		Entries:       entries,
+	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
