@@ -87,3 +87,46 @@ func TestDNSNetworkLockRejectsSymlink(t *testing.T) {
 		t.Fatalf("outside lock target changed: data=%q err=%v", data, err)
 	}
 }
+
+func TestDNSNetworkLockRejectsSymlinkedRegistryDirectory(t *testing.T) {
+	realDir := t.TempDir()
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dns")
+	if err := os.Symlink(realDir, dir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	called := false
+	err := withDNSNetworkLock(dir, "default", func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("symlinked DNS registry directory was accepted")
+	}
+	if called {
+		t.Fatal("callback ran with symlinked DNS registry directory")
+	}
+}
+
+func TestDNSNetworkLockDetectsDirectoryReplacementDuringCriticalSection(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dns")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "dns-old")
+
+	err := withDNSNetworkLock(dir, "default", func() error {
+		if err := os.Rename(dir, moved); err != nil {
+			return err
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "directory for \"default\" changed while locked") {
+		t.Fatalf("replaced directory error=%v, want directory identity rejection", err)
+	}
+}
