@@ -29,6 +29,18 @@ func TestDNSNetworkFilenameLengthBoundary(t *testing.T) {
 	}
 }
 
+func TestDNSNetworkFilenameLengthUsesSmallerFilesystemLimit(t *testing.T) {
+	const componentLimit int64 = 143
+	limit, err := maxDNSNetworkNameBytesForComponentLimit(componentLimit)
+	if err != nil {
+		t.Fatalf("derive filesystem network-name limit: %v", err)
+	}
+	want := int(componentLimit) - dnsRegistryTempFixedBytes
+	if limit != want {
+		t.Fatalf("filesystem network-name limit = %d, want %d", limit, want)
+	}
+}
+
 func TestDNSNetworkLockRejectsOverlongNameBeforeFilesystemLookup(t *testing.T) {
 	overlong := strings.Repeat("a", maxDNSNetworkNameBytes+1)
 	called := false
@@ -42,7 +54,7 @@ func TestDNSNetworkLockRejectsOverlongNameBeforeFilesystemLookup(t *testing.T) {
 	if called {
 		t.Fatal("lock callback ran for overlong network name")
 	}
-	if !strings.Contains(err.Error(), "filesystem-safe limit") {
+	if !strings.Contains(err.Error(), "DNS registry filename budget") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
