@@ -20,6 +20,9 @@ func readDNSRegistryFile(path, networkName string) ([]byte, bool, error) {
 		if err == unix.ENOENT {
 			return nil, false, nil
 		}
+		if err == unix.ELOOP {
+			return nil, false, fmt.Errorf("DNS registry %q must be a regular file: %w", networkName, err)
+		}
 		return nil, false, fmt.Errorf("open DNS registry %q: %w", networkName, err)
 	}
 	file := os.NewFile(uintptr(fd), path)
