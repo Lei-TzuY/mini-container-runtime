@@ -183,7 +183,7 @@ func TestDNSRegistryRejectsPartialRegistrarIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "default.json")
-	const malformed = `[{"container_id":"bad","hostname":"bad-host","ip":"10.0.0.6","owner_pid":123}]`
+	const malformed = `{"schema_version":1,"network_name":"default","entries":[{"schema_version":1,"container_id":"bad","hostname":"bad-host","ip":"10.0.0.6","owner_pid":123}]}`
 	if err := os.WriteFile(path, []byte(malformed), 0o600); err != nil {
 		t.Fatal(err)
 	}
