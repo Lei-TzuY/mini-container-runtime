@@ -3,6 +3,7 @@
 package container
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,22 +62,34 @@ func TestCleanupNetworkOwnershipRejectsCrossRecordGeneration(t *testing.T) {
 		t.Fatalf("stop target: changed=%v err=%v", changed, err)
 	}
 
-	// Simulate a stale/corrupted sidecar being moved under another storage key.
-	// Its payload is structurally valid, so cleanup must bind it to the target's
-	// durable stopped process generation rather than trusting the filename alone.
+	// Simulate a historical pre-schema sidecar being moved under another storage
+	// key. Current sidecars carry container provenance and are rejected at the
+	// state read boundary; legacy sidecars remain readable for upgrade recovery,
+	// so destructive cleanup must still bind them to the durable stopped process
+	// generation rather than trusting the filename alone.
 	sourcePath := filepath.Join(root, "containers", sourceID+".network")
 	targetPath := filepath.Join(root, "containers", targetID+".network")
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("read source ownership sidecar: %v", err)
 	}
-	if err := os.WriteFile(targetPath, data, 0o600); err != nil {
+	var persisted map[string]json.RawMessage
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("decode source ownership sidecar: %v", err)
+	}
+	delete(persisted, "schema_version")
+	delete(persisted, "container_id")
+	legacyData, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatalf("encode legacy ownership sidecar: %v", err)
+	}
+	if err := os.WriteFile(targetPath, legacyData, 0o600); err != nil {
 		t.Fatalf("inject cross-record ownership sidecar: %v", err)
 	}
 
 	ownership, ok, err := st.GetNetworkOwnership(targetID)
 	if err != nil || !ok {
-		t.Fatalf("read injected ownership: ok=%v err=%v", ok, err)
+		t.Fatalf("read injected legacy ownership: ok=%v err=%v", ok, err)
 	}
 
 	portCalls := 0

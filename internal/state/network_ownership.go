@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const networkOwnershipSuffix = ".network"
+const (
+	networkOwnershipSuffix        = ".network"
+	networkOwnershipSchemaVersion = 1
+)
 
 // PortForwardingOwnership describes one exact generation-tagged DNAT mapping.
 // It contains enough information to reconstruct the owned iptables rule specs
@@ -32,6 +35,26 @@ type NetworkOwnership struct {
 	PIDStartTime uint64                    `json:"pid_start_time"`
 	VethHost     string                    `json:"veth_host,omitempty"`
 	Mappings     []PortForwardingOwnership `json:"mappings"`
+}
+
+type persistedNetworkOwnership struct {
+	SchemaVersion int                       `json:"schema_version"`
+	ContainerID   string                    `json:"container_id"`
+	Owner         string                    `json:"owner"`
+	PID           int                       `json:"pid"`
+	PIDStartTime  uint64                    `json:"pid_start_time"`
+	VethHost      string                    `json:"veth_host,omitempty"`
+	Mappings      []PortForwardingOwnership `json:"mappings"`
+}
+
+type networkOwnershipEnvelope struct {
+	SchemaVersion json.RawMessage           `json:"schema_version"`
+	ContainerID   json.RawMessage           `json:"container_id"`
+	Owner         string                    `json:"owner"`
+	PID           int                       `json:"pid"`
+	PIDStartTime  uint64                    `json:"pid_start_time"`
+	VethHost      string                    `json:"veth_host,omitempty"`
+	Mappings      []PortForwardingOwnership `json:"mappings"`
 }
 
 func networkOwnershipPath(containerDir, id string) string {
@@ -124,11 +147,67 @@ func (s *Store) writeNetworkOwnershipUnlocked(id string, ownership NetworkOwners
 	if err := validateNetworkOwnership(ownership); err != nil {
 		return err
 	}
-	data, err := json.Marshal(ownership)
+	persisted := persistedNetworkOwnership{
+		SchemaVersion: networkOwnershipSchemaVersion,
+		ContainerID:   id,
+		Owner:         ownership.Owner,
+		PID:           ownership.PID,
+		PIDStartTime:  ownership.PIDStartTime,
+		VethHost:      ownership.VethHost,
+		Mappings:      ownership.Mappings,
+	}
+	data, err := json.Marshal(persisted)
 	if err != nil {
 		return fmt.Errorf("marshal network ownership: %w", err)
 	}
 	return atomicWriteFile(s.ctrDir, networkOwnershipPath(s.ctrDir, id), data)
+}
+
+func decodeNetworkOwnership(id string, data []byte) (NetworkOwnership, error) {
+	var envelope networkOwnershipEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return NetworkOwnership{}, fmt.Errorf("unmarshal network ownership: %w", err)
+	}
+
+	// Pre-schema sidecars remain readable so upgrades can finish pending cleanup.
+	// Once either provenance field is present, require the complete current
+	// envelope so partial downgrade/corruption cannot silently regain legacy
+	// cleanup authority.
+	legacy := envelope.SchemaVersion == nil && envelope.ContainerID == nil
+	if !legacy {
+		if envelope.SchemaVersion == nil || envelope.ContainerID == nil {
+			return NetworkOwnership{}, fmt.Errorf("invalid persisted network ownership provenance: schema_version and container_id must both be present")
+		}
+		var schemaVersion int
+		if err := json.Unmarshal(envelope.SchemaVersion, &schemaVersion); err != nil {
+			return NetworkOwnership{}, fmt.Errorf("invalid persisted network ownership schema_version: %w", err)
+		}
+		if schemaVersion != networkOwnershipSchemaVersion {
+			return NetworkOwnership{}, fmt.Errorf("unsupported persisted network ownership schema_version %d", schemaVersion)
+		}
+		var containerID string
+		if err := json.Unmarshal(envelope.ContainerID, &containerID); err != nil {
+			return NetworkOwnership{}, fmt.Errorf("invalid persisted network ownership container_id: %w", err)
+		}
+		if err := validateID(containerID); err != nil {
+			return NetworkOwnership{}, fmt.Errorf("invalid persisted network ownership container_id: %w", err)
+		}
+		if containerID != id {
+			return NetworkOwnership{}, fmt.Errorf("network ownership storage key %q does not match persisted container_id %q", id, containerID)
+		}
+	}
+
+	ownership := NetworkOwnership{
+		Owner:         envelope.Owner,
+		PID:           envelope.PID,
+		PIDStartTime:  envelope.PIDStartTime,
+		VethHost:      envelope.VethHost,
+		Mappings:      envelope.Mappings,
+	}
+	if err := validateNetworkOwnership(ownership); err != nil {
+		return NetworkOwnership{}, fmt.Errorf("invalid persisted network ownership: %w", err)
+	}
+	return ownership, nil
 }
 
 func (s *Store) readNetworkOwnershipUnlocked(id string) (NetworkOwnership, bool, error) {
@@ -142,12 +221,9 @@ func (s *Store) readNetworkOwnershipUnlocked(id string) (NetworkOwnership, bool,
 		}
 		return NetworkOwnership{}, false, fmt.Errorf("read network ownership: %w", err)
 	}
-	var ownership NetworkOwnership
-	if err := json.Unmarshal(data, &ownership); err != nil {
-		return NetworkOwnership{}, false, fmt.Errorf("unmarshal network ownership: %w", err)
-	}
-	if err := validateNetworkOwnership(ownership); err != nil {
-		return NetworkOwnership{}, false, fmt.Errorf("invalid persisted network ownership: %w", err)
+	ownership, err := decodeNetworkOwnership(id, data)
+	if err != nil {
+		return NetworkOwnership{}, false, err
 	}
 	return ownership, true, nil
 }
