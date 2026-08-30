@@ -140,12 +140,12 @@ func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revis
 		// reserved for genuinely pre-schema historical state.
 		record := struct {
 			*Container
-			StateSchemaVersion         uint32 `json:"state_schema_version"`
+			StateSchemaVersion             uint32 `json:"state_schema_version"`
 			LegacyDNSCleanupAuthorized bool   `json:"legacy_dns_cleanup_authorized"`
 		}{
-			Container:                  &copy,
-			StateSchemaVersion:         currentContainerStateSchemaVersion,
-			LegacyDNSCleanupAuthorized: true,
+			Container:                      &copy,
+			StateSchemaVersion:             currentContainerStateSchemaVersion,
+			LegacyDNSCleanupAuthorized:     true,
 		}
 		data, err = json.MarshalIndent(&record, "", "  ")
 	default:
