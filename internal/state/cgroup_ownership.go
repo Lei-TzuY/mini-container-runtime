@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 )
 
-const cgroupOwnershipSuffix = ".cgroup"
+const (
+	cgroupOwnershipSuffix        = ".cgroup"
+	cgroupOwnershipSchemaVersion = 1
+)
 
 // CgroupOwnership is a runtime-private durable proof that one exact process
 // generation owns a cgroup created by minicontainer. The sidecar intentionally
@@ -20,6 +23,22 @@ type CgroupOwnership struct {
 	Name         string `json:"name"`
 	PID          int    `json:"pid"`
 	PIDStartTime uint64 `json:"pid_start_time"`
+}
+
+type persistedCgroupOwnership struct {
+	SchemaVersion int    `json:"schema_version"`
+	ContainerID   string `json:"container_id"`
+	Name          string `json:"name"`
+	PID           int    `json:"pid"`
+	PIDStartTime  uint64 `json:"pid_start_time"`
+}
+
+type cgroupOwnershipEnvelope struct {
+	SchemaVersion json.RawMessage `json:"schema_version"`
+	ContainerID   json.RawMessage `json:"container_id"`
+	Name          string          `json:"name"`
+	PID           int             `json:"pid"`
+	PIDStartTime  uint64          `json:"pid_start_time"`
 }
 
 func cgroupOwnershipPath(containerDir, id string) string {
@@ -66,11 +85,64 @@ func (s *Store) writeCgroupOwnershipUnlocked(id string, ownership CgroupOwnershi
 	if err := validateCgroupOwnership(ownership); err != nil {
 		return err
 	}
-	data, err := json.Marshal(ownership)
+	persisted := persistedCgroupOwnership{
+		SchemaVersion: cgroupOwnershipSchemaVersion,
+		ContainerID:   id,
+		Name:          ownership.Name,
+		PID:           ownership.PID,
+		PIDStartTime:  ownership.PIDStartTime,
+	}
+	data, err := json.Marshal(persisted)
 	if err != nil {
 		return fmt.Errorf("marshal cgroup ownership: %w", err)
 	}
 	return atomicWriteFile(s.ctrDir, cgroupOwnershipPath(s.ctrDir, id), data)
+}
+
+func decodeCgroupOwnership(id string, data []byte) (CgroupOwnership, error) {
+	var envelope cgroupOwnershipEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return CgroupOwnership{}, fmt.Errorf("unmarshal cgroup ownership: %w", err)
+	}
+
+	// Pre-schema sidecars are historical cleanup evidence. Keep them readable so
+	// upgrades do not strand pending cgroups, but once either provenance field is
+	// present the record must satisfy the complete current envelope. This prevents
+	// malformed or partially downgraded records from silently regaining legacy
+	// authority.
+	legacy := envelope.SchemaVersion == nil && envelope.ContainerID == nil
+	if !legacy {
+		if envelope.SchemaVersion == nil || envelope.ContainerID == nil {
+			return CgroupOwnership{}, fmt.Errorf("invalid persisted cgroup ownership provenance: schema_version and container_id must both be present")
+		}
+		var schemaVersion int
+		if err := json.Unmarshal(envelope.SchemaVersion, &schemaVersion); err != nil {
+			return CgroupOwnership{}, fmt.Errorf("invalid persisted cgroup ownership schema_version: %w", err)
+		}
+		if schemaVersion != cgroupOwnershipSchemaVersion {
+			return CgroupOwnership{}, fmt.Errorf("unsupported persisted cgroup ownership schema_version %d", schemaVersion)
+		}
+		var containerID string
+		if err := json.Unmarshal(envelope.ContainerID, &containerID); err != nil {
+			return CgroupOwnership{}, fmt.Errorf("invalid persisted cgroup ownership container_id: %w", err)
+		}
+		if err := validateID(containerID); err != nil {
+			return CgroupOwnership{}, fmt.Errorf("invalid persisted cgroup ownership container_id: %w", err)
+		}
+		if containerID != id {
+			return CgroupOwnership{}, fmt.Errorf("cgroup ownership storage key %q does not match persisted container_id %q", id, containerID)
+		}
+	}
+
+	ownership := CgroupOwnership{
+		Name:         envelope.Name,
+		PID:          envelope.PID,
+		PIDStartTime: envelope.PIDStartTime,
+	}
+	if err := validateCgroupOwnership(ownership); err != nil {
+		return CgroupOwnership{}, fmt.Errorf("invalid persisted cgroup ownership: %w", err)
+	}
+	return ownership, nil
 }
 
 func (s *Store) readCgroupOwnershipUnlocked(id string) (CgroupOwnership, bool, error) {
@@ -85,12 +157,9 @@ func (s *Store) readCgroupOwnershipUnlocked(id string) (CgroupOwnership, bool, e
 		}
 		return CgroupOwnership{}, false, fmt.Errorf("read cgroup ownership: %w", err)
 	}
-	var ownership CgroupOwnership
-	if err := json.Unmarshal(data, &ownership); err != nil {
-		return CgroupOwnership{}, false, fmt.Errorf("unmarshal cgroup ownership: %w", err)
-	}
-	if err := validateCgroupOwnership(ownership); err != nil {
-		return CgroupOwnership{}, false, fmt.Errorf("invalid persisted cgroup ownership: %w", err)
+	ownership, err := decodeCgroupOwnership(id, data)
+	if err != nil {
+		return CgroupOwnership{}, false, err
 	}
 	return ownership, true, nil
 }
