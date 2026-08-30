@@ -58,12 +58,18 @@ func withDNSNetworkLock(dir, networkName string, fn func(dirFD int) error) error
 	if fn == nil {
 		return fmt.Errorf("DNS lock callback is nil")
 	}
+	if err := validateDNSNetworkFilenameLength(networkName); err != nil {
+		return err
+	}
 
 	dirFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("open DNS registry directory for %q: %w", networkName, err)
 	}
 	defer unix.Close(dirFD)
+	if err := validateDNSNetworkFilenameLengthAt(dirFD, networkName); err != nil {
+		return err
+	}
 	if err := unix.Fchmod(dirFD, 0o700); err != nil {
 		return fmt.Errorf("chmod DNS registry directory for %q: %w", networkName, err)
 	}
