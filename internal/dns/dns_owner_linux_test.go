@@ -3,7 +3,6 @@
 package dns
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -50,13 +49,9 @@ func TestDNSRegistryPrunesRegistrationAfterRegistrarOsExit(t *testing.T) {
 		t.Fatalf("stale crashed registration remained authoritative:\n%s", content)
 	}
 
-	data, err := os.ReadFile(filepath.Join(DefaultDNSDir(), "default.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var entries []HostEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		t.Fatal(err)
+	entries, exists, err := loadEntriesChecked(filepath.Join(DefaultDNSDir(), "default.json"), "default")
+	if err != nil || !exists {
+		t.Fatalf("load pruned registry: entries=%+v exists=%v err=%v", entries, exists, err)
 	}
 	if len(entries) != 0 {
 		t.Fatalf("stale registration remained on disk: %+v", entries)
