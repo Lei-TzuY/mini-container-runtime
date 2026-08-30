@@ -48,6 +48,24 @@ func TestReadDNSRegistryFileRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestReadDNSRegistryFileRejectsHardLinkedInode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "alias.json")
+	if err := os.Link(path, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := readDNSRegistryFile(path, "bridge"); err == nil {
+		t.Fatal("hard-linked registry unexpectedly accepted")
+	} else if !strings.Contains(err.Error(), "single-linked regular file") {
+		t.Fatalf("unexpected hard-link error: %v", err)
+	}
+}
+
 func TestReadDNSRegistryFileRejectsFIFOWithoutBlocking(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bridge.json")
