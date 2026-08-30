@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -168,8 +167,8 @@ func loadEntriesChecked(path, networkName string) ([]HostEntry, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("read DNS registry %q: %w", networkName, err)
 	}
-	var entries []HostEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
+	entries, err := decodeDNSRegistry(data, networkName)
+	if err != nil {
 		return nil, false, fmt.Errorf("parse DNS registry %q: %w", networkName, err)
 	}
 	if err := validateEntries(networkName, entries); err != nil {
@@ -182,7 +181,7 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 	if err := validateEntries(networkName, entries); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(entries, "", "  ")
+	data, err := encodeDNSRegistry(networkName, entries)
 	if err != nil {
 		return fmt.Errorf("marshal DNS registry %q: %w", networkName, err)
 	}
