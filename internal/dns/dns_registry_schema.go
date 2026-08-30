@@ -15,8 +15,9 @@ type dnsRegistryEnvelope struct {
 }
 
 // decodeDNSRegistry binds current registry contents to the network storage key.
-// Bare arrays remain readable only as the historical pre-envelope format; every
-// current write upgrades the registry to an explicit, versioned envelope.
+// Historical bare arrays have no network provenance. An empty array carries no
+// registration or cleanup authority and is therefore safe to migrate; non-empty
+// arrays fail closed because their original network cannot be authenticated.
 func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -28,10 +29,13 @@ func decodeDNSRegistry(data []byte, expectedNetworkName string) ([]HostEntry, er
 		if err := json.Unmarshal(trimmed, &entries); err != nil {
 			return nil, err
 		}
+		if len(entries) != 0 {
+			return nil, fmt.Errorf("non-empty historical DNS registry lacks network provenance; refusing authority for storage key %q", expectedNetworkName)
+		}
 		return entries, nil
 	}
 	if trimmed[0] != '{' {
-		return nil, fmt.Errorf("DNS registry must be a versioned object or historical array")
+		return nil, fmt.Errorf("DNS registry must be a versioned object or empty historical array")
 	}
 
 	var raw map[string]json.RawMessage
