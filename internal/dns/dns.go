@@ -104,6 +104,13 @@ func validateEntries(networkName string, entries []HostEntry) error {
 		if err := validateHostAndIP(entry.Hostname, entry.IP); err != nil {
 			return fmt.Errorf("DNS registry %q entry %d is invalid: %w", networkName, i, err)
 		}
+		canonicalIP, err := canonicalIPAddress(entry.IP)
+		if err != nil {
+			return fmt.Errorf("DNS registry %q entry %d is invalid: %w", networkName, i, err)
+		}
+		if entry.IP != canonicalIP {
+			return fmt.Errorf("DNS registry %q entry %d has non-canonical IP address %q; canonical form is %q", networkName, i, entry.IP, canonicalIP)
+		}
 		if err := validateHostEntryOwner(entry); err != nil {
 			return fmt.Errorf("DNS registry %q entry %d has invalid ownership: %w", networkName, i, err)
 		}
@@ -254,6 +261,11 @@ func saveEntriesAtomicAt(dirFD int, name, networkName string, entries []HostEntr
 }
 
 func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string, admissionPending bool) ([]HostEntry, bool, error) {
+	canonicalIP, err := canonicalIPAddress(ipAddr)
+	if err != nil {
+		return nil, false, err
+	}
+	ipAddr = canonicalIP
 	for i, entry := range entries {
 		hostnameMatches := strings.EqualFold(entry.Hostname, hostname)
 		if entry.ContainerID != containerID && !hostnameMatches {
