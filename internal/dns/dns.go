@@ -167,6 +167,21 @@ func loadEntriesChecked(path, networkName string) ([]HostEntry, bool, error) {
 	return entries, true, nil
 }
 
+func loadEntriesCheckedAt(dirFD int, name, networkName string) ([]HostEntry, bool, error) {
+	data, exists, err := readDNSRegistryFileAt(dirFD, name, networkName)
+	if err != nil || !exists {
+		return nil, exists, err
+	}
+	entries, err := decodeDNSRegistry(data, networkName)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse DNS registry %q: %w", networkName, err)
+	}
+	if err := validateEntries(networkName, entries); err != nil {
+		return nil, false, err
+	}
+	return entries, true, nil
+}
+
 func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error {
 	if err := validateEntries(networkName, entries); err != nil {
 		return err
@@ -221,6 +236,17 @@ func saveEntriesAtomic(dir, path, networkName string, entries []HostEntry) error
 	return nil
 }
 
+func saveEntriesAtomicAt(dirFD int, name, networkName string, entries []HostEntry) error {
+	if err := validateEntries(networkName, entries); err != nil {
+		return err
+	}
+	data, err := encodeDNSRegistry(networkName, entries)
+	if err != nil {
+		return fmt.Errorf("marshal DNS registry %q: %w", networkName, err)
+	}
+	return saveDNSRegistryFileAtomicAt(dirFD, name, networkName, data)
+}
+
 func entriesWithRegistration(entries []HostEntry, owner registrarIdentity, containerID, hostname, ipAddr string, admissionPending bool) ([]HostEntry, bool, error) {
 	for i, entry := range entries {
 		if entry.ContainerID != containerID && entry.Hostname != hostname {
@@ -265,9 +291,9 @@ func registerHost(networkName, containerID, hostname, ipAddr string, admissionPe
 	if err != nil {
 		return err
 	}
-	return withDNSNetworkLock(dir, networkName, func() error {
-		netFile := filepath.Join(dir, networkName+".json")
-		entries, _, err := loadEntriesChecked(netFile, networkName)
+	return withDNSNetworkLock(dir, networkName, func(dirFD int) error {
+		netName := networkName + ".json"
+		entries, _, err := loadEntriesCheckedAt(dirFD, netName, networkName)
 		if err != nil {
 			return err
 		}
@@ -282,7 +308,7 @@ func registerHost(networkName, containerID, hostname, ipAddr string, admissionPe
 		if !changed && !pruned {
 			return nil
 		}
-		return saveEntriesAtomic(dir, netFile, networkName, updated)
+		return saveEntriesAtomicAt(dirFD, netName, networkName, updated)
 	})
 }
 
@@ -310,11 +336,11 @@ func GenerateHostsContentChecked(networkName string) (string, error) {
 		return "", err
 	}
 	var entries []HostEntry
-	if err := withDNSNetworkLock(dir, networkName, func() error {
-		netFile := filepath.Join(dir, networkName+".json")
+	if err := withDNSNetworkLock(dir, networkName, func(dirFD int) error {
+		netName := networkName + ".json"
 		var exists bool
 		var loadErr error
-		entries, exists, loadErr = loadEntriesChecked(netFile, networkName)
+		entries, exists, loadErr = loadEntriesCheckedAt(dirFD, netName, networkName)
 		if loadErr != nil || !exists {
 			return loadErr
 		}
@@ -324,7 +350,7 @@ func GenerateHostsContentChecked(networkName string) (string, error) {
 			return loadErr
 		}
 		if changed {
-			return saveEntriesAtomic(dir, netFile, networkName, entries)
+			return saveEntriesAtomicAt(dirFD, netName, networkName, entries)
 		}
 		return nil
 	}); err != nil {
