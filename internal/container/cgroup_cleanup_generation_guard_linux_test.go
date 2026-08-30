@@ -23,10 +23,10 @@ func TestCleanupStoppedCgroupRejectsStaleSameContainerGeneration(t *testing.T) {
 	defer st.Close()
 
 	const (
-		id          = "ctr-cgroup-generation-guard"
-		stalePID    = 5151
-		staleStart  = 6161
-		currentPID  = 7171
+		id           = "ctr-cgroup-generation-guard"
+		stalePID     = 5151
+		staleStart   = 6161
+		currentPID   = 7171
 		currentStart = 8181
 	)
 
@@ -55,6 +55,7 @@ func TestCleanupStoppedCgroupRejectsStaleSameContainerGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	ownershipJSON := fmt.Sprintf(`{"name":%q,"pid":%d,"pid_start_time":%d}`, staleName, stalePID, staleStart)
+	ownershipJSON = strings.ReplaceAll(ownershipJSON, `\"`, `"`)
 	ownershipPath := filepath.Join(root, "containers", id+".cgroup")
 	if err := os.WriteFile(ownershipPath, []byte(ownershipJSON), 0o600); err != nil {
 		t.Fatalf("inject stale ownership: %v", err)
