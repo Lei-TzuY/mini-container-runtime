@@ -184,6 +184,30 @@ func cleanupStoppedCgroupWithCleanup(st *state.Store, c *state.Container, cleanu
 	if !ok {
 		return nil
 	}
+
+	exitedPID, exitedStartTime, revisionCurrent, identityOK, identityRequired, err := st.GetStoppedExitIdentityPolicy(c.ID, c.Revision)
+	if err != nil {
+		return fmt.Errorf("read stopped generation identity before cgroup cleanup for container %s: %w", c.ID, err)
+	}
+	if !revisionCurrent {
+		return nil
+	}
+	if !identityOK {
+		if identityRequired {
+			return fmt.Errorf("stopped container %s revision %d is missing required exited process identity while cgroup ownership remains", c.ID, c.Revision)
+		}
+		return fmt.Errorf("refusing cgroup cleanup for stopped container %s revision %d without exact exited process identity", c.ID, c.Revision)
+	}
+	if ownership.PID != exitedPID || ownership.PIDStartTime != exitedStartTime {
+		return fmt.Errorf(
+			"refusing cgroup cleanup for container %s: ownership belongs to process %d/%d, stopped generation is %d/%d",
+			c.ID,
+			ownership.PID,
+			ownership.PIDStartTime,
+			exitedPID,
+			exitedStartTime,
+		)
+	}
 	if err := cleanupOwnedGenerationWith(st, c.ID, ownership, cleanup); err != nil {
 		return fmt.Errorf("cleanup persisted cgroup for stopped container %s: %w", c.ID, err)
 	}
