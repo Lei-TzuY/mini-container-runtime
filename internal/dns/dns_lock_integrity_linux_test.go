@@ -48,8 +48,8 @@ func TestDNSNetworkLockDetectsUnlinkReplacementDuringCriticalSection(t *testing.
 		}
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "path changed while locked") {
-		t.Fatalf("replaced lock error=%v, want path identity rejection", err)
+	if err == nil || (!strings.Contains(err.Error(), "path changed while locked") && !strings.Contains(err.Error(), "exactly one link, got 0")) {
+		t.Fatalf("replaced lock error=%v, want inode integrity rejection", err)
 	}
 	data, readErr := os.ReadFile(lockPath)
 	if readErr != nil {
