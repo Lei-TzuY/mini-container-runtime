@@ -8,20 +8,6 @@ import (
 	"time"
 )
 
-func testNetworkOwnership(pid int, start uint64) NetworkOwnership {
-	return NetworkOwnership{
-		Owner:        "minicontainer:test-owner",
-		PID:          pid,
-		PIDStartTime: start,
-		Mappings: []PortForwardingOwnership{{
-			HostPort:      18080,
-			ContainerPort: 8080,
-			ContainerIP:   "10.88.0.2",
-			Protocol:      "tcp",
-		}},
-	}
-}
-
 func TestNetworkOwnershipPersistsVersionedStorageIdentity(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
@@ -51,7 +37,7 @@ func TestNetworkOwnershipPersistsVersionedStorageIdentity(t *testing.T) {
 	if persisted.ContainerID != id {
 		t.Fatalf("container_id=%q want=%q", persisted.ContainerID, id)
 	}
-	if persisted.Owner != ownership.Owner || persisted.PID != ownership.PID || persisted.PIDStartTime != ownership.PIDStartTime || len(persisted.Mappings) != 1 {
+	if persisted.Owner != ownership.Owner || persisted.PID != ownership.PID || persisted.PIDStartTime != ownership.PIDStartTime || len(persisted.Mappings) != len(ownership.Mappings) {
 		t.Fatalf("persisted ownership=%+v", persisted)
 	}
 }
@@ -135,7 +121,17 @@ func TestNetworkOwnershipKeepsPreSchemaCompatibility(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("legacy ownership ok=%v err=%v", ok, err)
 	}
-	want := testNetworkOwnership(11, 22)
+	want := NetworkOwnership{
+		Owner:        "minicontainer:test-owner",
+		PID:          11,
+		PIDStartTime: 22,
+		Mappings: []PortForwardingOwnership{{
+			HostPort:      18080,
+			ContainerPort: 8080,
+			ContainerIP:   "10.88.0.2",
+			Protocol:      "tcp",
+		}},
+	}
 	if !networkOwnershipEqual(got, want) {
 		t.Fatalf("legacy ownership=%+v want=%+v", got, want)
 	}
