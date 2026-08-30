@@ -47,6 +47,8 @@ const (
 	StatusStopped Status = "stopped"
 )
 
+const maxContainerIDBytes = 240
+
 // Container holds persisted metadata for one container.
 type Container struct {
 	// ID is a short random hex string used as a human-readable handle.
@@ -66,7 +68,7 @@ type Container struct {
 	// signaling what may now be an unrelated host process.
 	PIDStartTime uint64 `json:"pid_start_time,omitempty"`
 
-	// Status is the current lifecycle state.
+	// Status is the current lifecycle state of a container.
 	Status Status `json:"status"`
 
 	// Health holds container health status ("healthy", "unhealthy", "starting", or "").
@@ -167,6 +169,9 @@ func (s *Store) Dir() string {
 func validateID(id string) error {
 	if id == "" {
 		return fmt.Errorf("id cannot be empty")
+	}
+	if len(id) > maxContainerIDBytes {
+		return fmt.Errorf("invalid id: exceeds %d bytes", maxContainerIDBytes)
 	}
 	if id == "." || id == ".." || strings.ContainsAny(id, "/\\:\x00") {
 		return fmt.Errorf("invalid id %q: path separators and relative components not allowed", id)
