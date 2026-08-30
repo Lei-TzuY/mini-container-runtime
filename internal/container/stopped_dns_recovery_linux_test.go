@@ -3,6 +3,7 @@
 package container
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -63,8 +64,17 @@ func readDNSRecoveryEntries(t *testing.T, path string) []dns.HostEntry {
 	if err != nil {
 		t.Fatal(err)
 	}
+	trimmed := bytes.TrimSpace(data)
 	var entries []dns.HostEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var envelope struct {
+			Entries []dns.HostEntry `json:"entries"`
+		}
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		entries = envelope.Entries
+	} else if err := json.Unmarshal(trimmed, &entries); err != nil {
 		t.Fatal(err)
 	}
 	return entries
