@@ -97,8 +97,11 @@ func cleanupNetworkOwnershipWith(
 // cleanupNetworkOwnershipAfterDurableStopWith is the destructive-cleanup gate
 // for generic callers that may run before authoritative lifecycle finalization.
 // A running/created record is a durable claim that host networking may still be
-// in use, so cleanup must be a no-op until stopped has committed. State read
-// failures fail closed and preserve both host resources and the ownership token.
+// in use, so cleanup must be a no-op until stopped has committed. Once stopped,
+// the sidecar process identity must match the exact durable exited generation;
+// stale or cross-record ownership must never gain destructive cleanup authority.
+// State read failures fail closed and preserve both host resources and the
+// ownership token.
 func cleanupNetworkOwnershipAfterDurableStopWith(
 	st *state.Store,
 	containerID string,
@@ -116,6 +119,32 @@ func cleanupNetworkOwnershipAfterDurableStopWith(
 	}
 	if current.Status != state.StatusStopped {
 		return nil
+	}
+
+	exitedPID, exitedStartTime, revisionCurrent, identityOK, identityRequired, err := st.GetStoppedExitIdentityPolicy(containerID, current.Revision)
+	if err != nil {
+		return fmt.Errorf("read stopped generation identity before network cleanup for container %s: %w", containerID, err)
+	}
+	if !revisionCurrent {
+		// A concurrent lifecycle transition invalidated the snapshot used to
+		// authorize cleanup. The new generation owns the decision.
+		return nil
+	}
+	if !identityOK {
+		if identityRequired {
+			return fmt.Errorf("stopped container %s revision %d is missing required exited process identity while network ownership remains", containerID, current.Revision)
+		}
+		return fmt.Errorf("refusing network cleanup for stopped container %s revision %d without exact exited process identity", containerID, current.Revision)
+	}
+	if ownership.PID != exitedPID || ownership.PIDStartTime != exitedStartTime {
+		return fmt.Errorf(
+			"refusing network cleanup for container %s: ownership belongs to process %d/%d, stopped generation is %d/%d",
+			containerID,
+			ownership.PID,
+			ownership.PIDStartTime,
+			exitedPID,
+			exitedStartTime,
+		)
 	}
 	return cleanupNetworkOwnershipWith(st, containerID, ownership, debug, removePort, removeVeth)
 }
