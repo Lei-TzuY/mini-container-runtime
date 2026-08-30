@@ -196,17 +196,30 @@ func TestListImagesPrefersCurrentMetadataDuringMigration(t *testing.T) {
 	}
 }
 
-func TestListImagesRejectsConflictingNonCurrentCopies(t *testing.T) {
+func TestListImagesRejectsMetadataAtUnownedPath(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := &Image{Name: "conflict:test", ID: "same", RootFS: "/one"}
-	second := &Image{Name: first.Name, ID: first.ID, RootFS: "/two"}
-	writeLegacyImageMetadata(t, store, first)
-	writeImageMetadataAt(t, filepath.Join(store.imgDir, "unexpected-copy.json"), second)
-	if _, err := store.ListImages(); err == nil || !strings.Contains(err.Error(), "conflicting duplicate") {
-		t.Fatalf("conflicting duplicate error=%v", err)
+	img := &Image{Name: "alias:test", ID: "same", RootFS: "/root"}
+	writeCurrentImageMetadata(t, store, img)
+	writeImageMetadataAt(t, filepath.Join(store.imgDir, "unexpected-copy.json"), img)
+	if _, err := store.ListImages(); err == nil || !strings.Contains(err.Error(), "pathname") {
+		t.Fatalf("unowned pathname error=%v", err)
+	}
+}
+
+func TestReadImageMetadataRejectsHashedFilenameForDifferentStorageKey(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	victimKey := "victim:test"
+	attacker := &Image{Name: "attacker:test", ID: "attacker", RootFS: "/attacker"}
+	path := filepath.Join(store.imgDir, imageMetadataFilename(victimKey))
+	writeImageMetadataAt(t, path, attacker)
+	if _, err := readImageMetadata(path); err == nil || !strings.Contains(err.Error(), "storage key") {
+		t.Fatalf("mismatched embedded key error=%v", err)
 	}
 }
 

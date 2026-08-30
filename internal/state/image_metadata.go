@@ -37,6 +37,14 @@ func legacyImageMetadataFilename(key string) string {
 	return sanitizeImageFilename(key) + ".json"
 }
 
+func validateImageMetadataPath(path, key string) error {
+	base := filepath.Base(path)
+	if base == imageMetadataFilename(key) || base == legacyImageMetadataFilename(key) {
+		return nil
+	}
+	return fmt.Errorf("image metadata pathname %q does not match storage key %q", base, key)
+}
+
 func readImageMetadata(path string) (*Image, error) {
 	data, err := readRegularStateFile(path, "image state")
 	if err != nil {
@@ -46,8 +54,12 @@ func readImageMetadata(path string) (*Image, error) {
 	if err := json.Unmarshal(data, &img); err != nil {
 		return nil, fmt.Errorf("unmarshal image state %q: %w", filepath.Base(path), err)
 	}
-	if _, err := imageStorageKey(&img); err != nil {
+	key, err := imageStorageKey(&img)
+	if err != nil {
 		return nil, fmt.Errorf("invalid image state %q: %w", filepath.Base(path), err)
+	}
+	if err := validateImageMetadataPath(path, key); err != nil {
+		return nil, err
 	}
 	return &img, nil
 }
