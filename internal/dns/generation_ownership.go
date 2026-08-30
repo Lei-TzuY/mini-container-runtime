@@ -2,7 +2,6 @@ package dns
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -31,9 +30,9 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 	if err != nil {
 		return err
 	}
-	return withDNSNetworkLock(dir, networkName, func() error {
-		netFile := filepath.Join(dir, networkName+".json")
-		entries, exists, err := loadEntriesChecked(netFile, networkName)
+	return withDNSNetworkLock(dir, networkName, func(dirFD int) error {
+		netName := networkName + ".json"
+		entries, exists, err := loadEntriesCheckedAt(dirFD, netName, networkName)
 		if err != nil {
 			return err
 		}
@@ -73,7 +72,7 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 			updated[i].GenerationPID = pid
 			updated[i].GenerationStartTime = pidStartTime
 			updated[i].AdmissionPending = false
-			return saveEntriesAtomic(dir, netFile, networkName, updated)
+			return saveEntriesAtomicAt(dirFD, netName, networkName, updated)
 		}
 		return fmt.Errorf("DNS registration for container %q does not exist", containerID)
 	})
