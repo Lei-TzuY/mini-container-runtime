@@ -47,6 +47,9 @@ func readDNSRegistryFileAt(dirFD int, name, networkName string) ([]byte, bool, e
 }
 
 func dnsTempName(networkName string) (string, error) {
+	if err := validateDNSNetworkFilenameLength(networkName); err != nil {
+		return "", err
+	}
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
