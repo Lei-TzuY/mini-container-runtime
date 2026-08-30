@@ -87,6 +87,7 @@ func TestCgroupOwnershipRejectsFutureAndPartialProvenance(t *testing.T) {
 	path := cgroupOwnershipPath(st.ctrDir, id)
 
 	future := `{"schema_version":2,"container_id":"ctr-cgroup-schema-guard","name":"minicontainer-safe","pid":1,"pid_start_time":2}`
+	future = strings.ReplaceAll(future, `\"`, `"`)
 	if err := os.WriteFile(path, []byte(future), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +96,7 @@ func TestCgroupOwnershipRejectsFutureAndPartialProvenance(t *testing.T) {
 	}
 
 	partial := `{"schema_version":1,"name":"minicontainer-safe","pid":1,"pid_start_time":2}`
+	partial = strings.ReplaceAll(partial, `\"`, `"`)
 	if err := os.WriteFile(path, []byte(partial), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +113,7 @@ func TestCgroupOwnershipKeepsPreSchemaCompatibility(t *testing.T) {
 	const id = "ctr-cgroup-legacy"
 	saveCreatedContainer(t, st, id)
 	legacy := `{"name":"minicontainer-ctr-cgroup-legacy-11-22","pid":11,"pid_start_time":22}`
+	legacy = strings.ReplaceAll(legacy, `\"`, `"`)
 	if err := os.WriteFile(cgroupOwnershipPath(st.ctrDir, id), []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
