@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
