@@ -3,7 +3,6 @@ package state
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -51,7 +50,7 @@ func readImageMetadata(path string) (*Image, error) {
 		return nil, err
 	}
 	var img Image
-	if err := json.Unmarshal(data, &img); err != nil {
+	if err := decodeImageMetadataStrict(data, &img); err != nil {
 		return nil, fmt.Errorf("unmarshal image state %q: %w", filepath.Base(path), err)
 	}
 	key, err := imageStorageKey(&img)
