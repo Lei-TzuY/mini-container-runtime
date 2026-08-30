@@ -4,7 +4,6 @@ package state
 
 import (
 	"fmt"
-	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -33,12 +32,11 @@ func readRegularStateFile(path, label string) ([]byte, error) {
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		return nil, fmt.Errorf("%s %q must be a regular file", label, path)
 	}
+	if st.Nlink != 1 {
+		return nil, fmt.Errorf("%s %q must be single-linked", label, path)
+	}
 	if err := unix.Fchmod(fd, 0o600); err != nil {
 		return nil, fmt.Errorf("secure %s permissions: %w", label, err)
 	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", label, err)
-	}
-	return data, nil
+	return readBoundedStateFile(file, st.Size, label)
 }
