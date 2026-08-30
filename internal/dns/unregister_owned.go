@@ -3,7 +3,6 @@ package dns
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -30,9 +29,6 @@ func unregisterHostIfOwnedBy(networkName, containerID string, owner registrarIde
 		return fmt.Errorf("invalid DNS registrar process identity %d/%d", owner.PID, owner.StartTime)
 	}
 
-	// Finalization runs for every managed container, not only bridge-backed
-	// containers. Absence must therefore be a side-effect-free no-op rather than
-	// creating the DNS directory solely to discover that no registration exists.
 	dir := DefaultDNSDir()
 	info, err := os.Lstat(dir)
 	if err != nil {
@@ -47,9 +43,9 @@ func unregisterHostIfOwnedBy(networkName, containerID string, owner registrarIde
 
 	dnsMu.Lock()
 	defer dnsMu.Unlock()
-	return withDNSNetworkLock(dir, networkName, func() error {
-		netFile := filepath.Join(dir, networkName+".json")
-		entries, exists, err := loadEntriesChecked(netFile, networkName)
+	return withDNSNetworkLock(dir, networkName, func(dirFD int) error {
+		netName := networkName + ".json"
+		entries, exists, err := loadEntriesCheckedAt(dirFD, netName, networkName)
 		if err != nil || !exists {
 			return err
 		}
@@ -62,8 +58,6 @@ func unregisterHostIfOwnedBy(networkName, containerID string, owner registrarIde
 				continue
 			}
 			if entry.OwnerPID != owner.PID || entry.OwnerStartTime != owner.StartTime {
-				// Same logical container ID, different registrar generation: this
-				// actor is stale and has no authority to consume the newer entry.
 				updated = append(updated, entry)
 				continue
 			}
@@ -72,6 +66,6 @@ func unregisterHostIfOwnedBy(networkName, containerID string, owner registrarIde
 		if !removed {
 			return nil
 		}
-		return saveEntriesAtomic(dir, netFile, networkName, updated)
+		return saveEntriesAtomicAt(dirFD, netName, networkName, updated)
 	})
 }
