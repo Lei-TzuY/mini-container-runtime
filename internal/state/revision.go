@@ -158,6 +158,9 @@ func (s *Store) writeContainerRevisionWithExitPolicyUnlocked(c *Container, revis
 	if err != nil {
 		return fmt.Errorf("marshal container: %w", err)
 	}
+	if err := validateStateFileWrite(data, "container state"); err != nil {
+		return err
+	}
 	target := filepath.Join(s.ctrDir, c.ID+".json")
 	if err := atomicWriteFile(s.ctrDir, target, data); err != nil {
 		return err

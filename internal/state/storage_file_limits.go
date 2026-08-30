@@ -8,6 +8,13 @@ import (
 
 const maxStateFileBytes int64 = 4 << 20 // 4 MiB
 
+func validateStateFileWrite(data []byte, label string) error {
+	if int64(len(data)) > maxStateFileBytes {
+		return fmt.Errorf("%s exceeds %d-byte size limit", label, maxStateFileBytes)
+	}
+	return nil
+}
+
 func readBoundedStateFile(file *os.File, observedSize int64, label string) ([]byte, error) {
 	if observedSize > maxStateFileBytes {
 		return nil, fmt.Errorf("%s exceeds %d-byte size limit", label, maxStateFileBytes)
