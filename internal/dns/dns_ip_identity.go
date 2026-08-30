@@ -2,16 +2,16 @@ package dns
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 )
 
 func canonicalIPAddress(ipAddr string) (string, error) {
 	if ipAddr == "" {
 		return "", fmt.Errorf("IP address cannot be empty")
 	}
-	parsed := net.ParseIP(ipAddr)
-	if parsed == nil {
+	addr, err := netip.ParseAddr(ipAddr)
+	if err != nil || addr.Zone() != "" {
 		return "", fmt.Errorf("invalid IP address %q", ipAddr)
 	}
-	return parsed.String(), nil
+	return addr.String(), nil
 }
