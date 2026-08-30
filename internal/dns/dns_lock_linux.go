@@ -67,6 +67,9 @@ func withDNSNetworkLock(dir, networkName string, fn func(dirFD int) error) error
 		return fmt.Errorf("open DNS registry directory for %q: %w", networkName, err)
 	}
 	defer unix.Close(dirFD)
+	if err := validateDNSNetworkFilenameLengthAt(dirFD, networkName); err != nil {
+		return err
+	}
 	if err := unix.Fchmod(dirFD, 0o700); err != nil {
 		return fmt.Errorf("chmod DNS registry directory for %q: %w", networkName, err)
 	}
