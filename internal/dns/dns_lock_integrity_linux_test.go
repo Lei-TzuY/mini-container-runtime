@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestDNSNetworkLockRejectsMultipleHardLinks(t *testing.T) {
@@ -128,5 +130,47 @@ func TestDNSNetworkLockDetectsDirectoryReplacementDuringCriticalSection(t *testi
 	})
 	if err == nil || !strings.Contains(err.Error(), "directory for \"default\" changed while locked") {
 		t.Fatalf("replaced directory error=%v, want directory identity rejection", err)
+	}
+}
+
+func TestDNSLockPathVerificationStaysBoundToPinnedDirectory(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dns")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const networkName = "default"
+	const lockName = networkName + ".lock"
+	if err := os.WriteFile(filepath.Join(dir, lockName), []byte("held"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dirFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(dirFD)
+	fd, err := unix.Openat(dirFD, lockName, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+
+	moved := filepath.Join(parent, "dns-old")
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, lockName), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := verifyDNSLockPath(dirFD, fd, lockName, networkName); err != nil {
+		t.Fatalf("pinned lock verification followed replacement directory: %v", err)
+	}
+	if err := verifyDNSDirPath(dirFD, dir, networkName); err == nil {
+		t.Fatal("directory replacement should still be detected separately")
 	}
 }
