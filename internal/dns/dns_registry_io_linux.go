@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -40,9 +39,9 @@ func readDNSRegistryFileAt(dirFD int, name, networkName string) ([]byte, bool, e
 	if st.Nlink != 1 {
 		return nil, false, fmt.Errorf("DNS registry %q must be a single-linked regular file", networkName)
 	}
-	data, err := io.ReadAll(file)
+	data, err := readDNSRegistryContents(file, st.Size, networkName)
 	if err != nil {
-		return nil, false, fmt.Errorf("read DNS registry %q: %w", networkName, err)
+		return nil, false, err
 	}
 	return data, true, nil
 }
