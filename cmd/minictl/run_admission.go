@@ -42,6 +42,13 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if err != nil {
 		return nil, nil, err
 	}
+	rootfsIdentity, err := os.Stat(rootfs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("capture admitted run rootfs identity %q: %w", rootfs, err)
+	}
+	if !rootfsIdentity.IsDir() {
+		return nil, nil, fmt.Errorf("admitted run rootfs %q is not a directory", rootfs)
+	}
 	if deps.openStore == nil || deps.newID == nil || deps.now == nil {
 		return nil, nil, fmt.Errorf("run admission dependencies are incomplete")
 	}
@@ -77,11 +84,12 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		return fail(fmt.Errorf("persist created state for container %s: %w", id, err))
 	}
 
-	// Publishing the normalized rootfs and ID is the admission commit point.
-	// In particular, an uncertain state write that returned an error must never
-	// mutate the runtime config even if a filesystem entry happened to become
-	// visible before that error.
+	// Publishing the normalized rootfs, its admitted filesystem identity, and ID
+	// is the admission commit point. An uncertain state write that returned an
+	// error must never mutate the runtime config even if a filesystem entry
+	// happened to become visible before that error.
 	cfg.RootFS = rootfs
+	cfg.RootFSIdentity = rootfsIdentity
 	cfg.ContainerID = id
 	return st, rec, nil
 }
