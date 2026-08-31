@@ -40,6 +40,13 @@ type Event struct {
 	ContainerID string    `json:"container_id"`
 	Image       string    `json:"image,omitempty"`
 	Message     string    `json:"message,omitempty"`
+	// ExitCode is structured terminal status for events that represent a process
+	// outcome. A pointer distinguishes an actual exit code of zero from events
+	// that have no exit-code semantics.
+	ExitCode *int `json:"exit_code,omitempty"`
+	// Error carries a machine-readable failure detail alongside the legacy human
+	// Message. It is populated for failed exec admission/setup and abnormal waits.
+	Error string `json:"error,omitempty"`
 }
 
 var mu sync.Mutex
