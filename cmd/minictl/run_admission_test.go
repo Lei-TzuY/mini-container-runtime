@@ -269,7 +269,7 @@ func TestPrepareManagedRunStateDoesNotPublishCanonicalRootFSOnFailure(t *testing
 	}
 }
 
-func TestPrepareManagedRunStateAcceptsRootFSSymlinkToDirectory(t *testing.T) {
+func TestPrepareManagedRunStateResolvesRootFSSymlinkToDirectory(t *testing.T) {
 	target := t.TempDir()
 	link := filepath.Join(t.TempDir(), "rootfs-link")
 	if err := os.Symlink(target, link); err != nil {
@@ -291,8 +291,65 @@ func TestPrepareManagedRunStateAcceptsRootFSSymlinkToDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareManagedRunStateWith symlink rootfs: %v", err)
 	}
-	if st != opened || rec == nil || rec.RootFS != link || cfg.RootFS != link || cfg.ContainerID != runAdmissionTestID {
-		t.Fatalf("store=%v rec=%+v RootFS=%q ContainerID=%q", st, rec, cfg.RootFS, cfg.ContainerID)
+	expected, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = filepath.Clean(expected)
+	if st != opened || rec == nil || rec.RootFS != expected || cfg.RootFS != expected || cfg.ContainerID != runAdmissionTestID {
+		t.Fatalf("store=%v rec=%+v RootFS=%q ContainerID=%q, want resolved rootfs %q", st, rec, cfg.RootFS, cfg.ContainerID, expected)
+	}
+}
+
+func TestPrepareManagedRunStatePinsRootFSSymlinkTargetAcrossRetarget(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	link := filepath.Join(t.TempDir(), "rootfs-link")
+	if err := os.Symlink(first, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = link
+	opened, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+
+	_, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) { return opened, nil },
+		newID:     func() (string, error) { return runAdmissionTestID, nil },
+		now:       time.Now,
+	})
+	if err != nil {
+		t.Fatalf("prepareManagedRunStateWith symlink rootfs: %v", err)
+	}
+	firstResolved, err := filepath.EvalSymlinks(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	secondResolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResolved == firstResolved {
+		t.Fatalf("retargeted symlink still resolves to first target %q", firstResolved)
+	}
+	if cfg.RootFS != firstResolved || rec.RootFS != firstResolved {
+		t.Fatalf("after retarget cfg.RootFS=%q rec.RootFS=%q, want pinned first target %q", cfg.RootFS, rec.RootFS, firstResolved)
+	}
+	persisted, err := opened.Get(runAdmissionTestID)
+	if err != nil {
+		t.Fatalf("Get persisted record: %v", err)
+	}
+	if persisted.RootFS != firstResolved {
+		t.Fatalf("persisted rootfs=%q after symlink retarget, want pinned first target %q", persisted.RootFS, firstResolved)
 	}
 }
 
