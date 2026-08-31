@@ -134,9 +134,10 @@ func (s *Store) ensureImageAliasRootFSConsistentUnlocked(img *Image, key string)
 }
 
 // ensureImageIdentityNamespaceUnambiguousUnlocked prevents SaveImage from
-// publishing a record that would make an exact selector authoritative for two
-// different image identities. Exact Name/Tag and exact ID may overlap only when
-// they identify the same image ID; aliases for that same ID remain valid.
+// publishing a record that would make one exact selector mean both a Name/Tag
+// and an ID across distinct metadata records. A single record may still have
+// Name == ID; cross-record overlap is rejected because the resolver treats it
+// as ambiguous even when both records carry the same image ID.
 func (s *Store) ensureImageIdentityNamespaceUnambiguousUnlocked(img *Image, key string) error {
 	images, err := s.listImagesUnlocked()
 	if err != nil {
@@ -152,10 +153,10 @@ func (s *Store) ensureImageIdentityNamespaceUnambiguousUnlocked(img *Image, key 
 		if existingKey == key {
 			continue
 		}
-		if img.Name != "" && img.Name == existing.ID && img.ID != existing.ID {
+		if img.Name != "" && img.Name == existing.ID {
 			return fmt.Errorf("image name %q collides with exact ID of %q", img.Name, existingKey)
 		}
-		if img.ID != "" && img.ID == existing.Name && img.ID != existing.ID {
+		if img.ID != "" && img.ID == existing.Name {
 			return fmt.Errorf("image ID %q collides with exact name of %q", img.ID, existingKey)
 		}
 	}
