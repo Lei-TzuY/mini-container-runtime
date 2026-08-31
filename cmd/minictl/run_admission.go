@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"minicontainer/internal/container"
@@ -29,6 +30,9 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	}
 	if cfg.ContainerID != "" {
 		return nil, nil, fmt.Errorf("run config already has container ID %q", cfg.ContainerID)
+	}
+	if err := validateRunAdmissionRootFS(cfg.RootFS); err != nil {
+		return nil, nil, err
 	}
 	if deps.openStore == nil || deps.newID == nil || deps.now == nil {
 		return nil, nil, fmt.Errorf("run admission dependencies are incomplete")
@@ -70,4 +74,18 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	// even if a filesystem entry happened to become visible before that error.
 	cfg.ContainerID = id
 	return st, rec, nil
+}
+
+func validateRunAdmissionRootFS(rootfs string) error {
+	if rootfs == "" {
+		return fmt.Errorf("run config rootfs is empty")
+	}
+	info, err := os.Stat(rootfs)
+	if err != nil {
+		return fmt.Errorf("stat run rootfs %q: %w", rootfs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("run rootfs %q is not a directory", rootfs)
+	}
+	return nil
 }
