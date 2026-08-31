@@ -4,6 +4,7 @@ package container
 
 import (
 	"fmt"
+	"os"
 
 	"minicontainer/internal/dns"
 	"minicontainer/internal/events"
@@ -27,6 +28,23 @@ func defaultNetworkAdmissionDeps() networkAdmissionDeps {
 		registerDNSHost:   dns.RegisterHost,
 		unregisterDNSHost: dns.UnregisterHostOwned,
 	}
+}
+
+func validateAdmittedRootFSIdentity(cfg Config) error {
+	if cfg.RootFSIdentity == nil {
+		return nil
+	}
+	current, err := os.Stat(cfg.RootFS)
+	if err != nil {
+		return &runtimeSetupError{err: fmt.Errorf("revalidate admitted rootfs %q: %w", cfg.RootFS, err)}
+	}
+	if !current.IsDir() {
+		return &runtimeSetupError{err: fmt.Errorf("revalidate admitted rootfs %q: no longer a directory", cfg.RootFS)}
+	}
+	if !os.SameFile(cfg.RootFSIdentity, current) {
+		return &runtimeSetupError{err: fmt.Errorf("revalidate admitted rootfs %q: filesystem identity changed before runtime attempt", cfg.RootFS)}
+	}
+	return nil
 }
 
 // requireDurableNetworkOwnership preserves the narrow validation API used by
@@ -85,6 +103,9 @@ func rollbackNetworkAdmissionAfterRun(lifecycleStore *state.Store, containerID s
 // consumed once durable state proves the attempt is not running. A matching CLI
 // pre-stage is an idempotent handoff rather than a second lifecycle authority.
 func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func() error, error) {
+	if err := validateAdmittedRootFSIdentity(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.ContainerID == "" {
 		return beginNetworkAttemptAdmissionWith(cfg, lifecycleStore, defaultNetworkAdmissionDeps())
 	}
