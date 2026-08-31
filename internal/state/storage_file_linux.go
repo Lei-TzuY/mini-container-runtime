@@ -9,6 +9,25 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// inspectRegularStateFD validates the inode already pinned by fd. A link count
+// of zero is valid: atomic replacement can detach an inode from the namespace
+// after open(2), while the descriptor still safely refers to that immutable
+// generation. More than one link is rejected because another pathname could
+// alias the same authoritative state inode.
+func inspectRegularStateFD(fd int, path, label string) (unix.Stat_t, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return st, fmt.Errorf("inspect %s %q: %w", label, path, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return st, fmt.Errorf("%s %q must be a regular file", label, path)
+	}
+	if st.Nlink > 1 {
+		return st, fmt.Errorf("%s %q must not have hard-link aliases", label, path)
+	}
+	return st, nil
+}
+
 // readRegularStateFile opens the state file without following a final symlink,
 // then validates and tightens permissions on the already-open descriptor. This
 // avoids the Lstat/open TOCTOU window where a pathname could be swapped to a
@@ -25,15 +44,9 @@ func readRegularStateFile(path, label string) ([]byte, error) {
 	}
 	defer file.Close()
 
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return nil, fmt.Errorf("inspect %s %q: %w", label, path, err)
-	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return nil, fmt.Errorf("%s %q must be a regular file", label, path)
-	}
-	if st.Nlink != 1 {
-		return nil, fmt.Errorf("%s %q must be single-linked", label, path)
+	st, err := inspectRegularStateFD(fd, path, label)
+	if err != nil {
+		return nil, err
 	}
 	if err := unix.Fchmod(fd, 0o600); err != nil {
 		return nil, fmt.Errorf("secure %s permissions: %w", label, err)
