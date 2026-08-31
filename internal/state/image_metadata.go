@@ -107,60 +107,41 @@ func imageMetadataOwnedBy(path, key string) (bool, error) {
 	return storedKey == key, nil
 }
 
-func (s *Store) ensureImageAliasRootFSConsistentUnlocked(img *Image, key string) error {
-	if img.ID == "" {
-		return nil
-	}
-	images, err := s.listImagesUnlocked()
-	if err != nil {
-		return fmt.Errorf("inspect existing image aliases: %w", err)
-	}
+// validateImagePublicationAgainstRegistry checks every registry-wide invariant
+// against one authoritative snapshot. Keeping the checks in one pass prevents
+// SaveImage from re-reading the image directory between related decisions and
+// ensures all publication constraints are evaluated against the same generation.
+func validateImagePublicationAgainstRegistry(images []*Image, img *Image, key string) error {
 	for _, existing := range images {
 		existingKey, err := imageStorageKey(existing)
 		if err != nil {
-			return fmt.Errorf("inspect existing image alias: %w", err)
+			return fmt.Errorf("inspect existing image metadata: %w", err)
 		}
-		// Replacing the metadata record for the same logical key is allowed; the
-		// prospective value is img. Other aliases sharing its ID must continue to
-		// resolve to the same rootfs.
-		if existingKey == key || existing.ID != img.ID {
-			continue
-		}
-		if existing.RootFS != img.RootFS {
-			return fmt.Errorf("image ID %s already references rootfs %q via %q, cannot publish alias %q with rootfs %q", img.ID, existing.RootFS, existingKey, key, img.RootFS)
-		}
-	}
-	return nil
-}
-
-// ensureImageIdentityNamespaceUnambiguousUnlocked prevents SaveImage from
-// publishing a record that would make one exact selector mean both a Name/Tag
-// and an ID across distinct metadata records. A single record may still have
-// Name == ID; cross-record overlap is rejected because the resolver treats it
-// as ambiguous even when both records carry the same image ID.
-func (s *Store) ensureImageIdentityNamespaceUnambiguousUnlocked(img *Image, key string) error {
-	images, err := s.listImagesUnlocked()
-	if err != nil {
-		return fmt.Errorf("inspect existing image identities: %w", err)
-	}
-	for _, existing := range images {
-		existingKey, err := imageStorageKey(existing)
-		if err != nil {
-			return fmt.Errorf("inspect existing image identity: %w", err)
-		}
-		// The existing record for this logical key will be replaced by img and
-		// therefore must not conflict with its own prospective identity.
+		// The existing record for this logical key is replaced by img, so only
+		// other records participate in cross-record invariants.
 		if existingKey == key {
 			continue
 		}
+
 		if img.Name != "" && img.Name == existing.ID {
 			return fmt.Errorf("image name %q collides with exact ID of %q", img.Name, existingKey)
 		}
 		if img.ID != "" && img.ID == existing.Name {
 			return fmt.Errorf("image ID %q collides with exact name of %q", img.ID, existingKey)
 		}
+		if img.ID != "" && existing.ID == img.ID && existing.RootFS != img.RootFS {
+			return fmt.Errorf("image ID %s already references rootfs %q via %q, cannot publish alias %q with rootfs %q", img.ID, existing.RootFS, existingKey, key, img.RootFS)
+		}
 	}
 	return nil
+}
+
+func (s *Store) ensureImageRegistryConsistentUnlocked(img *Image, key string) error {
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return fmt.Errorf("inspect existing image registry: %w", err)
+	}
+	return validateImagePublicationAgainstRegistry(images, img, key)
 }
 
 // saveImageMetadataUnlocked writes the new collision-resistant metadata first,
@@ -179,11 +160,8 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	if err := s.ensureImageNotPendingCleanupUnlocked(img); err != nil {
 		return fmt.Errorf("refuse image metadata publication during pending cleanup: %w", err)
 	}
-	if err := s.ensureImageIdentityNamespaceUnambiguousUnlocked(img, key); err != nil {
-		return fmt.Errorf("refuse ambiguous image identity publication: %w", err)
-	}
-	if err := s.ensureImageAliasRootFSConsistentUnlocked(img, key); err != nil {
-		return fmt.Errorf("refuse inconsistent image alias publication: %w", err)
+	if err := s.ensureImageRegistryConsistentUnlocked(img, key); err != nil {
+		return fmt.Errorf("refuse inconsistent image registry publication: %w", err)
 	}
 	newPath := filepath.Join(s.imgDir, imageMetadataFilename(key))
 	legacyPath, legacyPathUsable := legacyImageMetadataPath(s.imgDir, key)
