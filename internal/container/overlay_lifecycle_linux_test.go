@@ -49,6 +49,44 @@ func TestCreateParentOverlayWorkDirRejectsNilAndEmptyAllocator(t *testing.T) {
 	}
 }
 
+func TestClearRuntimeControlEnvironmentRemovesAmbientNamespaceOnly(t *testing.T) {
+	for key, value := range map[string]string{
+		sentinelEnvKey:                  "1",
+		execSentinelKey:                 "1",
+		execStartTimeKey:                "123",
+		overlayWorkDirEnv:               "/tmp/owned",
+		"MINICONTAINER_DEBUG":          "1",
+		"MINICONTAINER_FUTURE_CONTROL": "secret",
+	} {
+		t.Setenv(key, value)
+	}
+	t.Setenv("MINI_CONTAINER_USER_VALUE", "keep")
+	t.Setenv("PATH", "/bin:/usr/bin")
+
+	if err := clearRuntimeControlEnvironment(); err != nil {
+		t.Fatalf("clearRuntimeControlEnvironment: %v", err)
+	}
+
+	for _, key := range []string{
+		sentinelEnvKey,
+		execSentinelKey,
+		execStartTimeKey,
+		overlayWorkDirEnv,
+		"MINICONTAINER_DEBUG",
+		"MINICONTAINER_FUTURE_CONTROL",
+	} {
+		if _, ok := os.LookupEnv(key); ok {
+			t.Fatalf("runtime control environment %q survived isolation", key)
+		}
+	}
+	if got := os.Getenv("MINI_CONTAINER_USER_VALUE"); got != "keep" {
+		t.Fatalf("non-runtime environment changed: %q", got)
+	}
+	if got := os.Getenv("PATH"); got != "/bin:/usr/bin" {
+		t.Fatalf("ordinary PATH changed: %q", got)
+	}
+}
+
 func TestConsumeOverlayWorkDirAcceptsPrivateParentDirectoryAndClearsEnv(t *testing.T) {
 	base := t.TempDir()
 	dir, err := os.MkdirTemp(base, overlayWorkDirPrefix+"*")
@@ -59,6 +97,8 @@ func TestConsumeOverlayWorkDirAcceptsPrivateParentDirectoryAndClearsEnv(t *testi
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Setenv(overlayWorkDirEnv, dir)
+	t.Setenv(sentinelEnvKey, "1")
+	t.Setenv("MINICONTAINER_FUTURE_CONTROL", "ambient")
 
 	got, err := consumeOverlayWorkDir(true)
 	if err != nil {
@@ -67,13 +107,16 @@ func TestConsumeOverlayWorkDirAcceptsPrivateParentDirectoryAndClearsEnv(t *testi
 	if got != dir {
 		t.Fatalf("got workdir %q, want %q", got, dir)
 	}
-	if _, ok := os.LookupEnv(overlayWorkDirEnv); ok {
-		t.Fatal("runtime overlay environment leaked after consumption")
+	for _, key := range []string{overlayWorkDirEnv, sentinelEnvKey, "MINICONTAINER_FUTURE_CONTROL"} {
+		if _, ok := os.LookupEnv(key); ok {
+			t.Fatalf("runtime environment %q leaked after consumption", key)
+		}
 	}
 }
 
 func TestConsumeOverlayWorkDirDisabledStillClearsReservedEnv(t *testing.T) {
 	t.Setenv(overlayWorkDirEnv, "/forged/value")
+	t.Setenv(sentinelEnvKey, "1")
 	got, err := consumeOverlayWorkDir(false)
 	if err != nil {
 		t.Fatalf("disabled consume: %v", err)
@@ -81,8 +124,10 @@ func TestConsumeOverlayWorkDirDisabledStillClearsReservedEnv(t *testing.T) {
 	if got != "" {
 		t.Fatalf("disabled consume returned %q", got)
 	}
-	if _, ok := os.LookupEnv(overlayWorkDirEnv); ok {
-		t.Fatal("reserved overlay environment leaked for non-overlay payload")
+	for _, key := range []string{overlayWorkDirEnv, sentinelEnvKey} {
+		if _, ok := os.LookupEnv(key); ok {
+			t.Fatalf("reserved runtime environment %q leaked for non-overlay payload", key)
+		}
 	}
 }
 
