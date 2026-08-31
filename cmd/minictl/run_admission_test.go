@@ -198,6 +198,77 @@ func TestPrepareManagedRunStateRejectsNonDirectoryRootFSBeforeStateMutation(t *t
 	}
 }
 
+func TestPrepareManagedRunStateCanonicalizesRelativeRootFSAtCommit(t *testing.T) {
+	rootfs := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(rel, "ghost", "..")
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = original
+	opened, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+
+	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) { return opened, nil },
+		newID:     func() (string, error) { return runAdmissionTestID, nil },
+		now:       time.Now,
+	})
+	if err != nil {
+		t.Fatalf("prepareManagedRunStateWith relative rootfs: %v", err)
+	}
+	expected := filepath.Clean(rootfs)
+	if st != opened || rec == nil || cfg.RootFS != expected || rec.RootFS != expected {
+		t.Fatalf("store=%v cfg.RootFS=%q rec=%+v, want canonical rootfs %q", st, cfg.RootFS, rec, expected)
+	}
+	if !filepath.IsAbs(cfg.RootFS) {
+		t.Fatalf("committed rootfs %q is not absolute", cfg.RootFS)
+	}
+	persisted, err := opened.Get(runAdmissionTestID)
+	if err != nil {
+		t.Fatalf("Get persisted record: %v", err)
+	}
+	if persisted.RootFS != expected {
+		t.Fatalf("persisted rootfs=%q, want %q", persisted.RootFS, expected)
+	}
+}
+
+func TestPrepareManagedRunStateDoesNotPublishCanonicalRootFSOnFailure(t *testing.T) {
+	rootfs := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, rootfs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = rel
+	original := cfg.RootFS
+	cause := errors.New("state unavailable")
+
+	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) { return nil, cause },
+		newID:     func() (string, error) { return runAdmissionTestID, nil },
+		now:       time.Now,
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("error=%v, want open cause", err)
+	}
+	if st != nil || rec != nil || cfg.RootFS != original || cfg.ContainerID != "" {
+		t.Fatalf("store=%v rec=%v RootFS=%q ContainerID=%q, want config unchanged", st, rec, cfg.RootFS, cfg.ContainerID)
+	}
+}
+
 func TestPrepareManagedRunStateAcceptsRootFSSymlinkToDirectory(t *testing.T) {
 	target := t.TempDir()
 	link := filepath.Join(t.TempDir(), "rootfs-link")
@@ -220,8 +291,8 @@ func TestPrepareManagedRunStateAcceptsRootFSSymlinkToDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareManagedRunStateWith symlink rootfs: %v", err)
 	}
-	if st != opened || rec == nil || rec.RootFS != link || cfg.ContainerID != runAdmissionTestID {
-		t.Fatalf("store=%v rec=%+v ContainerID=%q", st, rec, cfg.ContainerID)
+	if st != opened || rec == nil || rec.RootFS != link || cfg.RootFS != link || cfg.ContainerID != runAdmissionTestID {
+		t.Fatalf("store=%v rec=%+v RootFS=%q ContainerID=%q", st, rec, cfg.RootFS, cfg.ContainerID)
 	}
 }
 
