@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,6 +132,41 @@ func appendEventUnlocked(evt Event) error {
 	return nil
 }
 
+// FormatEvent renders one lifecycle event for the human-facing CLI. Structured
+// fields are emitted as explicit key=value attributes so recently added exec
+// generation/outcome metadata is observable without parsing the append-only JSON
+// log directly. Command argv is JSON encoded to preserve argument boundaries.
+func FormatEvent(evt Event) string {
+	shortID := evt.ContainerID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s container %s %s", evt.Timestamp.Format(time.RFC3339), evt.Type, shortID)
+	if evt.ContainerPID > 0 {
+		fmt.Fprintf(&b, " pid=%d", evt.ContainerPID)
+	}
+	if evt.ContainerPIDStartTime != 0 {
+		fmt.Fprintf(&b, " pid_start=%d", evt.ContainerPIDStartTime)
+	}
+	if len(evt.Command) > 0 {
+		if command, err := json.Marshal(evt.Command); err == nil {
+			fmt.Fprintf(&b, " command=%s", command)
+		}
+	}
+	if evt.ExitCode != nil {
+		fmt.Fprintf(&b, " exit_code=%d", *evt.ExitCode)
+	}
+	if evt.Error != "" {
+		fmt.Fprintf(&b, " error=%s", strconv.Quote(evt.Error))
+	}
+	if evt.Message != "" {
+		fmt.Fprintf(&b, " (%s)", evt.Message)
+	}
+	return b.String()
+}
+
 // StreamEvents reads and outputs historical and real-time events to w.
 func StreamEvents(follow bool, w io.Writer) error {
 	logFile := LogPath()
@@ -155,12 +192,9 @@ func StreamEvents(follow bool, w io.Writer) error {
 			}
 			return fmt.Errorf("decode event log: %w", err)
 		}
-		shortID := evt.ContainerID
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
+		if _, err := fmt.Fprintln(w, FormatEvent(evt)); err != nil {
+			return fmt.Errorf("write event stream: %w", err)
 		}
-		fmt.Fprintf(w, "%s container %s %s (%s)\n",
-			evt.Timestamp.Format(time.RFC3339), evt.Type, shortID, evt.Message)
 	}
 	return nil
 }
