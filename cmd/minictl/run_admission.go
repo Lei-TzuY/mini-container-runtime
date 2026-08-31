@@ -96,5 +96,22 @@ func normalizeRunAdmissionRootFS(rootfs string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("run rootfs %q is not a directory", abs)
 	}
-	return abs, nil
+
+	// Persist and execute the resolved target rather than a symlink-bearing
+	// pathname. Otherwise a symlink retarget after durable admission could make
+	// the runtime execute a different filesystem tree than the one recorded in
+	// lifecycle state.
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve run rootfs symlinks %q: %w", abs, err)
+	}
+	resolved = filepath.Clean(resolved)
+	info, err = os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat resolved run rootfs %q: %w", resolved, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("resolved run rootfs %q is not a directory", resolved)
+	}
+	return resolved, nil
 }
