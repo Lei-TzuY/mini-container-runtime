@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSaveImageRejectsInvalidRootFSBeforePublication(t *testing.T) {
+func TestSaveImageRejectsInvalidNonEmptyRootFSBeforePublication(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -18,8 +18,7 @@ func TestSaveImageRejectsInvalidRootFSBeforePublication(t *testing.T) {
 		rootfs  string
 		wantErr string
 	}{
-		{name: "empty", rootfs: "", wantErr: "cannot be empty"},
-		{name: "whitespace", rootfs: "   ", wantErr: "cannot be empty"},
+		{name: "whitespace", rootfs: "   ", wantErr: "whitespace-only"},
 		{name: "relative", rootfs: "rootfs/image", wantErr: "must be absolute"},
 		{name: "dot segment", rootfs: "/srv/images/./rootfs", wantErr: "must be clean"},
 		{name: "parent segment", rootfs: "/srv/images/../rootfs", wantErr: "must be clean"},
@@ -39,6 +38,18 @@ func TestSaveImageRejectsInvalidRootFSBeforePublication(t *testing.T) {
 				t.Fatalf("invalid image metadata was published: stat err=%v", statErr)
 			}
 		})
+	}
+}
+
+func TestSaveImageAllowsEmptyRootFSSentinel(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	img := &Image{Name: "repo:metadata-only", ID: "id-metadata-only"}
+	if err := store.SaveImage(img); err != nil {
+		t.Fatalf("SaveImage metadata-only image: %v", err)
 	}
 }
 

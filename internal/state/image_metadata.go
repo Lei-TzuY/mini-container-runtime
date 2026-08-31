@@ -38,8 +38,11 @@ func imageStorageKey(img *Image) (string, error) {
 }
 
 func validateImageRootFS(rootfs string) error {
+	if rootfs == "" {
+		return nil
+	}
 	if strings.TrimSpace(rootfs) == "" {
-		return fmt.Errorf("image rootfs cannot be empty")
+		return fmt.Errorf("image rootfs cannot be whitespace-only")
 	}
 	if strings.IndexByte(rootfs, 0) >= 0 {
 		return fmt.Errorf("image rootfs contains NUL byte")
