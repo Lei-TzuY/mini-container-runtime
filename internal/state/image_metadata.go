@@ -10,6 +10,8 @@ import (
 	"reflect"
 )
 
+const maxLegacyImageMetadataFilenameBytes = 255
+
 func imageStorageKey(img *Image) (string, error) {
 	if img == nil {
 		return "", fmt.Errorf("image state is nil")
@@ -34,6 +36,23 @@ func imageMetadataFilename(key string) string {
 
 func legacyImageMetadataFilename(key string) string {
 	return sanitizeImageFilename(key) + ".json"
+}
+
+// legacyImageMetadataPath returns a legacy pathname only when its basename fits
+// the image-state filesystem's component limit. The current hash-keyed format
+// has a fixed-length basename, so an unrepresentable legacy alias must never
+// make an otherwise valid image unreadable or unwritable. If the limit cannot
+// be inspected safely, legacy probing is skipped rather than made authoritative.
+func legacyImageMetadataPath(dir, key string) (string, bool) {
+	limit, ok := imageMetadataComponentLimit(dir)
+	if !ok {
+		return "", false
+	}
+	name := legacyImageMetadataFilename(key)
+	if len(name) > limit {
+		return "", false
+	}
+	return filepath.Join(dir, name), true
 }
 
 func validateImageMetadataPath(path, key string) error {
@@ -81,7 +100,8 @@ func imageMetadataOwnedBy(path, key string) (bool, error) {
 // saveImageMetadataUnlocked writes the new collision-resistant metadata first,
 // then removes a historical sanitized-name file only if its contents prove it
 // belongs to the same logical image. A colliding legacy file for another image
-// is never removed.
+// is never removed. Overlong legacy aliases are skipped because they cannot be
+// represented safely as one filesystem component, while the current format can.
 func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	key, err := imageStorageKey(img)
 	if err != nil {
@@ -94,10 +114,10 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 		return fmt.Errorf("refuse image metadata publication during pending cleanup: %w", err)
 	}
 	newPath := filepath.Join(s.imgDir, imageMetadataFilename(key))
-	legacyPath := filepath.Join(s.imgDir, legacyImageMetadataFilename(key))
+	legacyPath, legacyPathUsable := legacyImageMetadataPath(s.imgDir, key)
 
 	migrateLegacy := false
-	if legacyPath != newPath {
+	if legacyPathUsable && legacyPath != newPath {
 		owned, err := imageMetadataOwnedBy(legacyPath, key)
 		if err != nil {
 			return fmt.Errorf("inspect legacy image metadata for %q: %w", key, err)
@@ -116,17 +136,18 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	return nil
 }
 
-// removeImageMetadataUnlocked removes both current and legacy metadata formats,
-// but only after verifying each existing file belongs to the selected logical
-// image. This prevents a sanitized-name collision from deleting another image.
+// removeImageMetadataUnlocked removes current metadata and any representable
+// legacy metadata, but only after verifying each existing file belongs to the
+// selected logical image. This prevents a sanitized-name collision from deleting
+// another image and avoids probing an overlong legacy pathname.
 func (s *Store) removeImageMetadataUnlocked(img *Image) error {
 	key, err := imageStorageKey(img)
 	if err != nil {
 		return err
 	}
-	paths := []string{
-		filepath.Join(s.imgDir, imageMetadataFilename(key)),
-		filepath.Join(s.imgDir, legacyImageMetadataFilename(key)),
+	paths := []string{filepath.Join(s.imgDir, imageMetadataFilename(key))}
+	if legacyPath, ok := legacyImageMetadataPath(s.imgDir, key); ok {
+		paths = append(paths, legacyPath)
 	}
 	seenPaths := make(map[string]bool, len(paths))
 	var errs []error
