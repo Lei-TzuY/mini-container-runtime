@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"minicontainer/internal/events"
 	"minicontainer/internal/state"
 	"golang.org/x/sys/unix"
 )
@@ -82,6 +83,12 @@ func Exec(cfg ExecConfig) error {
 	expectedStartTime, err := persistedExecStartTime(cfg.ContainerPID, cfg.RootFS)
 	if err != nil {
 		return err
+	}
+	// Bind observability to the same verified process generation that the exec
+	// bootstrap will enter. Direct/internal Exec callers without a staged CLI
+	// event remain unaffected because the binder is a no-op when nothing is staged.
+	if err := events.BindPendingExecAttribution(cfg.ContainerPID, expectedStartTime, cfg.Command); err != nil {
+		return fmt.Errorf("bind exec lifecycle attribution: %w", err)
 	}
 	if cfg.Debug {
 		fmt.Printf("[exec] entering namespaces of PID %d\n", cfg.ContainerPID)
