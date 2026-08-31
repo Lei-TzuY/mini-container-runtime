@@ -4,6 +4,8 @@
 
 package container
 
+import "os"
+
 // Volume describes one host directory bind-mounted into the container.
 type Volume struct {
 	HostPath      string // absolute path on the host
@@ -30,6 +32,11 @@ type Config struct {
 
 	// RootFS is the path to the directory that will become the container's root.
 	RootFS string
+
+	// RootFSIdentity is the parent-side filesystem object observed when a managed
+	// run was admitted. It is never propagated to the child; each runtime attempt
+	// uses it to fail closed if RootFS was replaced before process creation.
+	RootFSIdentity os.FileInfo
 
 	// Overlay enables OverlayFS CoW layer isolation.
 	Overlay bool
