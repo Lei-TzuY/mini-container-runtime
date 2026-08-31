@@ -1,6 +1,7 @@
 package imagestore
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,12 @@ func TestRemoveImageRejectsInconsistentAliasesBeforeMetadataDelete(t *testing.T)
 	if err := st.SaveImage(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveImage(second); err != nil {
+	data, err := json.MarshalIndent(second, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bypass SaveImage intentionally to model pre-hardening/corrupt metadata.
+	if err := os.WriteFile(filepath.Join(root, "images", "app_latest.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
