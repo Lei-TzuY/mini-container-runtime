@@ -22,6 +22,12 @@ type stagedExecEvent struct {
 var stagedExecs = make(map[string]stagedExecEvent)
 var activeExecs = make(map[string]stagedExecEvent)
 
+func HasPendingExec() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return len(stagedExecs) != 0
+}
+
 func stageExecEvent(containerID, image, message string) error {
 	if containerID == "" {
 		return fmt.Errorf("exec event container ID is empty")
