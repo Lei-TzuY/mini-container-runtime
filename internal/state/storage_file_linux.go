@@ -11,7 +11,7 @@ import (
 
 // inspectRegularStateFD validates the inode already pinned by fd. A link count
 // of zero is valid: atomic replacement can detach an inode from the namespace
-// after open(2), while the descriptor still safely refers to that immutable
+// after open(2), while the descriptor still safely refers to that pinned state
 // generation. More than one link is rejected because another pathname could
 // alias the same authoritative state inode.
 func inspectRegularStateFD(fd int, path, label string) (unix.Stat_t, error) {
@@ -23,7 +23,7 @@ func inspectRegularStateFD(fd int, path, label string) (unix.Stat_t, error) {
 		return st, fmt.Errorf("%s %q must be a regular file", label, path)
 	}
 	if st.Nlink > 1 {
-		return st, fmt.Errorf("%s %q must not have hard-link aliases", label, path)
+		return st, fmt.Errorf("%s %q must be single-linked; hard-link aliases detected", label, path)
 	}
 	return st, nil
 }
