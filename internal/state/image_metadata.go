@@ -39,12 +39,17 @@ func legacyImageMetadataFilename(key string) string {
 }
 
 // legacyImageMetadataPath returns a legacy pathname only when its basename fits
-// the portable 255-byte component ceiling used by the historical format. The
-// current hash-keyed format has a fixed-length basename, so an overlong legacy
-// alias must never make an otherwise valid image unreadable or unwritable.
+// the image-state filesystem's component limit. The current hash-keyed format
+// has a fixed-length basename, so an unrepresentable legacy alias must never
+// make an otherwise valid image unreadable or unwritable. If the limit cannot
+// be inspected safely, legacy probing is skipped rather than made authoritative.
 func legacyImageMetadataPath(dir, key string) (string, bool) {
+	limit, ok := imageMetadataComponentLimit(dir)
+	if !ok {
+		return "", false
+	}
 	name := legacyImageMetadataFilename(key)
-	if len(name) > maxLegacyImageMetadataFilenameBytes {
+	if len(name) > limit {
 		return "", false
 	}
 	return filepath.Join(dir, name), true
