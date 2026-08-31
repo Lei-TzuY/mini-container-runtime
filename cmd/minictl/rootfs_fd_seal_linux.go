@@ -15,6 +15,10 @@ func init() {
 	if os.Getenv("MINICONTAINER_INIT") != "1" {
 		return
 	}
+	if err := sealInheritedFDsForPayload(); err != nil {
+		fmt.Fprintf(os.Stderr, "container init: seal inherited fds: %v\n", err)
+		os.Exit(1)
+	}
 	rawFD, ok := os.LookupEnv(pinnedRootFSEnvKey)
 	if !ok {
 		return
