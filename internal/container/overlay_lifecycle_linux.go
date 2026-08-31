@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	overlayWorkDirEnv    = "MINICONTAINER_OVERLAY_WORKDIR"
-	overlayWorkDirPrefix = "minicontainer-overlay-"
+	overlayWorkDirEnv       = "MINICONTAINER_OVERLAY_WORKDIR"
+	overlayWorkDirPrefix    = "minicontainer-overlay-"
+	runtimeControlEnvPrefix = "MINICONTAINER_"
 )
 
 type overlayMkdirTemp func(dir, pattern string) (string, error)
@@ -49,14 +50,32 @@ func appendOverlayWorkDirEnv(env []string, dir string) []string {
 	return append(env, overlayWorkDirEnv+"="+dir)
 }
 
-// consumeOverlayWorkDir reads and clears the parent-issued overlay path. The
-// path is validated before PrepareOverlay can create children beneath it, so a
-// forged environment value cannot redirect overlay setup into an arbitrary
+// clearRuntimeControlEnvironment removes ambient bootstrap/control variables
+// inherited by the runtime re-exec. Explicit container environment entries are
+// carried in Config.Env and appended only when the payload environment is built,
+// so this does not strip user-requested payload variables.
+func clearRuntimeControlEnvironment() error {
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasPrefix(key, runtimeControlEnvPrefix) {
+			continue
+		}
+		if err := os.Unsetenv(key); err != nil {
+			return fmt.Errorf("clear runtime control environment %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// consumeOverlayWorkDir reads the parent-issued overlay path and then clears
+// every ambient MINICONTAINER_* control variable before payload setup proceeds.
+// The path is validated before PrepareOverlay can create children beneath it,
+// so a forged environment value cannot redirect overlay setup into an arbitrary
 // host directory.
 func consumeOverlayWorkDir(enabled bool) (string, error) {
 	dir := os.Getenv(overlayWorkDirEnv)
-	if err := os.Unsetenv(overlayWorkDirEnv); err != nil {
-		return "", fmt.Errorf("clear runtime overlay workdir environment: %w", err)
+	if err := clearRuntimeControlEnvironment(); err != nil {
+		return "", err
 	}
 	if !enabled {
 		return "", nil
