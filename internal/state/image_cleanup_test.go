@@ -123,9 +123,7 @@ func TestDeleteImageIfMatchWithCleanupRejectsSameIDDifferentRootFS(t *testing.T)
 	if err := st.SaveImage(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveImage(second); err != nil {
-		t.Fatal(err)
-	}
+	writeCurrentImageMetadata(t, st, second)
 	expected, err := st.GetImage(first.Name)
 	if err != nil {
 		t.Fatal(err)
