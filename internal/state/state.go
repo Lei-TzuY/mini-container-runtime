@@ -47,7 +47,10 @@ const (
 	StatusStopped Status = "stopped"
 )
 
-const maxContainerIDBytes = 240
+const (
+	maxContainerIDBytes  = 240
+	maxImageIdentityBytes = 4096
+)
 
 // Container holds persisted metadata for one container.
 type Container struct {
@@ -182,6 +185,9 @@ func validateID(id string) error {
 func validateImageSelector(nameOrID string) error {
 	if strings.TrimSpace(nameOrID) == "" {
 		return fmt.Errorf("image name or ID cannot be empty")
+	}
+	if len(nameOrID) > maxImageIdentityBytes {
+		return fmt.Errorf("image name or ID exceeds %d bytes", maxImageIdentityBytes)
 	}
 	return nil
 }
