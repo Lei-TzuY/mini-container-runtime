@@ -21,5 +21,12 @@ func prepareExecThreadWith(unshare unshareCall) error {
 	if err := unshare(unix.CLONE_FS); err != nil {
 		return fmt.Errorf("unshare CLONE_FS before namespace entry: %w", err)
 	}
+	// ExecInit has consumed every runtime-owned handoff value before reaching
+	// this point. Drop the entire reserved control namespace now so future
+	// MINICONTAINER_* bootstrap keys cannot silently cross into exec payloads.
+	// Explicit workload environment is not sourced from this ambient namespace.
+	if err := clearRuntimeControlEnvironment(); err != nil {
+		return fmt.Errorf("isolate exec runtime control environment: %w", err)
+	}
 	return nil
 }
