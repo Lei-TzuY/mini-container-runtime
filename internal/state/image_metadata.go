@@ -107,6 +107,32 @@ func imageMetadataOwnedBy(path, key string) (bool, error) {
 	return storedKey == key, nil
 }
 
+func (s *Store) ensureImageAliasRootFSConsistentUnlocked(img *Image, key string) error {
+	if img.ID == "" {
+		return nil
+	}
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return fmt.Errorf("inspect existing image aliases: %w", err)
+	}
+	for _, existing := range images {
+		existingKey, err := imageStorageKey(existing)
+		if err != nil {
+			return fmt.Errorf("inspect existing image alias: %w", err)
+		}
+		// Replacing the metadata record for the same logical key is allowed; the
+		// prospective value is img. Other aliases sharing its ID must continue to
+		// resolve to the same rootfs.
+		if existingKey == key || existing.ID != img.ID {
+			continue
+		}
+		if existing.RootFS != img.RootFS {
+			return fmt.Errorf("image ID %s already references rootfs %q via %q, cannot publish alias %q with rootfs %q", img.ID, existing.RootFS, existingKey, key, img.RootFS)
+		}
+	}
+	return nil
+}
+
 // saveImageMetadataUnlocked writes the new collision-resistant metadata first,
 // then removes a historical sanitized-name file only if its contents prove it
 // belongs to the same logical image. A colliding legacy file for another image
@@ -122,6 +148,9 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	}
 	if err := s.ensureImageNotPendingCleanupUnlocked(img); err != nil {
 		return fmt.Errorf("refuse image metadata publication during pending cleanup: %w", err)
+	}
+	if err := s.ensureImageAliasRootFSConsistentUnlocked(img, key); err != nil {
+		return fmt.Errorf("refuse inconsistent image alias publication: %w", err)
 	}
 	newPath := filepath.Join(s.imgDir, imageMetadataFilename(key))
 	legacyPath, legacyPathUsable := legacyImageMetadataPath(s.imgDir, key)
