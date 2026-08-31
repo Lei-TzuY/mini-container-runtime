@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 )
+
+const pinnedRootFSEnvKey = "MINICONTAINER_ROOTFS_FD"
 
 // startContainerProcess is the last parent-side admission gate before the
 // kernel creates a child process. Managed runs revalidate the filesystem object
@@ -16,7 +19,9 @@ import (
 // For managed runs, the admitted RootFS is also opened as a directory and
 // inherited by the child. The child receives /proc/self/fd/N as its rootfs
 // argument, so pathname replacement after process creation cannot redirect
-// child-side rootfs setup to a different filesystem object.
+// child-side rootfs setup to a different filesystem object. The inherited FD is
+// identified to the runtime bootstrap so it can be sealed close-on-exec before
+// the final payload exec rather than leaking a host-side directory capability.
 func startContainerProcess(cfg Config, cmd *exec.Cmd) error {
 	if err := validateAdmittedRootFSIdentity(cfg); err != nil {
 		return err
@@ -53,5 +58,9 @@ func startContainerProcess(cfg Config, cmd *exec.Cmd) error {
 	childFD := 3 + len(cmd.ExtraFiles)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, rootfsHandle)
 	cmd.Args[rootArgIndex] = fmt.Sprintf("/proc/self/fd/%d", childFD)
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, pinnedRootFSEnvKey+"="+strconv.Itoa(childFD))
 	return cmd.Start()
 }
