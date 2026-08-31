@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 const maxLegacyImageMetadataFilenameBytes = 255
@@ -34,6 +35,25 @@ func imageStorageKey(img *Image) (string, error) {
 		return "", err
 	}
 	return key, nil
+}
+
+func validateImageRootFS(rootfs string) error {
+	if rootfs == "" {
+		return nil
+	}
+	if strings.TrimSpace(rootfs) == "" {
+		return fmt.Errorf("image rootfs cannot be whitespace-only")
+	}
+	if strings.IndexByte(rootfs, 0) >= 0 {
+		return fmt.Errorf("image rootfs contains NUL byte")
+	}
+	if !filepath.IsAbs(rootfs) {
+		return fmt.Errorf("image rootfs %q must be absolute", rootfs)
+	}
+	if clean := filepath.Clean(rootfs); clean != rootfs {
+		return fmt.Errorf("image rootfs %q must be clean (canonical lexical path %q)", rootfs, clean)
+	}
+	return nil
 }
 
 func imageMetadataFilename(key string) string {
@@ -137,6 +157,9 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	key, err := imageStorageKey(img)
 	if err != nil {
 		return err
+	}
+	if err := validateImageRootFS(img.RootFS); err != nil {
+		return fmt.Errorf("refuse invalid image rootfs publication: %w", err)
 	}
 	if err := validateStateFileWrite(data, "image state"); err != nil {
 		return err
