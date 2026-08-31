@@ -46,6 +46,43 @@ func TestExecEventIsStagedUntilPayloadStartCommit(t *testing.T) {
 	}
 }
 
+func TestCommitPendingExecRetainsStagedAttributionWhenDurableAppendFails(t *testing.T) {
+	resetExecStagingForTest(t)
+	t.Setenv("HOME", t.TempDir())
+
+	if err := Publish(EventExec, "ctr-retry", "rootfs", "exec [true]"); err != nil {
+		t.Fatal(err)
+	}
+	// Block the append path after staging. Opening a directory as events.log is
+	// reliably invalid even for privileged test runners, unlike chmod-based
+	// permission failures.
+	if err := os.Mkdir(LogPath(), 0o700); err != nil {
+		t.Fatalf("block event log path: %v", err)
+	}
+	if err := CommitPendingExec(); err == nil {
+		t.Fatal("commit unexpectedly succeeded with events.log as a directory")
+	}
+
+	mu.Lock()
+	_, stillStaged := stagedExecs["ctr-retry"]
+	_, becameActive := activeExecs["ctr-retry"]
+	mu.Unlock()
+	if !stillStaged || becameActive {
+		t.Fatalf("append failure changed attribution: staged=%v active=%v", stillStaged, becameActive)
+	}
+
+	if err := os.Remove(LogPath()); err != nil {
+		t.Fatalf("remove append blocker: %v", err)
+	}
+	if err := CommitPendingExec(); err != nil {
+		t.Fatalf("retry durable exec commit: %v", err)
+	}
+	got := readLifecycleEventsForTest(t)
+	if len(got) != 1 || got[0].Type != EventExec || got[0].ContainerID != "ctr-retry" {
+		t.Fatalf("events after retry=%+v, want one durable exec start", got)
+	}
+}
+
 func TestCompletePendingExecRecordsExactlyOneTerminalOutcome(t *testing.T) {
 	resetExecStagingForTest(t)
 	t.Setenv("HOME", t.TempDir())
