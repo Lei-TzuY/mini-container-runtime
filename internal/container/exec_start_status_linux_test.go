@@ -5,6 +5,7 @@ package container
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +13,28 @@ import (
 
 	"minicontainer/internal/events"
 )
+
+func readAllExecEvents(t *testing.T) []events.Event {
+	t.Helper()
+	f, err := os.Open(events.LogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	var out []events.Event
+	for {
+		var evt events.Event
+		if err := dec.Decode(&evt); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatal(err)
+		}
+		out = append(out, evt)
+	}
+	return out
+}
 
 func TestRunExecPayloadSignalsAfterSuccessfulStartEvenOnNonzeroExit(t *testing.T) {
 	readPipe, writePipe, err := os.Pipe()
@@ -58,7 +81,7 @@ func TestRunExecPayloadDoesNotSignalWhenStartFails(t *testing.T) {
 	}
 }
 
-func TestRunExecInitCommandCommitsExecBeforeNonzeroCompletion(t *testing.T) {
+func TestRunExecInitCommandRecordsStartAndNonzeroCompletion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	const containerID = "exec-proof-nonzero"
 	if err := events.Publish(events.EventExec, containerID, "rootfs", "exec [sh]"); err != nil {
@@ -74,23 +97,22 @@ func TestRunExecInitCommandCommitsExecBeforeNonzeroCompletion(t *testing.T) {
 		t.Fatalf("exec-init exit=%v, want code 29", err)
 	}
 
-	f, err := os.Open(events.LogPath())
-	if err != nil {
-		t.Fatal(err)
+	got := readAllExecEvents(t)
+	if len(got) != 2 {
+		t.Fatalf("events=%+v, want start and terminal outcome", got)
 	}
-	defer f.Close()
-	var evt events.Event
-	if err := json.NewDecoder(f).Decode(&evt); err != nil {
-		t.Fatal(err)
+	if got[0].Type != events.EventExec || got[0].ContainerID != containerID {
+		t.Fatalf("start event=%+v", got[0])
 	}
-	if evt.Type != events.EventExec || evt.ContainerID != containerID {
-		t.Fatalf("event=%+v, want committed exec", evt)
+	if got[1].Type != events.EventExecExit || got[1].ContainerID != containerID || !strings.Contains(got[1].Message, "exit_code=29") {
+		t.Fatalf("terminal event=%+v", got[1])
 	}
 }
 
-func TestRunExecInitCommandDiscardsExecWhenProofMissing(t *testing.T) {
+func TestRunExecInitCommandRecordsFailureWhenProofMissing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := events.Publish(events.EventExec, "exec-proof-missing", "rootfs", "exec [failed]"); err != nil {
+	const containerID = "exec-proof-missing"
+	if err := events.Publish(events.EventExec, containerID, "rootfs", "exec [failed]"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,8 +122,12 @@ func TestRunExecInitCommandDiscardsExecWhenProofMissing(t *testing.T) {
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 31 {
 		t.Fatalf("exec-init exit=%v, want code 31", err)
 	}
-	if _, err := os.Stat(events.LogPath()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing payload-start proof wrote exec event: err=%v", err)
+	got := readAllExecEvents(t)
+	if len(got) != 1 || got[0].Type != events.EventExecFailed || got[0].ContainerID != containerID {
+		t.Fatalf("events=%+v, want one exec_failed and no started event", got)
+	}
+	if !strings.Contains(got[0].Message, "payload start") {
+		t.Fatalf("failure cause missing: %+v", got[0])
 	}
 }
 
