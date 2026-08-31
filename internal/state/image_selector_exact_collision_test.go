@@ -1,16 +1,36 @@
 package state
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func injectExactSelectorCollisionState(t *testing.T, store *Store, images ...*Image) {
+	t.Helper()
+	for _, img := range images {
+		key, err := imageStorageKey(img)
+		if err != nil {
+			t.Fatalf("imageStorageKey(%+v): %v", img, err)
+		}
+		data, err := json.MarshalIndent(img, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal image %+v: %v", img, err)
+		}
+		path := filepath.Join(store.imgDir, imageMetadataFilename(key))
+		if err := atomicWriteFile(store.imgDir, path, data); err != nil {
+			t.Fatalf("inject image state %+v: %v", img, err)
+		}
+	}
+}
 
 func TestGetImageRejectsExactNameExactIDCollision(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	saveSelectorImages(t, store,
+	injectExactSelectorCollisionState(t, store,
 		&Image{ID: "111111111111", Name: "deadbeef", RootFS: "/named"},
 		&Image{ID: "deadbeef", Name: "other:latest", RootFS: "/id"},
 	)
@@ -35,7 +55,7 @@ func TestDeleteImageRejectsExactNameExactIDCollisionWithoutDeleting(t *testing.T
 	}
 	named := &Image{ID: "111111111111", Name: "deadbeef", RootFS: "/named"}
 	byID := &Image{ID: "deadbeef", Name: "other:latest", RootFS: "/id"}
-	saveSelectorImages(t, store, named, byID)
+	injectExactSelectorCollisionState(t, store, named, byID)
 
 	if _, err := store.DeleteImage("deadbeef"); err == nil || !strings.Contains(err.Error(), "both an image name/tag and an exact image ID") {
 		t.Fatalf("DeleteImage exact namespace collision error=%v", err)
@@ -64,7 +84,9 @@ func TestExactNameMayEqualItsOwnExactID(t *testing.T) {
 		t.Fatal(err)
 	}
 	img := &Image{ID: "same", Name: "same", RootFS: "/same"}
-	saveSelectorImages(t, store, img)
+	if err := store.SaveImage(img); err != nil {
+		t.Fatalf("SaveImage self-overlap: %v", err)
+	}
 
 	got, err := store.GetImage("same")
 	if err != nil {

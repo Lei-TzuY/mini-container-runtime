@@ -133,6 +133,36 @@ func (s *Store) ensureImageAliasRootFSConsistentUnlocked(img *Image, key string)
 	return nil
 }
 
+// ensureImageIdentityNamespaceUnambiguousUnlocked prevents SaveImage from
+// publishing a record that would make one exact selector mean both a Name/Tag
+// and an ID across distinct metadata records. A single record may still have
+// Name == ID; cross-record overlap is rejected because the resolver treats it
+// as ambiguous even when both records carry the same image ID.
+func (s *Store) ensureImageIdentityNamespaceUnambiguousUnlocked(img *Image, key string) error {
+	images, err := s.listImagesUnlocked()
+	if err != nil {
+		return fmt.Errorf("inspect existing image identities: %w", err)
+	}
+	for _, existing := range images {
+		existingKey, err := imageStorageKey(existing)
+		if err != nil {
+			return fmt.Errorf("inspect existing image identity: %w", err)
+		}
+		// The existing record for this logical key will be replaced by img and
+		// therefore must not conflict with its own prospective identity.
+		if existingKey == key {
+			continue
+		}
+		if img.Name != "" && img.Name == existing.ID {
+			return fmt.Errorf("image name %q collides with exact ID of %q", img.Name, existingKey)
+		}
+		if img.ID != "" && img.ID == existing.Name {
+			return fmt.Errorf("image ID %q collides with exact name of %q", img.ID, existingKey)
+		}
+	}
+	return nil
+}
+
 // saveImageMetadataUnlocked writes the new collision-resistant metadata first,
 // then removes a historical sanitized-name file only if its contents prove it
 // belongs to the same logical image. A colliding legacy file for another image
@@ -148,6 +178,9 @@ func (s *Store) saveImageMetadataUnlocked(img *Image, data []byte) error {
 	}
 	if err := s.ensureImageNotPendingCleanupUnlocked(img); err != nil {
 		return fmt.Errorf("refuse image metadata publication during pending cleanup: %w", err)
+	}
+	if err := s.ensureImageIdentityNamespaceUnambiguousUnlocked(img, key); err != nil {
+		return fmt.Errorf("refuse ambiguous image identity publication: %w", err)
 	}
 	if err := s.ensureImageAliasRootFSConsistentUnlocked(img, key); err != nil {
 		return fmt.Errorf("refuse inconsistent image alias publication: %w", err)
