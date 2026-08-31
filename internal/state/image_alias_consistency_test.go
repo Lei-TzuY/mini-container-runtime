@@ -14,9 +14,7 @@ func TestGetImageRejectsAliasesWithDifferentRootFS(t *testing.T) {
 	if err := store.SaveImage(&Image{ID: id, Name: "app:v1", RootFS: "/root-one"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveImage(&Image{ID: id, Name: "app:latest", RootFS: "/root-two"}); err != nil {
-		t.Fatal(err)
-	}
+	writeCurrentImageMetadata(t, store, &Image{ID: id, Name: "app:latest", RootFS: "/root-two"})
 
 	for _, selector := range []string{id, "fedcba"} {
 		if _, err := store.GetImage(selector); err == nil || !strings.Contains(err.Error(), "different rootfs") {
