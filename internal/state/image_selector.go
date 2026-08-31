@@ -19,7 +19,6 @@ func collectImageSelectorMatches(images []*Image, selector string) imageSelector
 		}
 		if img.Name == selector || (img.Repository+":"+img.Tag) == selector {
 			matches.named = append(matches.named, img)
-			continue
 		}
 		if img.ID == selector {
 			matches.exactID = append(matches.exactID, img)
@@ -91,10 +90,27 @@ func resolveAliasSetForDelete(id string, aliases []*Image) (*Image, error) {
 	return aliases[0], nil
 }
 
+func hasNamedExactIDCollision(matches imageSelectorMatches) bool {
+	if len(matches.named) == 0 || len(matches.exactID) == 0 {
+		return false
+	}
+	for _, named := range matches.named {
+		for _, exact := range matches.exactID {
+			if named != exact {
+				return true
+			}
+	}
+	}
+	return false
+}
+
 func resolveImageForRead(images []*Image, selector string) (*Image, error) {
 	matches := collectImageSelectorMatches(images, selector)
 	if len(matches.named) > 1 {
 		return nil, fmt.Errorf("ambiguous image selector %q matched multiple named images", selector)
+	}
+	if hasNamedExactIDCollision(matches) {
+		return nil, fmt.Errorf("ambiguous image selector %q matched both an image name/tag and an exact image ID", selector)
 	}
 	if len(matches.named) == 1 {
 		return matches.named[0], nil
@@ -123,6 +139,9 @@ func resolveImageForDelete(images []*Image, selector string) (*Image, error) {
 	matches := collectImageSelectorMatches(images, selector)
 	if len(matches.named) > 1 {
 		return nil, fmt.Errorf("ambiguous image selector %q matched multiple named images", selector)
+	}
+	if hasNamedExactIDCollision(matches) {
+		return nil, fmt.Errorf("ambiguous image selector %q matched both an image name/tag and an exact image ID", selector)
 	}
 	if len(matches.named) == 1 {
 		return matches.named[0], nil
