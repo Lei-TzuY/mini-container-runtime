@@ -15,6 +15,13 @@ import (
 // those descriptors, but the final payload exec receives no ambient runtime
 // capability unless a future feature explicitly opts one back in.
 func sealInheritedFDsForPayload() error {
+	return sealInheritedFDsForPayloadWith(setCloseOnExec)
+}
+
+func sealInheritedFDsForPayloadWith(seal func(int) error) error {
+	if seal == nil {
+		return fmt.Errorf("inherited fd sealer is nil")
+	}
 	dir, err := os.Open("/proc/self/fd")
 	if err != nil {
 		return fmt.Errorf("open inherited fd inventory: %w", err)
@@ -34,7 +41,7 @@ func sealInheritedFDsForPayload() error {
 		if err != nil || fd < 3 || fd == dirFD {
 			continue
 		}
-		if err := setCloseOnExec(fd); err != nil {
+		if err := seal(fd); err != nil {
 			// A descriptor may disappear between procfs enumeration and fcntl.
 			// That already satisfies the no-inheritance invariant.
 			if errors.Is(err, syscall.EBADF) {
