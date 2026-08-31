@@ -2,6 +2,8 @@ package events
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"testing"
 )
@@ -14,13 +16,17 @@ func readStructuredOutcomeEvent(t *testing.T) Event {
 	}
 	defer f.Close()
 	dec := json.NewDecoder(f)
-	var evt Event
-	for dec.More() {
+	var last Event
+	for {
+		var evt Event
 		if err := dec.Decode(&evt); err != nil {
+			if errors.Is(err, io.EOF) {
+				return last
+			}
 			t.Fatal(err)
 		}
+		last = evt
 	}
-	return evt
 }
 
 func TestCompletePendingExecPublishesStructuredExitCode(t *testing.T) {
