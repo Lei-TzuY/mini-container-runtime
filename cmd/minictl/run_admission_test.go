@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +16,7 @@ const runAdmissionTestID = "0123456789abcdef"
 
 func TestPrepareManagedRunStateFailsClosedWhenStoreOpenFails(t *testing.T) {
 	cause := errors.New("state unavailable")
-	cfg := runAdmissionTestConfig()
+	cfg := runAdmissionTestConfig(t)
 	openCalls := 0
 
 	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
@@ -40,7 +43,7 @@ func TestPrepareManagedRunStateFailsClosedWhenStoreOpenFails(t *testing.T) {
 
 func TestPrepareManagedRunStateFailsClosedWhenIDGenerationFails(t *testing.T) {
 	cause := errors.New("entropy unavailable")
-	cfg := runAdmissionTestConfig()
+	cfg := runAdmissionTestConfig(t)
 	opened, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +66,7 @@ func TestPrepareManagedRunStateFailsClosedWhenIDGenerationFails(t *testing.T) {
 }
 
 func TestPrepareManagedRunStateFailsClosedWhenCreatedStateSaveFails(t *testing.T) {
-	cfg := runAdmissionTestConfig()
+	cfg := runAdmissionTestConfig(t)
 	closed, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +89,7 @@ func TestPrepareManagedRunStateFailsClosedWhenCreatedStateSaveFails(t *testing.T
 }
 
 func TestPrepareManagedRunStatePublishesIDOnlyAfterDurableSave(t *testing.T) {
-	cfg := runAdmissionTestConfig()
+	cfg := runAdmissionTestConfig(t)
 	createdAt := time.Unix(1_700_000_000, 123)
 	opened, err := state.Open(t.TempDir())
 	if err != nil {
@@ -125,7 +128,7 @@ func TestPrepareManagedRunStatePublishesIDOnlyAfterDurableSave(t *testing.T) {
 }
 
 func TestPrepareManagedRunStateRejectsPreassignedContainerID(t *testing.T) {
-	cfg := runAdmissionTestConfig()
+	cfg := runAdmissionTestConfig(t)
 	cfg.ContainerID = "already-assigned"
 	opened := false
 
@@ -145,9 +148,87 @@ func TestPrepareManagedRunStateRejectsPreassignedContainerID(t *testing.T) {
 	}
 }
 
-func runAdmissionTestConfig() container.Config {
+func TestPrepareManagedRunStateRejectsMissingRootFSBeforeStateMutation(t *testing.T) {
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = filepath.Join(t.TempDir(), "missing")
+	opened := false
+	generated := false
+
+	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) {
+			opened = true
+			return nil, nil
+		},
+		newID: func() (string, error) {
+			generated = true
+			return runAdmissionTestID, nil
+		},
+		now: time.Now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "stat run rootfs") {
+		t.Fatalf("error=%v, want rootfs stat failure", err)
+	}
+	if opened || generated || st != nil || rec != nil || cfg.ContainerID != "" {
+		t.Fatalf("opened=%v generated=%v store=%v rec=%v ContainerID=%q", opened, generated, st, rec, cfg.ContainerID)
+	}
+}
+
+func TestPrepareManagedRunStateRejectsNonDirectoryRootFSBeforeStateMutation(t *testing.T) {
+	rootfs := filepath.Join(t.TempDir(), "rootfs-file")
+	if err := os.WriteFile(rootfs, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = rootfs
+	opened := false
+
+	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) {
+			opened = true
+			return nil, nil
+		},
+		newID: func() (string, error) { return runAdmissionTestID, nil },
+		now:   time.Now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("error=%v, want non-directory rootfs rejection", err)
+	}
+	if opened || st != nil || rec != nil || cfg.ContainerID != "" {
+		t.Fatalf("opened=%v store=%v rec=%v ContainerID=%q", opened, st, rec, cfg.ContainerID)
+	}
+}
+
+func TestPrepareManagedRunStateAcceptsRootFSSymlinkToDirectory(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "rootfs-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	cfg := runAdmissionTestConfig(t)
+	cfg.RootFS = link
+	opened, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+
+	st, rec, err := prepareManagedRunStateWith(&cfg, runAdmissionDeps{
+		openStore: func() (*state.Store, error) { return opened, nil },
+		newID:     func() (string, error) { return runAdmissionTestID, nil },
+		now:       time.Now,
+	})
+	if err != nil {
+		t.Fatalf("prepareManagedRunStateWith symlink rootfs: %v", err)
+	}
+	if st != opened || rec == nil || rec.RootFS != link || cfg.ContainerID != runAdmissionTestID {
+		t.Fatalf("store=%v rec=%+v ContainerID=%q", st, rec, cfg.ContainerID)
+	}
+}
+
+func runAdmissionTestConfig(t *testing.T) container.Config {
+	t.Helper()
 	return container.Config{
-		RootFS:   "/rootfs",
+		RootFS:   t.TempDir(),
 		Command:  []string{"/bin/true"},
 		Hostname: "minicontainer",
 	}
