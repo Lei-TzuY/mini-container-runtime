@@ -12,10 +12,12 @@ func resetExecStagingForTest(t *testing.T) {
 	t.Helper()
 	mu.Lock()
 	stagedExecs = make(map[string]stagedExecEvent)
+	activeExecs = make(map[string]stagedExecEvent)
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()
 		stagedExecs = make(map[string]stagedExecEvent)
+		activeExecs = make(map[string]stagedExecEvent)
 		mu.Unlock()
 	})
 }
@@ -44,11 +46,59 @@ func TestExecEventIsStagedUntilPayloadStartCommit(t *testing.T) {
 	}
 }
 
-func TestDiscardPendingExecSuppressesFailedSetup(t *testing.T) {
+func TestCompletePendingExecRecordsExactlyOneTerminalOutcome(t *testing.T) {
+	resetExecStagingForTest(t)
+	t.Setenv("HOME", t.TempDir())
+
+	if err := Publish(EventExec, "ctr-exit", "rootfs", "exec [sh -c false]"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitPendingExec(); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompletePendingExec(17, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Completion consumes active attribution; a duplicate completion is a no-op
+	// rather than duplicating a terminal record.
+	if err := CompletePendingExec(99, "duplicate"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readLifecycleEventsForTest(t)
+	if len(got) != 2 || got[0].Type != EventExec || got[1].Type != EventExecExit {
+		t.Fatalf("events=%+v, want exec then exec_exit", got)
+	}
+	if got[1].ContainerID != "ctr-exit" || !strings.Contains(got[1].Message, "exit_code=17") {
+		t.Fatalf("terminal event=%+v", got[1])
+	}
+}
+
+func TestFailPendingExecRecordsFailureWithoutStartedEvent(t *testing.T) {
 	resetExecStagingForTest(t)
 	t.Setenv("HOME", t.TempDir())
 
 	if err := Publish(EventExec, "ctr-fail", "rootfs", "exec [missing]"); err != nil {
+		t.Fatal(err)
+	}
+	if err := FailPendingExec("payload start not proven"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readLifecycleEventsForTest(t)
+	if len(got) != 1 || got[0].Type != EventExecFailed || got[0].ContainerID != "ctr-fail" {
+		t.Fatalf("events=%+v, want one exec_failed", got)
+	}
+	if !strings.Contains(got[0].Message, "payload start not proven") {
+		t.Fatalf("failure event lost cause: %+v", got[0])
+	}
+}
+
+func TestDiscardPendingExecSuppressesFailedSetup(t *testing.T) {
+	resetExecStagingForTest(t)
+	t.Setenv("HOME", t.TempDir())
+
+	if err := Publish(EventExec, "ctr-discard", "rootfs", "exec [missing]"); err != nil {
 		t.Fatal(err)
 	}
 	if err := DiscardPendingExec(); err != nil {
