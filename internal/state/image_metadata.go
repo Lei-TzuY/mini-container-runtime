@@ -16,6 +16,16 @@ func imageStorageKey(img *Image) (string, error) {
 	if img == nil {
 		return "", fmt.Errorf("image state is nil")
 	}
+	if img.Name != "" {
+		if err := validateImageSelector(img.Name); err != nil {
+			return "", fmt.Errorf("invalid image name: %w", err)
+		}
+	}
+	if img.ID != "" {
+		if err := validateImageSelector(img.ID); err != nil {
+			return "", fmt.Errorf("invalid image ID: %w", err)
+		}
+	}
 	key := img.Name
 	if key == "" {
 		key = img.ID
