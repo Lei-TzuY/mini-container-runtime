@@ -87,11 +87,7 @@ func TestListImagesRejectsOverlongEmbeddedIdentity(t *testing.T) {
 
 	name := "valid-name"
 	overlongID := strings.Repeat("i", maxImageIdentityBytes+1)
-	data := []byte(`{"id":"`)
-	_ = data
-	data = []byte(`{"id":"`)
-	_ = data
-	data = []byte("{\"id\":\"" + overlongID + "\",\"name\":\"" + name + "\",\"rootfs\":\"/rootfs\",\"loaded_at\":\"0001-01-01T00:00:00Z\"}")
+	data := []byte("{\"id\":\"" + overlongID + "\",\"name\":\"" + name + "\",\"rootfs\":\"/rootfs\",\"loaded_at\":\"0001-01-01T00:00:00Z\"}")
 	path := filepath.Join(store.imgDir, imageMetadataFilename(name))
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
