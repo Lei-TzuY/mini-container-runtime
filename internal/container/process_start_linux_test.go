@@ -3,6 +3,7 @@
 package container
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,9 +11,8 @@ import (
 	"testing"
 )
 
-func managedShellCommand(rootfs string, command []string, script string, args ...string) *exec.Cmd {
+func managedShellCommand(rootfs string, command []string, script string) *exec.Cmd {
 	cmdArgs := []string{"-c", script, "sh", rootfs}
-	cmdArgs = append(cmdArgs, args...)
 	cmdArgs = append(cmdArgs, command...)
 	return exec.Command("/bin/sh", cmdArgs...)
 }
@@ -84,10 +84,8 @@ func TestStartContainerProcessPinnedRootFSSurvivesPathReplacement(t *testing.T) 
 
 	gate := filepath.Join(parent, "continue")
 	command := []string{"payload"}
-	cmd := managedShellCommand(rootfs, command,
-		"while [ ! -e \"$2\" ]; do sleep 0.01; done; touch \"$1/pinned-marker\"",
-		gate,
-	)
+	script := fmt.Sprintf("while [ ! -e %q ]; do sleep 0.01; done; touch \"$1/pinned-marker\"", gate)
+	cmd := managedShellCommand(rootfs, command, script)
 	if err := startContainerProcess(Config{RootFS: rootfs, RootFSIdentity: admitted, Command: command}, cmd); err != nil {
 		t.Fatalf("start fd-pinned rootfs process: %v", err)
 	}
