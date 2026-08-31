@@ -40,9 +40,20 @@ func TestDeleteImageRejectsExactNameExactIDCollisionWithoutDeleting(t *testing.T
 	if _, err := store.DeleteImage("deadbeef"); err == nil || !strings.Contains(err.Error(), "both an image name/tag and an exact image ID") {
 		t.Fatalf("DeleteImage exact namespace collision error=%v", err)
 	}
-	for _, selector := range []string{named.Name, byID.Name} {
-		if _, err := store.GetImage(selector); err != nil {
-			t.Fatalf("image %q disappeared after rejected delete: %v", selector, err)
+	checks := []struct {
+		selector string
+		wantName string
+	}{
+		{selector: named.ID, wantName: named.Name},
+		{selector: byID.Name, wantName: byID.Name},
+	}
+	for _, check := range checks {
+		got, err := store.GetImage(check.selector)
+		if err != nil {
+			t.Fatalf("image %q unavailable after rejected delete: %v", check.selector, err)
+		}
+		if got.Name != check.wantName {
+			t.Fatalf("GetImage(%q)=%+v, want name %q", check.selector, got, check.wantName)
 		}
 	}
 }
