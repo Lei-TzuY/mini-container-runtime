@@ -22,19 +22,42 @@ func discardPendingExecIntent() {
 	_ = events.DiscardPendingExec()
 }
 
+func failPendingExecIntent(err error) {
+	if err == nil {
+		discardPendingExecIntent()
+		return
+	}
+	_ = events.FailPendingExec(err.Error())
+}
+
+func completePendingExecOutcome(waitErr error) {
+	if waitErr == nil {
+		_ = events.CompletePendingExec(0, "")
+		return
+	}
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		_ = events.CompletePendingExec(exitErr.ExitCode(), "")
+		return
+	}
+	_ = events.CompletePendingExec(-1, waitErr.Error())
+}
+
 // runExecInitCommand starts the namespace-entering helper, waits for explicit
 // proof that the payload process itself was successfully started, commits the
-// staged exec event at that boundary, and then waits for payload completion.
+// staged exec event at that boundary, and records a terminal outcome after the
+// helper exits. Setup failures publish exec_failed without fabricating a start.
 func runExecInitCommand(cmd *exec.Cmd) error {
 	if cmd == nil {
-		discardPendingExecIntent()
-		return fmt.Errorf("exec-init command is nil")
+		err := fmt.Errorf("exec-init command is nil")
+		failPendingExecIntent(err)
+		return err
 	}
 
 	readPipe, writePipe, err := os.Pipe()
 	if err != nil {
-		discardPendingExecIntent()
-		return fmt.Errorf("create exec payload-start pipe: %w", err)
+		err = fmt.Errorf("create exec payload-start pipe: %w", err)
+		failPendingExecIntent(err)
+		return err
 	}
 	fd := 3 + len(cmd.ExtraFiles)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, writePipe)
@@ -43,8 +66,9 @@ func runExecInitCommand(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		_ = readPipe.Close()
 		_ = writePipe.Close()
-		discardPendingExecIntent()
-		return fmt.Errorf("start exec-init helper: %w", err)
+		err = fmt.Errorf("start exec-init helper: %w", err)
+		failPendingExecIntent(err)
+		return err
 	}
 	_ = writePipe.Close()
 
@@ -53,16 +77,23 @@ func runExecInitCommand(cmd *exec.Cmd) error {
 		// Once the child proves Start succeeded, the payload may already be
 		// running. Audit-log failure cannot revoke that process admission.
 		_ = events.CommitPendingExec()
-	} else {
-		discardPendingExecIntent()
 	}
 
 	waitErr := cmd.Wait()
+	if startedErr != nil {
+		failPendingExecIntent(startedErr)
+		if waitErr != nil {
+			return waitErr
+		}
+		return fmt.Errorf("exec payload start was not proven: %w", startedErr)
+	}
+
+	// A proven start receives exactly one terminal outcome, including non-zero
+	// payload exits. Persistence remains observability-only and never changes the
+	// command's exit semantics.
+	completePendingExecOutcome(waitErr)
 	if waitErr != nil {
 		return waitErr
-	}
-	if startedErr != nil {
-		return fmt.Errorf("exec payload start was not proven: %w", startedErr)
 	}
 	return nil
 }
