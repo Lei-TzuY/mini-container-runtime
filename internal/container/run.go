@@ -236,7 +236,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, runtimeHostsFile)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := startContainerProcess(cfg, cmd); err != nil {
 		_ = readPipe.Close()
 		_ = writePipe.Close()
 		_ = initStatusReadPipe.Close()
