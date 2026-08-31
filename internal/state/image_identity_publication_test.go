@@ -89,7 +89,7 @@ func TestSaveImageRejectedIdentityUpdatePreservesDurableState(t *testing.T) {
 	}
 }
 
-func TestSaveImageAllowsExactNameIDOverlapForSameImageIdentity(t *testing.T) {
+func TestSaveImageRejectsCrossRecordNameIDOverlapForSameID(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -100,19 +100,19 @@ func TestSaveImageAllowsExactNameIDOverlapForSameImageIdentity(t *testing.T) {
 	if err := store.SaveImage(first); err != nil {
 		t.Fatalf("SaveImage first: %v", err)
 	}
-	if err := store.SaveImage(alias); err != nil {
-		t.Fatalf("SaveImage same-identity overlap: %v", err)
+	if err := store.SaveImage(alias); err == nil || !strings.Contains(err.Error(), "collides with exact ID") {
+		t.Fatalf("SaveImage same-ID cross-record overlap error=%v", err)
 	}
 
+	aliasPath := filepath.Join(store.imgDir, imageMetadataFilename(alias.Name))
+	if _, err := os.Lstat(aliasPath); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous same-ID alias was published: err=%v", err)
+	}
 	got, err := store.GetImage(first.ID)
 	if err != nil {
-		t.Fatalf("GetImage shared exact identity: %v", err)
+		t.Fatalf("GetImage first ID after rejected alias: %v", err)
 	}
-	if got.ID != first.ID || got.RootFS != first.RootFS {
-		t.Fatalf("GetImage shared exact identity=%+v", got)
-	}
-	images, err := store.ListImages()
-	if err != nil || len(images) != 2 {
-		t.Fatalf("ListImages same-identity aliases: len=%d err=%v", len(images), err)
+	if got.Name != first.Name || got.ID != first.ID {
+		t.Fatalf("existing image changed after rejected alias: %+v", got)
 	}
 }
