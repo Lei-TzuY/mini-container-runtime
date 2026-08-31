@@ -17,6 +17,12 @@ type runAdmissionDeps struct {
 	now       func() time.Time
 }
 
+type runRootFSAdmissionDeps struct {
+	abs          func(string) (string, error)
+	stat         func(string) (os.FileInfo, error)
+	evalSymlinks func(string) (string, error)
+}
+
 func prepareManagedRunState(cfg *container.Config) (*state.Store, *state.Container, error) {
 	return prepareManagedRunStateWith(cfg, runAdmissionDeps{
 		openStore: openStore,
@@ -81,19 +87,31 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 }
 
 func normalizeRunAdmissionRootFS(rootfs string) (string, error) {
+	return normalizeRunAdmissionRootFSWith(rootfs, runRootFSAdmissionDeps{
+		abs:          filepath.Abs,
+		stat:         os.Stat,
+		evalSymlinks: filepath.EvalSymlinks,
+	})
+}
+
+func normalizeRunAdmissionRootFSWith(rootfs string, deps runRootFSAdmissionDeps) (string, error) {
 	if rootfs == "" {
 		return "", fmt.Errorf("run config rootfs is empty")
 	}
-	abs, err := filepath.Abs(rootfs)
+	if deps.abs == nil || deps.stat == nil || deps.evalSymlinks == nil {
+		return "", fmt.Errorf("run rootfs admission dependencies are incomplete")
+	}
+
+	abs, err := deps.abs(rootfs)
 	if err != nil {
 		return "", fmt.Errorf("resolve run rootfs %q: %w", rootfs, err)
 	}
 	abs = filepath.Clean(abs)
-	info, err := os.Stat(abs)
+	before, err := deps.stat(abs)
 	if err != nil {
 		return "", fmt.Errorf("stat run rootfs %q: %w", abs, err)
 	}
-	if !info.IsDir() {
+	if !before.IsDir() {
 		return "", fmt.Errorf("run rootfs %q is not a directory", abs)
 	}
 
@@ -101,17 +119,20 @@ func normalizeRunAdmissionRootFS(rootfs string) (string, error) {
 	// pathname. Otherwise a symlink retarget after durable admission could make
 	// the runtime execute a different filesystem tree than the one recorded in
 	// lifecycle state.
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := deps.evalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("resolve run rootfs symlinks %q: %w", abs, err)
 	}
 	resolved = filepath.Clean(resolved)
-	info, err = os.Stat(resolved)
+	after, err := deps.stat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("stat resolved run rootfs %q: %w", resolved, err)
 	}
-	if !info.IsDir() {
+	if !after.IsDir() {
 		return "", fmt.Errorf("resolved run rootfs %q is not a directory", resolved)
+	}
+	if !os.SameFile(before, after) {
+		return "", fmt.Errorf("run rootfs changed while resolving symlinks: %q -> %q", abs, resolved)
 	}
 	return resolved, nil
 }
