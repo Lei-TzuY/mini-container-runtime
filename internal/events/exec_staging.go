@@ -11,9 +11,12 @@ const (
 )
 
 type stagedExecEvent struct {
-	containerID string
-	image       string
-	message     string
+	containerID  string
+	image        string
+	message      string
+	containerPID int
+	pidStartTime uint64
+	command      []string
 }
 
 var stagedExecs = make(map[string]stagedExecEvent)
@@ -31,6 +34,44 @@ func stageExecEvent(containerID, image, message string) error {
 	}
 	stagedExecs[containerID] = stagedExecEvent{containerID: containerID, image: image, message: message}
 	return nil
+}
+
+// BindPendingExecAttribution attaches the exact container process generation and
+// argv to the single staged exec intent. It is called only after the runtime has
+// verified the persisted PID start time, so terminal events cannot be confused
+// with a later restart that reuses the same container ID or numeric PID.
+func BindPendingExecAttribution(containerPID int, pidStartTime uint64, command []string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stagedExecs) == 0 {
+		return nil
+	}
+	if len(stagedExecs) != 1 {
+		return fmt.Errorf("cannot bind exec attribution: %d staged exec events", len(stagedExecs))
+	}
+	if containerPID <= 0 || pidStartTime == 0 {
+		return fmt.Errorf("invalid exec process generation pid=%d start_time=%d", containerPID, pidStartTime)
+	}
+	for containerID, staged := range stagedExecs {
+		staged.containerPID = containerPID
+		staged.pidStartTime = pidStartTime
+		staged.command = append([]string(nil), command...)
+		stagedExecs[containerID] = staged
+	}
+	return nil
+}
+
+func execLifecycleEvent(staged stagedExecEvent, typ EventType, message string) Event {
+	return Event{
+		Timestamp:             time.Now(),
+		Type:                  typ,
+		ContainerID:           staged.containerID,
+		Image:                 staged.image,
+		Message:               message,
+		ContainerPID:          staged.containerPID,
+		ContainerPIDStartTime: staged.pidStartTime,
+		Command:               append([]string(nil), staged.command...),
+	}
 }
 
 func CommitPendingExec() error {
@@ -51,16 +92,7 @@ func CommitPendingExec() error {
 		staged = candidate
 	}
 
-	// The durable start event is the commit point. Do not publish in-memory
-	// active attribution before append+fsync succeeds; otherwise a transient log
-	// failure can manufacture an active exec whose start was never recorded.
-	if err := appendEventUnlocked(Event{
-		Timestamp:   time.Now(),
-		Type:        EventExec,
-		ContainerID: staged.containerID,
-		Image:       staged.image,
-		Message:     staged.message,
-	}); err != nil {
+	if err := appendEventUnlocked(execLifecycleEvent(staged, EventExec, staged.message)); err != nil {
 		return err
 	}
 	delete(stagedExecs, staged.containerID)
@@ -87,7 +119,10 @@ func CompletePendingExec(exitCode int, detail string) error {
 		message += "; " + detail
 	}
 	code := exitCode
-	return appendEventUnlocked(Event{Timestamp: time.Now(), Type: EventExecExit, ContainerID: active.containerID, Image: active.image, Message: message, ExitCode: &code, Error: detail})
+	evt := execLifecycleEvent(active, EventExecExit, message)
+	evt.ExitCode = &code
+	evt.Error = detail
+	return appendEventUnlocked(evt)
 }
 
 func FailPendingExec(detail string) error {
@@ -108,7 +143,9 @@ func FailPendingExec(detail string) error {
 	if detail != "" {
 		message += "; " + detail
 	}
-	return appendEventUnlocked(Event{Timestamp: time.Now(), Type: EventExecFailed, ContainerID: staged.containerID, Image: staged.image, Message: message, Error: detail})
+	evt := execLifecycleEvent(staged, EventExecFailed, message)
+	evt.Error = detail
+	return appendEventUnlocked(evt)
 }
 
 func DiscardPendingExec() error {
