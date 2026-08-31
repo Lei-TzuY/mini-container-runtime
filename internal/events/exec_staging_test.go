@@ -3,6 +3,7 @@ package events
 import (
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,53 @@ func TestExecEventIsStagedUntilPayloadStartCommit(t *testing.T) {
 	}
 }
 
+func TestExecGenerationAttributionSurvivesStartAndTerminalOutcome(t *testing.T) {
+	resetExecStagingForTest(t)
+	t.Setenv("HOME", t.TempDir())
+	command := []string{"sh", "-c", "exit 7"}
+	if err := Publish(EventExec, "ctr-gen", "rootfs", "exec [sh -c exit 7]"); err != nil {
+		t.Fatal(err)
+	}
+	if err := BindPendingExecAttribution(4321, 987654, command); err != nil {
+		t.Fatal(err)
+	}
+	// Mutating caller-owned argv after binding must not rewrite durable audit
+	// attribution while the event is waiting for payload-start proof.
+	command[0] = "mutated"
+	if err := CommitPendingExec(); err != nil {
+		t.Fatal(err)
+	}
+	if err := CompletePendingExec(7, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readLifecycleEventsForTest(t)
+	if len(got) != 2 {
+		t.Fatalf("events=%+v", got)
+	}
+	wantCommand := []string{"sh", "-c", "exit 7"}
+	for _, evt := range got {
+		if evt.ContainerPID != 4321 || evt.ContainerPIDStartTime != 987654 || !reflect.DeepEqual(evt.Command, wantCommand) {
+			t.Fatalf("generation attribution lost across lifecycle: %+v", evt)
+		}
+	}
+}
+
+func TestBindPendingExecAttributionRejectsInvalidGenerationWithoutMutation(t *testing.T) {
+	resetExecStagingForTest(t)
+	if err := Publish(EventExec, "ctr-invalid-gen", "rootfs", "exec [true]"); err != nil {
+		t.Fatal(err)
+	}
+	if err := BindPendingExecAttribution(0, 123, []string{"true"}); err == nil {
+		t.Fatal("invalid generation unexpectedly accepted")
+	}
+	mu.Lock()
+	staged := stagedExecs["ctr-invalid-gen"]
+	mu.Unlock()
+	if staged.containerPID != 0 || staged.pidStartTime != 0 || staged.command != nil {
+		t.Fatalf("invalid bind partially mutated staged attribution: %+v", staged)
+	}
+}
+
 func TestCommitPendingExecRetainsStagedAttributionWhenDurableAppendFails(t *testing.T) {
 	resetExecStagingForTest(t)
 	t.Setenv("HOME", t.TempDir())
@@ -53,9 +101,6 @@ func TestCommitPendingExecRetainsStagedAttributionWhenDurableAppendFails(t *test
 	if err := Publish(EventExec, "ctr-retry", "rootfs", "exec [true]"); err != nil {
 		t.Fatal(err)
 	}
-	// Block the append path after staging. Opening a directory as events.log is
-	// reliably invalid even for privileged test runners, unlike chmod-based
-	// permission failures.
 	if err := os.Mkdir(LogPath(), 0o700); err != nil {
 		t.Fatalf("block event log path: %v", err)
 	}
@@ -96,8 +141,6 @@ func TestCompletePendingExecRecordsExactlyOneTerminalOutcome(t *testing.T) {
 	if err := CompletePendingExec(17, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Completion consumes active attribution; a duplicate completion is a no-op
-	// rather than duplicating a terminal record.
 	if err := CompletePendingExec(99, "duplicate"); err != nil {
 		t.Fatal(err)
 	}

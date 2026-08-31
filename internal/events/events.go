@@ -40,6 +40,12 @@ type Event struct {
 	ContainerID string    `json:"container_id"`
 	Image       string    `json:"image,omitempty"`
 	Message     string    `json:"message,omitempty"`
+	// ContainerPID and ContainerPIDStartTime identify the exact init-process
+	// generation to which an exec lifecycle event was admitted. PID alone is not
+	// sufficient because Linux can reuse numeric process IDs after restart.
+	ContainerPID          int      `json:"container_pid,omitempty"`
+	ContainerPIDStartTime uint64   `json:"container_pid_start_time,omitempty"`
+	Command               []string `json:"command,omitempty"`
 	// ExitCode is structured terminal status for events that represent a process
 	// outcome. A pointer distinguishes an actual exit code of zero from events
 	// that have no exit-code semantics.
