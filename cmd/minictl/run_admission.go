@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"minicontainer/internal/container"
@@ -31,7 +32,8 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if cfg.ContainerID != "" {
 		return nil, nil, fmt.Errorf("run config already has container ID %q", cfg.ContainerID)
 	}
-	if err := validateRunAdmissionRootFS(cfg.RootFS); err != nil {
+	rootfs, err := normalizeRunAdmissionRootFS(cfg.RootFS)
+	if err != nil {
 		return nil, nil, err
 	}
 	if deps.openStore == nil || deps.newID == nil || deps.now == nil {
@@ -60,7 +62,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	rec := &state.Container{
 		ID:        id,
 		Status:    state.StatusCreated,
-		RootFS:    cfg.RootFS,
+		RootFS:    rootfs,
 		Command:   cfg.Command,
 		Hostname:  cfg.Hostname,
 		CreatedAt: deps.now(),
@@ -69,23 +71,30 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		return fail(fmt.Errorf("persist created state for container %s: %w", id, err))
 	}
 
-	// Publishing the ID is the admission commit point. In particular, an
-	// uncertain state write that returned an error must never reach the runtime
-	// even if a filesystem entry happened to become visible before that error.
+	// Publishing the normalized rootfs and ID is the admission commit point.
+	// In particular, an uncertain state write that returned an error must never
+	// mutate the runtime config even if a filesystem entry happened to become
+	// visible before that error.
+	cfg.RootFS = rootfs
 	cfg.ContainerID = id
 	return st, rec, nil
 }
 
-func validateRunAdmissionRootFS(rootfs string) error {
+func normalizeRunAdmissionRootFS(rootfs string) (string, error) {
 	if rootfs == "" {
-		return fmt.Errorf("run config rootfs is empty")
+		return "", fmt.Errorf("run config rootfs is empty")
 	}
-	info, err := os.Stat(rootfs)
+	abs, err := filepath.Abs(rootfs)
 	if err != nil {
-		return fmt.Errorf("stat run rootfs %q: %w", rootfs, err)
+		return "", fmt.Errorf("resolve run rootfs %q: %w", rootfs, err)
+	}
+	abs = filepath.Clean(abs)
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("stat run rootfs %q: %w", abs, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("run rootfs %q is not a directory", rootfs)
+		return "", fmt.Errorf("run rootfs %q is not a directory", abs)
 	}
-	return nil
+	return abs, nil
 }
