@@ -51,7 +51,7 @@ Usage:
   minictl cp      <src> <dst>                                 Copy files between container and host
   minictl pull    <image> [dest-dir]                          Pull image from Docker Hub
   minictl compose up [-f file.json]                           Orchestrate multi-container app
-  minictl events  [-f]                                        Stream real-time container events
+  minictl events  [-f|--follow] [--json] [--container prefix] [--type type]  Query lifecycle events
   minictl ps      [--all]                                     List containers
   minictl logs    [-f] [--tail n] <id>                        View container logs
   minictl stats   [id]                                        View live resource usage
@@ -449,13 +449,13 @@ func cmdCompose(args []string) {
 }
 
 func cmdEvents(args []string) {
-	fs := flag.NewFlagSet("events", flag.ExitOnError)
-	follow := fs.Bool("f", false, "follow real-time event log")
-	_ = fs.Bool("follow", false, "follow log output")
-	fs.SetOutput(os.Stderr)
-	_ = fs.Parse(args)
+	opts, err := parseEventsCLIOptions(args, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "events error: %v\n", err)
+		os.Exit(1)
+	}
 
-	if err := events.StreamEvents(*follow, os.Stdout); err != nil {
+	if err := events.StreamEventsWithOptions(opts, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "events error: %v\n", err)
 		os.Exit(1)
 	}
