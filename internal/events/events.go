@@ -59,6 +59,17 @@ type Event struct {
 	Error string `json:"error,omitempty"`
 }
 
+// StreamOptions controls event query and rendering without changing the durable
+// append-only log schema. ContainerPrefix is intentionally a prefix selector so
+// callers can use the same short IDs exposed by other minictl commands. Types is
+// an OR filter; an empty slice selects every event type.
+type StreamOptions struct {
+	Follow          bool
+	JSON            bool
+	ContainerPrefix string
+	Types           []EventType
+}
+
 var mu sync.Mutex
 
 // LogPath returns the path to the events append-only log file.
@@ -169,16 +180,48 @@ func FormatEvent(evt Event) string {
 	return b.String()
 }
 
-// streamEventLog consumes the append-only log one record boundary at a time.
-// A crash can leave the final JSON record torn after the previous fsync. Such an
-// unterminated tail is not durable evidence and must not make all historical
-// events unreadable. Complete malformed records still fail closed as corruption.
-func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
+func eventMatchesQuery(evt Event, opts StreamOptions) bool {
+	if opts.ContainerPrefix != "" && !strings.HasPrefix(evt.ContainerID, opts.ContainerPrefix) {
+		return false
+	}
+	if len(opts.Types) == 0 {
+		return true
+	}
+	for _, eventType := range opts.Types {
+		if evt.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func writeQueriedEvent(w io.Writer, evt Event, jsonOutput bool) error {
+	if jsonOutput {
+		data, err := json.Marshal(evt)
+		if err != nil {
+			return fmt.Errorf("encode event stream: %w", err)
+		}
+		if _, err := fmt.Fprintln(w, string(data)); err != nil {
+			return fmt.Errorf("write event stream: %w", err)
+		}
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, FormatEvent(evt)); err != nil {
+		return fmt.Errorf("write event stream: %w", err)
+	}
+	return nil
+}
+
+// streamEventLogWithOptions consumes the append-only log one record boundary at
+// a time and applies query filters only after a complete record has been decoded.
+// This preserves corruption detection: an unmatched malformed complete record is
+// still corruption and cannot be hidden by a filter.
+func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) error {
 	reader := bufio.NewReader(r)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			if follow && err == io.EOF {
+			if opts.Follow && err == io.EOF {
 				// A follower cannot treat an unterminated record as committed yet: the
 				// writer may still append the newline (or the rest of a torn JSON value).
 				// Re-prepend exactly what was consumed and retry after the file grows.
@@ -190,8 +233,10 @@ func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
 						return fmt.Errorf("decode event log: %w", decodeErr)
 					}
 					// A non-following reader ignores only an invalid unterminated tail.
-				} else if _, writeErr := fmt.Fprintln(w, FormatEvent(evt)); writeErr != nil {
-					return fmt.Errorf("write event stream: %w", writeErr)
+				} else if eventMatchesQuery(evt, opts) {
+					if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
+						return writeErr
+					}
 				}
 			}
 		}
@@ -202,15 +247,22 @@ func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
 		if err != io.EOF {
 			return fmt.Errorf("read event log: %w", err)
 		}
-		if !follow {
+		if !opts.Follow {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// StreamEvents reads and outputs historical and real-time events to w.
-func StreamEvents(follow bool, w io.Writer) error {
+// streamEventLog preserves the historical internal API for focused recovery
+// tests and callers that only need the human renderer.
+func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
+	return streamEventLogWithOptions(r, StreamOptions{Follow: follow}, w)
+}
+
+// StreamEventsWithOptions reads and outputs historical and real-time events
+// using structured query/render options.
+func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	logFile := LogPath()
 	f, err := openEventLogForRead(logFile)
 	if err != nil {
@@ -221,5 +273,10 @@ func StreamEvents(follow bool, w io.Writer) error {
 	}
 	defer f.Close()
 
-	return streamEventLog(f, follow, w)
+	return streamEventLogWithOptions(f, opts, w)
+}
+
+// StreamEvents reads and outputs historical and real-time events to w.
+func StreamEvents(follow bool, w io.Writer) error {
+	return StreamEventsWithOptions(StreamOptions{Follow: follow}, w)
 }
