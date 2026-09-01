@@ -260,11 +260,27 @@ func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
 	return streamEventLogWithOptions(r, StreamOptions{Follow: follow}, w)
 }
 
+func openEventLogForStream(logFile string, follow bool) (*os.File, error) {
+	for {
+		f, err := openEventLogForRead(logFile)
+		if err == nil {
+			return f, nil
+		}
+		if !os.IsNotExist(err) || !follow {
+			return nil, err
+		}
+		// Follow means "wait for future events", including the first event that
+		// creates the append-only log. Returning nil here would make a monitor
+		// started before any container activity exit successfully and silently.
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // StreamEventsWithOptions reads and outputs historical and real-time events
 // using structured query/render options.
 func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	logFile := LogPath()
-	f, err := openEventLogForRead(logFile)
+	f, err := openEventLogForStream(logFile, opts.Follow)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
