@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const maxEventLogBytes int64 = 16 << 20
+
 type lockedEventLogFile struct {
 	*os.File
 	lockFile *os.File
@@ -63,11 +65,6 @@ func (f *lockedEventLogFile) verifyDataPath() error {
 	return verifyHeldEventPath(f.File, f.File.Name(), "event log")
 }
 
-// Write refuses to append through an fd whose pathname was replaced after the
-// writer entered its critical section. Without both checks, a same-user process
-// could rename events.log and install a replacement while minictl still held an
-// fd to the old inode, causing an audit record to disappear into an orphaned
-// generation while the append itself appeared to succeed.
 func (f *lockedEventLogFile) Write(p []byte) (int, error) {
 	if err := f.verifyDataPath(); err != nil {
 		return 0, fmt.Errorf("verify event log before write: %w", err)
@@ -82,9 +79,6 @@ func (f *lockedEventLogFile) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Sync revalidates pathname identity after durability is requested so callers
-// cannot report a successful durable audit append after the logical events.log
-// path was swapped away from the inode that was actually synced.
 func (f *lockedEventLogFile) Sync() error {
 	if f == nil || f.File == nil {
 		return fmt.Errorf("event log writer is closed")
@@ -98,11 +92,62 @@ func (f *lockedEventLogFile) Sync() error {
 	return nil
 }
 
+func rotateEventLogIfNeeded(path string) error {
+	// Use the writable validation path so an append keeps its established
+	// contract of repairing loose permissions to 0600 instead of regressing to
+	// the stricter read-only policy.
+	current, err := openEventLog(path, unix.O_WRONLY, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect event log for rotation: %w", err)
+	}
+	info, statErr := current.Stat()
+	if statErr != nil {
+		_ = current.Close()
+		return fmt.Errorf("stat event log for rotation: %w", statErr)
+	}
+	if info.Size() < maxEventLogBytes {
+		return current.Close()
+	}
+	if err := verifyHeldEventPath(current, path, "event log rotation source"); err != nil {
+		_ = current.Close()
+		return err
+	}
+
+	rotated := path + ".1"
+	if err := os.Rename(path, rotated); err != nil {
+		_ = current.Close()
+		return fmt.Errorf("rotate event log: %w", err)
+	}
+	// Revalidate the destination against the fd we held across rename. A
+	// same-user pathname swap racing the rename must never be reported as a
+	// successful rotation of the intended generation.
+	if err := verifyHeldEventPath(current, rotated, "rotated event log"); err != nil {
+		_ = current.Close()
+		return err
+	}
+	if err := current.Close(); err != nil {
+		return fmt.Errorf("close rotated event log: %w", err)
+	}
+
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open event log directory after rotation: %w", err)
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync event log directory after rotation: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close event log directory after rotation: %w", closeErr)
+	}
+	return nil
+}
+
 func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
-	// Lock a stable sidecar rather than events.log itself. The audit log pathname
-	// may later be replaced during retention/rotation; an inode lock on the old
-	// generation would then allow a second writer to lock the new generation and
-	// enter the append critical section concurrently.
 	lockPath := path + ".lock"
 	lockFile, err := openEventLog(lockPath, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
@@ -113,6 +158,11 @@ func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
 		return nil, fmt.Errorf("lock event log writer: %w", err)
 	}
 	if err := verifyLockedEventPath(lockFile, lockPath); err != nil {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+	if err := rotateEventLogIfNeeded(path); err != nil {
 		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 		_ = lockFile.Close()
 		return nil, err
