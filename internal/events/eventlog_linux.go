@@ -65,11 +65,6 @@ func (f *lockedEventLogFile) verifyDataPath() error {
 	return verifyHeldEventPath(f.File, f.File.Name(), "event log")
 }
 
-// Write refuses to append through an fd whose pathname was replaced after the
-// writer entered its critical section. Without both checks, a same-user process
-// could rename events.log and install a replacement while minictl still held an
-// fd to the old inode, causing an audit record to disappear into an orphaned
-// generation while the append itself appeared to succeed.
 func (f *lockedEventLogFile) Write(p []byte) (int, error) {
 	if err := f.verifyDataPath(); err != nil {
 		return 0, fmt.Errorf("verify event log before write: %w", err)
@@ -84,9 +79,6 @@ func (f *lockedEventLogFile) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Sync revalidates pathname identity after durability is requested so callers
-// cannot report a successful durable audit append after the logical events.log
-// path was swapped away from the inode that was actually synced.
 func (f *lockedEventLogFile) Sync() error {
 	if f == nil || f.File == nil {
 		return fmt.Errorf("event log writer is closed")
@@ -100,13 +92,11 @@ func (f *lockedEventLogFile) Sync() error {
 	return nil
 }
 
-// rotateEventLogIfNeeded bounds persistent lifecycle-audit growth to the active
-// generation plus one retained generation. It runs only while the stable writer
-// sidecar is exclusively locked, so independent minictl processes cannot race a
-// rename against another append. The current generation is security-validated
-// before rename; unsafe symlink/hard-link/ownership/permission states fail closed.
 func rotateEventLogIfNeeded(path string) error {
-	current, err := openEventLogForRead(path)
+	// Use the writable validation path so an append keeps its established
+	// contract of repairing loose permissions to 0600 instead of regressing to
+	// the stricter read-only policy.
+	current, err := openEventLog(path, unix.O_WRONLY, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -125,18 +115,23 @@ func rotateEventLogIfNeeded(path string) error {
 		_ = current.Close()
 		return err
 	}
-	if err := current.Close(); err != nil {
-		return fmt.Errorf("close event log before rotation: %w", err)
-	}
 
 	rotated := path + ".1"
 	if err := os.Rename(path, rotated); err != nil {
+		_ = current.Close()
 		return fmt.Errorf("rotate event log: %w", err)
 	}
+	// Revalidate the destination against the fd we held across rename. A
+	// same-user pathname swap racing the rename must never be reported as a
+	// successful rotation of the intended generation.
+	if err := verifyHeldEventPath(current, rotated, "rotated event log"); err != nil {
+		_ = current.Close()
+		return err
+	}
+	if err := current.Close(); err != nil {
+		return fmt.Errorf("close rotated event log: %w", err)
+	}
 
-	// Persist the directory-entry replacement before returning to the append path.
-	// If a crash happens before the new active file is created, the next append
-	// safely recreates events.log while the retained generation remains intact.
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return fmt.Errorf("open event log directory after rotation: %w", err)
@@ -153,10 +148,6 @@ func rotateEventLogIfNeeded(path string) error {
 }
 
 func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
-	// Lock a stable sidecar rather than events.log itself. The audit log pathname
-	// may later be replaced during retention/rotation; an inode lock on the old
-	// generation would then allow a second writer to lock the new generation and
-	// enter the append critical section concurrently.
 	lockPath := path + ".lock"
 	lockFile, err := openEventLog(lockPath, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
