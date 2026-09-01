@@ -59,3 +59,66 @@ func TestEventLogRejectsNonRegularTarget(t *testing.T) {
 		t.Fatal("expected directory target to be rejected")
 	}
 }
+
+func TestEventLogRejectsNonPrivatePermissionsForReadAndAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	if f, err := openEventLogForRead(path); err == nil {
+		f.Close()
+		t.Fatal("expected world-writable event log to be rejected for read")
+	}
+	if f, err := openEventLogForAppend(path); err == nil {
+		f.Close()
+		t.Fatal("expected world-writable event log to be rejected for append")
+	}
+}
+
+func TestEventLogRejectsHardLinkedTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.log")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "events.log.alias")
+	if err := os.Link(path, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if f, err := openEventLogForRead(path); err == nil {
+		f.Close()
+		t.Fatal("expected hard-linked event log to be rejected for read")
+	}
+	if f, err := openEventLogForAppend(path); err == nil {
+		f.Close()
+		t.Fatal("expected hard-linked event log to be rejected for append")
+	}
+}
+
+func TestEventLogAcceptsPrivateSingleLinkTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := openEventLogForRead(path)
+	if err != nil {
+		t.Fatalf("open private event log for read: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err = openEventLogForAppend(path)
+	if err != nil {
+		t.Fatalf("open private event log for append: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
