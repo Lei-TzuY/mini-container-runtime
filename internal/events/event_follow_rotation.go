@@ -43,6 +43,19 @@ func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpe
 		if !os.IsNotExist(err) {
 			return nil, false, err
 		}
+
+		// Rotation renames the active generation before creating its replacement.
+		// If a follower starts in that crash/interruption window, drain the retained
+		// generation instead of waiting for a new active pathname and silently
+		// losing the durable records that were just rotated out.
+		retained, retainedErr := open(logFile + ".1")
+		if retainedErr == nil {
+			return retained, false, nil
+		}
+		if !os.IsNotExist(retainedErr) {
+			return nil, false, retainedErr
+		}
+
 		delay := followPollDelay(until, now())
 		if delay == 0 {
 			return nil, true, nil
