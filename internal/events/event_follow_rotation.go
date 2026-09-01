@@ -2,6 +2,7 @@ package events
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,7 +41,7 @@ func openEventLogGenerationForFollowWith(logFile string, until time.Time, allowR
 		if err == nil {
 			return f, false, nil
 		}
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return nil, false, err
 		}
 
@@ -53,7 +54,7 @@ func openEventLogGenerationForFollowWith(logFile string, until time.Time, allowR
 			if retainedErr == nil {
 				return retained, false, nil
 			}
-			if !os.IsNotExist(retainedErr) {
+			if !errors.Is(retainedErr, os.ErrNotExist) {
 				return nil, false, retainedErr
 			}
 		}
