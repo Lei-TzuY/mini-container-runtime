@@ -16,13 +16,6 @@ func eventRecordTooLargeError() error {
 	return fmt.Errorf("event record exceeds maximum size of %d bytes", maxEventRecordBytes)
 }
 
-func validateEventRecordSize(data []byte) error {
-	if len(data) > maxEventRecordBytes {
-		return eventRecordTooLargeError()
-	}
-	return nil
-}
-
 func newEventRecordReader(r io.Reader) *bufio.Reader {
 	// One extra byte lets a record exactly at the limit plus its newline fit in
 	// one slice, while any larger unterminated prefix trips ErrBufferFull.
