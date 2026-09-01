@@ -92,6 +92,22 @@ func (f *lockedEventLogFile) Sync() error {
 	return nil
 }
 
+func syncEventLogDirectory(path string) error {
+	dirPath := filepath.Dir(path)
+	dfd, err := unix.Open(dirPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open event log directory for sync: %w", err)
+	}
+	if err := unix.Fsync(dfd); err != nil {
+		_ = unix.Close(dfd)
+		return fmt.Errorf("sync event log directory: %w", err)
+	}
+	if err := unix.Close(dfd); err != nil {
+		return fmt.Errorf("close event log directory after sync: %w", err)
+	}
+	return nil
+}
+
 func rotateEventLogIfNeeded(path string) error {
 	// Use the writable validation path so an append keeps its established
 	// contract of repairing loose permissions to 0600 instead of regressing to
@@ -132,17 +148,8 @@ func rotateEventLogIfNeeded(path string) error {
 		return fmt.Errorf("close rotated event log: %w", err)
 	}
 
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("open event log directory after rotation: %w", err)
-	}
-	syncErr := dir.Sync()
-	closeErr := dir.Close()
-	if syncErr != nil {
-		return fmt.Errorf("sync event log directory after rotation: %w", syncErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close event log directory after rotation: %w", closeErr)
+	if err := syncEventLogDirectory(path); err != nil {
+		return fmt.Errorf("sync event log directory after rotation: %w", err)
 	}
 	return nil
 }
@@ -174,6 +181,24 @@ func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
 		_ = lockFile.Close()
 		return nil, err
 	}
+	if err := verifyHeldEventPath(file, path, "event log"); err != nil {
+		_ = file.Close()
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+	// Persist the active pathname before any lifecycle record is accepted. This
+	// is required both for the first events.log and for the new active generation
+	// created after rotation: fsyncing the file contents alone does not make a
+	// newly created directory entry crash-durable.
+	if err := syncEventLogDirectory(path); err != nil {
+		_ = file.Close()
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("persist event log pathname: %w", err)
+	}
+	// A same-user pathname replacement racing the directory fsync must not let
+	// us report a durability barrier for a different inode.
 	if err := verifyHeldEventPath(file, path, "event log"); err != nil {
 		_ = file.Close()
 		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
