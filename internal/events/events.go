@@ -193,6 +193,20 @@ func eventMatchesQuery(evt Event, opts StreamOptions) bool {
 	return false
 }
 
+func validateStreamOptions(opts StreamOptions) error {
+	for _, eventType := range opts.Types {
+		switch eventType {
+		case EventCreate, EventStart, EventExec, EventPause, EventUnpause, EventStop, EventSignal, EventDie, EventRemove, EventExecExit, EventExecFailed:
+		default:
+			if eventType == "" {
+				return fmt.Errorf("event type filter must not be empty")
+			}
+			return fmt.Errorf("unknown event type filter %q", eventType)
+		}
+	}
+	return nil
+}
+
 func validateEventRecord(evt Event) error {
 	if evt.Timestamp.IsZero() {
 		return fmt.Errorf("missing timestamp")
@@ -311,6 +325,10 @@ func openEventLogForStream(logFile string, follow bool) (*os.File, error) {
 }
 
 func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
+	if err := validateStreamOptions(opts); err != nil {
+		return fmt.Errorf("invalid event stream options: %w", err)
+	}
+
 	logFile := LogPath()
 	if opts.Follow {
 		return followEventLogFile(logFile, opts, w)
