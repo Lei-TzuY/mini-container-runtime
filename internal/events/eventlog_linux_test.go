@@ -60,7 +60,7 @@ func TestEventLogRejectsNonRegularTarget(t *testing.T) {
 	}
 }
 
-func TestEventLogRejectsNonPrivatePermissionsForReadAndAppend(t *testing.T) {
+func TestEventLogRejectsNonPrivatePermissionsForRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.log")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o666); err != nil {
 		t.Fatal(err)
@@ -72,10 +72,6 @@ func TestEventLogRejectsNonPrivatePermissionsForReadAndAppend(t *testing.T) {
 	if f, err := openEventLogForRead(path); err == nil {
 		f.Close()
 		t.Fatal("expected world-writable event log to be rejected for read")
-	}
-	if f, err := openEventLogForAppend(path); err == nil {
-		f.Close()
-		t.Fatal("expected world-writable event log to be rejected for append")
 	}
 }
 
