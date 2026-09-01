@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"minicontainer/internal/events"
 )
@@ -29,6 +30,8 @@ func TestParseEventsCLIOptionsQuery(t *testing.T) {
 		"--container", "deadbeef",
 		"--type", "start",
 		"--type=die",
+		"--since", "2026-09-01T01:02:03.123456789Z",
+		"--until=2026-09-01T09:10:11+08:00",
 	}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -42,6 +45,31 @@ func TestParseEventsCLIOptionsQuery(t *testing.T) {
 	wantTypes := []events.EventType{events.EventStart, events.EventDie}
 	if !reflect.DeepEqual(opts.Types, wantTypes) {
 		t.Fatalf("Types = %#v, want %#v", opts.Types, wantTypes)
+	}
+	wantSince := time.Date(2026, 9, 1, 1, 2, 3, 123456789, time.UTC)
+	if !opts.Since.Equal(wantSince) {
+		t.Fatalf("Since = %s, want %s", opts.Since, wantSince)
+	}
+	wantUntil := time.Date(2026, 9, 1, 1, 10, 11, 0, time.UTC)
+	if !opts.Until.Equal(wantUntil) {
+		t.Fatalf("Until = %s, want %s", opts.Until, wantUntil)
+	}
+}
+
+func TestParseEventsCLIOptionsRejectsMalformedTimeBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "since", args: []string{"--since", "yesterday"}},
+		{name: "until", args: []string{"--until", "2026-09-01"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseEventsCLIOptions(tc.args, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), "expected RFC3339 timestamp") {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }
 
