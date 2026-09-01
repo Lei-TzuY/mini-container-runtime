@@ -102,19 +102,19 @@ func TestEventLogAcceptsPrivateSingleLinkTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err := openEventLogForRead(path)
+	readFile, err := openEventLogForRead(path)
 	if err != nil {
 		t.Fatalf("open private event log for read: %v", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := readFile.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	f, err = openEventLogForAppend(path)
+	appendFile, err := openEventLogForAppend(path)
 	if err != nil {
 		t.Fatalf("open private event log for append: %v", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := appendFile.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
