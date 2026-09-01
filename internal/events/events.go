@@ -227,6 +227,9 @@ func writeQueriedEvent(w io.Writer, evt Event, jsonOutput bool) error {
 }
 
 func decodeEventRecord(line []byte) (Event, error) {
+	if err := rejectDuplicateTopLevelFields(line); err != nil {
+		return Event{}, fmt.Errorf("decode event log: %w", err)
+	}
 	var evt Event
 	if err := json.Unmarshal(line, &evt); err != nil {
 		return Event{}, fmt.Errorf("decode event log: %w", err)
@@ -245,20 +248,14 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 			if opts.Follow && err == io.EOF {
 				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
 			} else {
-				var evt Event
-				decodeErr := json.Unmarshal(line, &evt)
+				evt, decodeErr := decodeEventRecord(line)
 				if decodeErr != nil {
 					if err != io.EOF {
-						return fmt.Errorf("decode event log: %w", decodeErr)
+						return decodeErr
 					}
-				} else {
-					if validateErr := validateEventRecord(evt); validateErr != nil {
-						return fmt.Errorf("validate event log: %w", validateErr)
-					}
-					if eventMatchesQuery(evt, opts) {
-						if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
-							return writeErr
-						}
+				} else if eventMatchesQuery(evt, opts) {
+					if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
+						return writeErr
 					}
 				}
 			}
