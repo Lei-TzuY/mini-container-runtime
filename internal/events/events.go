@@ -250,7 +250,10 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 			} else {
 				evt, decodeErr := decodeEventRecord(line)
 				if decodeErr != nil {
-					if err != io.EOF {
+					// At EOF, syntactically incomplete JSON is the recoverable torn-tail
+					// case. A complete JSON object that fails semantic or ambiguity
+					// validation must still fail closed even without a final newline.
+					if err != io.EOF || json.Valid(line) {
 						return decodeErr
 					}
 				} else if eventMatchesQuery(evt, opts) {
