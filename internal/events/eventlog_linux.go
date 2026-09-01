@@ -98,7 +98,7 @@ func rotateEventLogIfNeeded(path string) error {
 	// the stricter read-only policy.
 	current, err := openEventLog(path, unix.O_WRONLY, 0)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("inspect event log for rotation: %w", err)
