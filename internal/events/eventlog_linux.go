@@ -37,17 +37,63 @@ func (f *lockedEventLogFile) Close() error {
 	return errors.Join(fileErr, unlockErr, lockCloseErr)
 }
 
-func verifyLockedEventPath(file *os.File, path string) error {
+func verifyHeldEventPath(file *os.File, path, kind string) error {
 	held, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("inspect held event lock: %w", err)
+		return fmt.Errorf("inspect held %s: %w", kind, err)
 	}
 	current, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("verify event lock path identity: %w", err)
+		return fmt.Errorf("verify %s path identity: %w", kind, err)
 	}
 	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(held, current) {
-		return fmt.Errorf("event lock path changed while locked")
+		return fmt.Errorf("%s path changed while held", kind)
+	}
+	return nil
+}
+
+func verifyLockedEventPath(file *os.File, path string) error {
+	return verifyHeldEventPath(file, path, "event lock")
+}
+
+func (f *lockedEventLogFile) verifyDataPath() error {
+	if f == nil || f.File == nil {
+		return fmt.Errorf("event log writer is closed")
+	}
+	return verifyHeldEventPath(f.File, f.File.Name(), "event log")
+}
+
+// Write refuses to append through an fd whose pathname was replaced after the
+// writer entered its critical section. Without both checks, a same-user process
+// could rename events.log and install a replacement while minictl still held an
+// fd to the old inode, causing an audit record to disappear into an orphaned
+// generation while the append itself appeared to succeed.
+func (f *lockedEventLogFile) Write(p []byte) (int, error) {
+	if err := f.verifyDataPath(); err != nil {
+		return 0, fmt.Errorf("verify event log before write: %w", err)
+	}
+	n, err := f.File.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := f.verifyDataPath(); err != nil {
+		return n, fmt.Errorf("verify event log after write: %w", err)
+	}
+	return n, nil
+}
+
+// Sync revalidates pathname identity after durability is requested so callers
+// cannot report a successful durable audit append after the logical events.log
+// path was swapped away from the inode that was actually synced.
+func (f *lockedEventLogFile) Sync() error {
+	if f == nil || f.File == nil {
+		return fmt.Errorf("event log writer is closed")
+	}
+	if err := f.File.Sync(); err != nil {
+		return err
+	}
+	if err := f.verifyDataPath(); err != nil {
+		return fmt.Errorf("verify event log after sync: %w", err)
 	}
 	return nil
 }
@@ -74,6 +120,12 @@ func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
 
 	file, err := openEventLog(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600)
 	if err != nil {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+	if err := verifyHeldEventPath(file, path, "event log"); err != nil {
+		_ = file.Close()
 		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 		_ = lockFile.Close()
 		return nil, err
