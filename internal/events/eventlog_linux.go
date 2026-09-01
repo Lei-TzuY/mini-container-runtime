@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const maxEventLogBytes int64 = 16 << 20
+
 type lockedEventLogFile struct {
 	*os.File
 	lockFile *os.File
@@ -98,6 +100,58 @@ func (f *lockedEventLogFile) Sync() error {
 	return nil
 }
 
+// rotateEventLogIfNeeded bounds persistent lifecycle-audit growth to the active
+// generation plus one retained generation. It runs only while the stable writer
+// sidecar is exclusively locked, so independent minictl processes cannot race a
+// rename against another append. The current generation is security-validated
+// before rename; unsafe symlink/hard-link/ownership/permission states fail closed.
+func rotateEventLogIfNeeded(path string) error {
+	current, err := openEventLogForRead(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect event log for rotation: %w", err)
+	}
+	info, statErr := current.Stat()
+	if statErr != nil {
+		_ = current.Close()
+		return fmt.Errorf("stat event log for rotation: %w", statErr)
+	}
+	if info.Size() < maxEventLogBytes {
+		return current.Close()
+	}
+	if err := verifyHeldEventPath(current, path, "event log rotation source"); err != nil {
+		_ = current.Close()
+		return err
+	}
+	if err := current.Close(); err != nil {
+		return fmt.Errorf("close event log before rotation: %w", err)
+	}
+
+	rotated := path + ".1"
+	if err := os.Rename(path, rotated); err != nil {
+		return fmt.Errorf("rotate event log: %w", err)
+	}
+
+	// Persist the directory-entry replacement before returning to the append path.
+	// If a crash happens before the new active file is created, the next append
+	// safely recreates events.log while the retained generation remains intact.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open event log directory after rotation: %w", err)
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync event log directory after rotation: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close event log directory after rotation: %w", closeErr)
+	}
+	return nil
+}
+
 func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
 	// Lock a stable sidecar rather than events.log itself. The audit log pathname
 	// may later be replaced during retention/rotation; an inode lock on the old
@@ -113,6 +167,11 @@ func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
 		return nil, fmt.Errorf("lock event log writer: %w", err)
 	}
 	if err := verifyLockedEventPath(lockFile, lockPath); err != nil {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+	if err := rotateEventLogIfNeeded(path); err != nil {
 		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 		_ = lockFile.Close()
 		return nil, err
