@@ -263,7 +263,10 @@ func openEventLogForStream(logFile string, follow bool) (*os.File, error) {
 
 func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	logFile := LogPath()
-	f, err := openEventLogForStream(logFile, opts.Follow)
+	if opts.Follow {
+		return followEventLogFile(logFile, opts, w)
+	}
+	f, err := openEventLogForStream(logFile, false)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
