@@ -69,46 +69,15 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			return false, fmt.Errorf("read event log: %w", err)
 		}
 
-		currentInfo, statErr := f.Stat()
-		if statErr != nil {
-			return false, fmt.Errorf("stat open event log: %w", statErr)
+		reopen, updatedAnchor, inspectErr := inspectEventLogGeneration(f, logFile, reader.Buffered(), generationAnchor)
+		if inspectErr != nil {
+			return false, inspectErr
 		}
-		pathInfo, pathErr := os.Stat(logFile)
-		if pathErr != nil {
-			if os.IsNotExist(pathErr) {
-				// EOF on an inode that no longer has the logical pathname is a
-				// completed generation. Reopen through the pathname so the outer
-				// loop waits for the replacement instead of accepting later writes
-				// through an orphaned descriptor.
-				return true, nil
-			}
-			return false, fmt.Errorf("stat event log path: %w", pathErr)
-		}
-
-		offset, seekErr := f.Seek(0, io.SeekCurrent)
-		if seekErr != nil {
-			return false, fmt.Errorf("inspect event log offset: %w", seekErr)
-		}
-		if !os.SameFile(currentInfo, pathInfo) || pathInfo.Size() < offset-int64(reader.Buffered()) {
+		generationAnchor = updatedAnchor
+		if reopen {
 			// Never emit a pending unterminated record from the old generation. A
 			// complete event is durable only after its terminating newline.
 			return true, nil
-		}
-
-		// A copytruncate-style rotation can truncate and regrow the same inode
-		// beyond our old offset between polling intervals. Size-only detection
-		// misses that race. The first complete record is immutable for a true
-		// append-only generation, so a changed/disappeared anchor proves that the
-		// inode contents were reset even when its size has already recovered.
-		currentAnchor, anchorErr := readEventGenerationAnchor(f)
-		if anchorErr != nil {
-			return false, anchorErr
-		}
-		if len(generationAnchor) > 0 && !bytes.Equal(generationAnchor, currentAnchor) {
-			return true, nil
-		}
-		if len(generationAnchor) == 0 && len(currentAnchor) > 0 {
-			generationAnchor = currentAnchor
 		}
 
 		if len(pending) > 0 {
@@ -118,7 +87,58 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			pending = pending[:0]
 		}
 		time.Sleep(eventFollowPollInterval)
+
+		// Rotation can happen after the EOF inspection but before the next read.
+		// Revalidate here so we never consume bytes from a reset generation at an
+		// offset inherited from the previous one.
+		reopen, updatedAnchor, inspectErr = inspectEventLogGeneration(f, logFile, reader.Buffered(), generationAnchor)
+		if inspectErr != nil {
+			return false, inspectErr
+		}
+		generationAnchor = updatedAnchor
+		if reopen {
+			return true, nil
+		}
 	}
+}
+
+// inspectEventLogGeneration verifies that the open descriptor still represents
+// the same append-only generation exposed by logFile. The first complete event
+// is an immutable anchor: it catches copytruncate races where the same inode is
+// truncated and regrown beyond the old offset between polling intervals, which
+// a size-only check cannot detect.
+func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generationAnchor []byte) (bool, []byte, error) {
+	currentInfo, err := f.Stat()
+	if err != nil {
+		return false, generationAnchor, fmt.Errorf("stat open event log: %w", err)
+	}
+	pathInfo, err := os.Stat(logFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, generationAnchor, nil
+		}
+		return false, generationAnchor, fmt.Errorf("stat event log path: %w", err)
+	}
+
+	offset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return false, generationAnchor, fmt.Errorf("inspect event log offset: %w", err)
+	}
+	if !os.SameFile(currentInfo, pathInfo) || pathInfo.Size() < offset-int64(buffered) {
+		return true, generationAnchor, nil
+	}
+
+	currentAnchor, err := readEventGenerationAnchor(f)
+	if err != nil {
+		return false, generationAnchor, err
+	}
+	if len(generationAnchor) > 0 && !bytes.Equal(generationAnchor, currentAnchor) {
+		return true, generationAnchor, nil
+	}
+	if len(generationAnchor) == 0 && len(currentAnchor) > 0 {
+		generationAnchor = currentAnchor
+	}
+	return false, generationAnchor, nil
 }
 
 // readEventGenerationAnchor returns the first complete record, bounded to a
