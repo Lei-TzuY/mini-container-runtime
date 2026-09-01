@@ -19,4 +19,11 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        shell: bash
+        run: |
+          set +e
+          output=$(go test ./... 2>&1)
+          status=$?
+          printf '```text\n%s\n```\n' "$output" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$output"
+          exit "$status"
