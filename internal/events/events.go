@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"minicontainer/internal/state"
 )
@@ -139,6 +140,13 @@ func appendEventUnlocked(evt Event) error {
 	return nil
 }
 
+func formatHumanEventText(value string) string {
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return strconv.Quote(value)
+	}
+	return value
+}
+
 func FormatEvent(evt Event) string {
 	shortID := evt.ContainerID
 	if len(shortID) > 12 {
@@ -165,7 +173,7 @@ func FormatEvent(evt Event) string {
 		fmt.Fprintf(&b, " error=%s", strconv.Quote(evt.Error))
 	}
 	if evt.Message != "" {
-		fmt.Fprintf(&b, " (%s)", evt.Message)
+		fmt.Fprintf(&b, " (%s)", formatHumanEventText(evt.Message))
 	}
 	return b.String()
 }
