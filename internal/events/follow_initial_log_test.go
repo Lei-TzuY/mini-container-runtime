@@ -3,104 +3,71 @@ package events
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
-	"time"
 )
 
-func TestOpenEventLogForStreamFollowWaitsForInitialLogCreation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	logPath := LogPath()
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+func TestOpenEventLogForStreamWithFollowRetriesInitialAbsence(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "events-")
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer f.Close()
 
-	type result struct {
-		file *os.File
-		err  error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		f, err := openEventLogForStream(logPath, true)
-		resultCh <- result{file: f, err: err}
-	}()
-
-	select {
-	case got := <-resultCh:
-		if got.file != nil {
-			got.file.Close()
+	calls := 0
+	waits := 0
+	got, err := openEventLogForStreamWith("ignored", true, func(string) (*os.File, error) {
+		calls++
+		if calls < 3 {
+			return nil, os.ErrNotExist
 		}
-		t.Fatalf("follow returned before the first event log existed: %v", got.err)
-	case <-time.After(75 * time.Millisecond):
+		return f, nil
+	}, func() { waits++ })
+	if err != nil {
+		t.Fatalf("openEventLogForStreamWith: %v", err)
 	}
-
-	if err := os.WriteFile(logPath, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
+	if got != f {
+		t.Fatalf("opened file = %v, want %v", got, f)
 	}
-
-	select {
-	case got := <-resultCh:
-		if got.err != nil {
-			t.Fatalf("follow did not open newly created event log: %v", got.err)
-		}
-		if got.file == nil {
-			t.Fatal("follow returned nil event log without error")
-		}
-		got.file.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("follow did not observe initial event log creation")
+	if calls != 3 || waits != 2 {
+		t.Fatalf("calls=%d waits=%d, want 3/2", calls, waits)
 	}
 }
 
-func TestOpenEventLogForStreamNonFollowPreservesMissingLogBehavior(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	logPath := LogPath()
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	f, err := openEventLogForStream(logPath, false)
-	if f != nil {
-		f.Close()
+func TestOpenEventLogForStreamWithNonFollowDoesNotRetryAbsence(t *testing.T) {
+	calls := 0
+	waits := 0
+	got, err := openEventLogForStreamWith("ignored", false, func(string) (*os.File, error) {
+		calls++
+		return nil, os.ErrNotExist
+	}, func() { waits++ })
+	if got != nil {
+		got.Close()
 		t.Fatal("non-follow unexpectedly opened missing event log")
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("non-follow error = %v, want os.ErrNotExist", err)
+		t.Fatalf("error=%v, want os.ErrNotExist", err)
+	}
+	if calls != 1 || waits != 0 {
+		t.Fatalf("calls=%d waits=%d, want 1/0", calls, waits)
 	}
 }
 
-func TestOpenEventLogForStreamFollowFailsClosedOnSymlinkLog(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	logPath := LogPath()
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		t.Fatal(err)
+func TestOpenEventLogForStreamWithFollowDoesNotRetrySafetyFailure(t *testing.T) {
+	unsafeErr := errors.New("unsafe event log")
+	calls := 0
+	waits := 0
+	got, err := openEventLogForStreamWith("ignored", true, func(string) (*os.File, error) {
+		calls++
+		return nil, unsafeErr
+	}, func() { waits++ })
+	if got != nil {
+		got.Close()
+		t.Fatal("follow unexpectedly opened unsafe event log")
 	}
-	target := filepath.Join(t.TempDir(), "events-target.log")
-	if err := os.WriteFile(target, nil, 0o600); err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, unsafeErr) {
+		t.Fatalf("error=%v, want safety failure", err)
 	}
-	if err := os.Symlink(target, logPath); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-
-	resultCh := make(chan error, 1)
-	go func() {
-		f, err := openEventLogForStream(logPath, true)
-		if f != nil {
-			f.Close()
-		}
-		resultCh <- err
-	}()
-
-	select {
-	case err := <-resultCh:
-		if err == nil {
-			t.Fatal("follow accepted symlink event log")
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("symlink rejection was misclassified as retryable absence: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("follow retried a non-ENOENT storage safety failure")
+	if calls != 1 || waits != 0 {
+		t.Fatalf("calls=%d waits=%d, want 1/0", calls, waits)
 	}
 }
