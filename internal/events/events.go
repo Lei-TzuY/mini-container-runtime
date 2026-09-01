@@ -185,6 +185,30 @@ func eventMatchesQuery(evt Event, opts StreamOptions) bool {
 	return false
 }
 
+func validateEventRecord(evt Event) error {
+	if evt.Timestamp.IsZero() {
+		return fmt.Errorf("missing timestamp")
+	}
+	if evt.ContainerID == "" {
+		return fmt.Errorf("missing container_id")
+	}
+	switch evt.Type {
+	case EventCreate, EventStart, EventExec, EventPause, EventUnpause, EventStop, EventSignal, EventDie, EventRemove, EventExecExit, EventExecFailed:
+	default:
+		if evt.Type == "" {
+			return fmt.Errorf("missing type")
+		}
+		return fmt.Errorf("unknown type %q", evt.Type)
+	}
+	if evt.ContainerPID < 0 {
+		return fmt.Errorf("invalid container_pid %d", evt.ContainerPID)
+	}
+	if (evt.ContainerPID > 0) != (evt.ContainerPIDStartTime != 0) {
+		return fmt.Errorf("incomplete container process generation")
+	}
+	return nil
+}
+
 func writeQueriedEvent(w io.Writer, evt Event, jsonOutput bool) error {
 	if jsonOutput {
 		data, err := json.Marshal(evt)
@@ -202,6 +226,17 @@ func writeQueriedEvent(w io.Writer, evt Event, jsonOutput bool) error {
 	return nil
 }
 
+func decodeEventRecord(line []byte) (Event, error) {
+	var evt Event
+	if err := json.Unmarshal(line, &evt); err != nil {
+		return Event{}, fmt.Errorf("decode event log: %w", err)
+	}
+	if err := validateEventRecord(evt); err != nil {
+		return Event{}, fmt.Errorf("validate event log: %w", err)
+	}
+	return evt, nil
+}
+
 func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) error {
 	reader := bufio.NewReader(r)
 	for {
@@ -211,13 +246,19 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
 			} else {
 				var evt Event
-				if decodeErr := json.Unmarshal(line, &evt); decodeErr != nil {
+				decodeErr := json.Unmarshal(line, &evt)
+				if decodeErr != nil {
 					if err != io.EOF {
 						return fmt.Errorf("decode event log: %w", decodeErr)
 					}
-				} else if eventMatchesQuery(evt, opts) {
-					if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
-						return writeErr
+				} else {
+					if validateErr := validateEventRecord(evt); validateErr != nil {
+						return fmt.Errorf("validate event log: %w", validateErr)
+					}
+					if eventMatchesQuery(evt, opts) {
+						if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
+							return writeErr
+						}
 					}
 				}
 			}

@@ -3,7 +3,6 @@ package events
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -102,9 +101,9 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 }
 
 func writeCompleteEventRecord(line []byte, opts StreamOptions, w io.Writer) error {
-	var evt Event
-	if err := json.Unmarshal(line, &evt); err != nil {
-		return fmt.Errorf("decode event log: %w", err)
+	evt, err := decodeEventRecord(line)
+	if err != nil {
+		return err
 	}
 	if !eventMatchesQuery(evt, opts) {
 		return nil
