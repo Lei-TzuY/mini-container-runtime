@@ -116,3 +116,76 @@ func TestEventLogAppendRejectsHardLinkedWriterLock(t *testing.T) {
 		t.Fatalf("events.log unexpectedly created, stat err=%v", statErr)
 	}
 }
+
+func TestEventLogAppendRejectsPathReplacementBeforeWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.log")
+	orphan := filepath.Join(dir, "events.log.old")
+	file, err := openEventLogForAppend(path)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	defer file.Close()
+
+	if err := os.Rename(path, orphan); err != nil {
+		t.Fatalf("rename held log: %v", err)
+	}
+	const replacement = "replacement\n"
+	if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+		t.Fatalf("install replacement log: %v", err)
+	}
+
+	if _, err := file.Write([]byte("must-not-be-written\n")); err == nil {
+		t.Fatal("expected pathname replacement to be rejected before write")
+	} else if !strings.Contains(err.Error(), "event log path changed") {
+		t.Fatalf("unexpected write error: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != replacement {
+		t.Fatalf("replacement log was modified: %q", got)
+	}
+	old, err := os.ReadFile(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("orphaned generation received audit data: %q", old)
+	}
+}
+
+func TestEventLogAppendSyncRejectsPathReplacementAfterWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.log")
+	orphan := filepath.Join(dir, "events.log.old")
+	file, err := openEventLogForAppend(path)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write([]byte("durable-record\n")); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	if err := os.Rename(path, orphan); err != nil {
+		t.Fatalf("rename held log after write: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("replacement\n"), 0o600); err != nil {
+		t.Fatalf("install replacement log: %v", err)
+	}
+
+	if err := file.Sync(); err == nil {
+		t.Fatal("expected pathname replacement to be rejected after sync")
+	} else if !strings.Contains(err.Error(), "event log path changed") {
+		t.Fatalf("unexpected sync error: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "replacement\n" {
+		t.Fatalf("replacement log was modified: %q", got)
+	}
+}
