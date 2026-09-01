@@ -177,18 +177,21 @@ func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			var evt Event
-			decodeErr := json.Unmarshal(line, &evt)
-			if decodeErr == nil {
-				if _, writeErr := fmt.Fprintln(w, FormatEvent(evt)); writeErr != nil {
+			if follow && err == io.EOF {
+				// A follower cannot treat an unterminated record as committed yet: the
+				// writer may still append the newline (or the rest of a torn JSON value).
+				// Re-prepend exactly what was consumed and retry after the file grows.
+				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
+			} else {
+				var evt Event
+				if decodeErr := json.Unmarshal(line, &evt); decodeErr != nil {
+					if err != io.EOF {
+						return fmt.Errorf("decode event log: %w", decodeErr)
+					}
+					// A non-following reader ignores only an invalid unterminated tail.
+				} else if _, writeErr := fmt.Fprintln(w, FormatEvent(evt)); writeErr != nil {
 					return fmt.Errorf("write event stream: %w", writeErr)
 				}
-			} else if err != io.EOF {
-				return fmt.Errorf("decode event log: %w", decodeErr)
-			} else if follow {
-				// Preserve a torn tail across EOF so a concurrently appended suffix can
-				// complete the same JSON record on the next read.
-				reader = bufio.NewReader(io.MultiReader(strings.NewReader(string(line)), reader))
 			}
 		}
 
