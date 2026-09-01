@@ -1,7 +1,6 @@
 package events
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -87,7 +86,7 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 // inode would otherwise allow post-unlink appends to leak into the logical
 // events.log stream.
 func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Writer) (bool, error) {
-	reader := bufio.NewReader(f)
+	reader := newEventRecordReader(f)
 	var pending []byte
 	generationAnchor, err := readEventGenerationAnchor(f)
 	if err != nil {
@@ -96,7 +95,7 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 	var checkpoint eventGenerationCheckpoint
 
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readEventRecord(reader)
 		if len(line) > 0 {
 			pending = append(pending, line...)
 			if err == nil {
@@ -137,7 +136,7 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 		if len(pending) > 0 {
 			// Rebuild the reader so a record that was torn at EOF can be completed
 			// when later bytes arrive, without emitting or losing its prefix.
-			reader = bufio.NewReader(io.MultiReader(bytes.NewReader(pending), reader))
+			reader = newEventRecordReader(io.MultiReader(bytes.NewReader(pending), reader))
 			pending = pending[:0]
 		}
 		delay := followPollDelay(opts.Until, time.Now())

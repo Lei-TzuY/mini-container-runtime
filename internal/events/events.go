@@ -7,7 +7,6 @@
 package events
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -126,6 +125,9 @@ func appendEventUnlocked(evt Event) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return err
+	}
+	if len(data) > maxEventRecordBytes {
+		return fmt.Errorf("event record exceeds maximum size of %d bytes", maxEventRecordBytes)
 	}
 
 	f, err := openEventLogForAppend(LogPath())
@@ -275,12 +277,12 @@ func decodeEventRecord(line []byte) (Event, error) {
 }
 
 func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) error {
-	reader := bufio.NewReader(r)
+	reader := newEventRecordReader(r)
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readEventRecord(reader)
 		if len(line) > 0 {
 			if opts.Follow && err == io.EOF {
-				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
+				reader = newEventRecordReader(io.MultiReader(bytes.NewReader(line), reader))
 			} else {
 				evt, decodeErr := decodeEventRecord(line)
 				if decodeErr != nil {
