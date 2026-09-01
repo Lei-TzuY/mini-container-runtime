@@ -17,6 +17,41 @@ type eventGenerationCheckpoint struct {
 	data   []byte
 }
 
+func followDeadlineReached(until, now time.Time) bool {
+	return !until.IsZero() && !now.Before(until)
+}
+
+func followPollDelay(until, now time.Time) time.Duration {
+	if until.IsZero() {
+		return eventFollowPollInterval
+	}
+	remaining := until.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	if remaining < eventFollowPollInterval {
+		return remaining
+	}
+	return eventFollowPollInterval
+}
+
+func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpenFunc, now func() time.Time, wait func(time.Duration)) (*os.File, bool, error) {
+	for {
+		f, err := open(logFile)
+		if err == nil {
+			return f, false, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, false, err
+		}
+		delay := followPollDelay(until, now())
+		if delay == 0 {
+			return nil, true, nil
+		}
+		wait(delay)
+	}
+}
+
 // followEventLogFile follows the logical events.log pathname, not merely the
 // inode that happened to exist when the command started. This matters when an
 // administrator rotates/replaces the audit log or truncates it in place: a
@@ -24,9 +59,12 @@ type eventGenerationCheckpoint struct {
 // an offset beyond the new end of file.
 func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 	for {
-		f, err := openEventLogForStream(logFile, true)
+		f, expired, err := openEventLogForFollowWith(logFile, opts.Until, openEventLogForRead, time.Now, time.Sleep)
 		if err != nil {
 			return err
+		}
+		if expired {
+			return nil
 		}
 		reopen, err := followOpenEventLog(f, logFile, opts, w)
 		closeErr := f.Close()
@@ -89,6 +127,12 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 		if inspectErr != nil {
 			return false, inspectErr
 		}
+		if followDeadlineReached(opts.Until, time.Now()) {
+			// Reaching --until only terminates after EOF and generation validation,
+			// so durable records already present (including a just-rotated file) are
+			// drained while a torn tail remains intentionally uncommitted.
+			return false, nil
+		}
 
 		if len(pending) > 0 {
 			// Rebuild the reader so a record that was torn at EOF can be completed
@@ -96,7 +140,11 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			reader = bufio.NewReader(io.MultiReader(bytes.NewReader(pending), reader))
 			pending = pending[:0]
 		}
-		time.Sleep(eventFollowPollInterval)
+		delay := followPollDelay(opts.Until, time.Now())
+		if delay == 0 {
+			return false, nil
+		}
+		time.Sleep(delay)
 
 		// Rotation can happen after the EOF inspection but before the next read.
 		// Revalidate here so we never consume bytes from a reset generation at an
