@@ -105,9 +105,6 @@ func Publish(evtType EventType, containerID, image, message string) error {
 		if !consumeDieProof(containerID) {
 			return nil
 		}
-		// Event persistence is deliberately best-effort for an already-finished
-		// generation. Never wedge the in-process proof if appending the audit log
-		// fails; otherwise a restart attempt could not establish its own Start.
 		defer finishDieProof(containerID)
 	}
 
@@ -118,10 +115,7 @@ func Publish(evtType EventType, containerID, image, message string) error {
 		Image:       image,
 		Message:     message,
 	}
-	if err := appendEventUnlocked(evt); err != nil {
-		return err
-	}
-	return nil
+	return appendEventUnlocked(evt)
 }
 
 func appendEventUnlocked(evt Event) error {
@@ -145,10 +139,6 @@ func appendEventUnlocked(evt Event) error {
 	return nil
 }
 
-// FormatEvent renders one lifecycle event for the human-facing CLI. Structured
-// fields are emitted as explicit key=value attributes so recently added exec
-// generation/outcome metadata is observable without parsing the append-only JSON
-// log directly. Command argv is JSON encoded to preserve argument boundaries.
 func FormatEvent(evt Event) string {
 	shortID := evt.ContainerID
 	if len(shortID) > 12 {
@@ -212,19 +202,12 @@ func writeQueriedEvent(w io.Writer, evt Event, jsonOutput bool) error {
 	return nil
 }
 
-// streamEventLogWithOptions consumes the append-only log one record boundary at
-// a time and applies query filters only after a complete record has been decoded.
-// This preserves corruption detection: an unmatched malformed complete record is
-// still corruption and cannot be hidden by a filter.
 func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) error {
 	reader := bufio.NewReader(r)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if opts.Follow && err == io.EOF {
-				// A follower cannot treat an unterminated record as committed yet: the
-				// writer may still append the newline (or the rest of a torn JSON value).
-				// Re-prepend exactly what was consumed and retry after the file grows.
 				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
 			} else {
 				var evt Event
@@ -232,7 +215,6 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 					if err != io.EOF {
 						return fmt.Errorf("decode event log: %w", decodeErr)
 					}
-					// A non-following reader ignores only an invalid unterminated tail.
 				} else if eventMatchesQuery(evt, opts) {
 					if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
 						return writeErr
@@ -254,17 +236,34 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 	}
 }
 
-// streamEventLog preserves the historical internal API for focused recovery
-// tests and callers that only need the human renderer.
 func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
 	return streamEventLogWithOptions(r, StreamOptions{Follow: follow}, w)
 }
 
-// StreamEventsWithOptions reads and outputs historical and real-time events
-// using structured query/render options.
+type eventLogOpenFunc func(string) (*os.File, error)
+
+func openEventLogForStreamWith(logFile string, follow bool, open eventLogOpenFunc, wait func()) (*os.File, error) {
+	for {
+		f, err := open(logFile)
+		if err == nil {
+			return f, nil
+		}
+		if !os.IsNotExist(err) || !follow {
+			return nil, err
+		}
+		wait()
+	}
+}
+
+func openEventLogForStream(logFile string, follow bool) (*os.File, error) {
+	return openEventLogForStreamWith(logFile, follow, openEventLogForRead, func() {
+		time.Sleep(200 * time.Millisecond)
+	})
+}
+
 func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	logFile := LogPath()
-	f, err := openEventLogForRead(logFile)
+	f, err := openEventLogForStream(logFile, opts.Follow)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -276,7 +275,6 @@ func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	return streamEventLogWithOptions(f, opts, w)
 }
 
-// StreamEvents reads and outputs historical and real-time events to w.
 func StreamEvents(follow bool, w io.Writer) error {
 	return StreamEventsWithOptions(StreamOptions{Follow: follow}, w)
 }
