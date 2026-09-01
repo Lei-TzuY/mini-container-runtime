@@ -2,6 +2,7 @@ package events
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,15 +10,11 @@ import (
 
 func eventRecordForTest(t *testing.T, evt Event) string {
 	t.Helper()
-	data, err := jsonMarshalEventForTest(evt)
+	data, err := json.Marshal(evt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func jsonMarshalEventForTest(evt Event) ([]byte, error) {
-	return json.Marshal(evt)
 }
 
 func TestStreamEventLogIgnoresTornTrailingRecordButKeepsDurableHistory(t *testing.T) {
