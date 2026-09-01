@@ -10,6 +10,7 @@ import (
 )
 
 const eventFollowPollInterval = 200 * time.Millisecond
+const eventGenerationAnchorLimit = 4096
 
 // followEventLogFile follows the logical events.log pathname, not merely the
 // inode that happened to exist when the command started. This matters when an
@@ -45,6 +46,10 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Writer) (bool, error) {
 	reader := bufio.NewReader(f)
 	var pending []byte
+	generationAnchor, err := readEventGenerationAnchor(f)
+	if err != nil {
+		return false, err
+	}
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -90,6 +95,22 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			return true, nil
 		}
 
+		// A copytruncate-style rotation can truncate and regrow the same inode
+		// beyond our old offset between polling intervals. Size-only detection
+		// misses that race. The first complete record is immutable for a true
+		// append-only generation, so a changed/disappeared anchor proves that the
+		// inode contents were reset even when its size has already recovered.
+		currentAnchor, anchorErr := readEventGenerationAnchor(f)
+		if anchorErr != nil {
+			return false, anchorErr
+		}
+		if len(generationAnchor) > 0 && !bytes.Equal(generationAnchor, currentAnchor) {
+			return true, nil
+		}
+		if len(generationAnchor) == 0 && len(currentAnchor) > 0 {
+			generationAnchor = currentAnchor
+		}
+
 		if len(pending) > 0 {
 			// Rebuild the reader so a record that was torn at EOF can be completed
 			// when later bytes arrive, without emitting or losing its prefix.
@@ -98,6 +119,23 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 		}
 		time.Sleep(eventFollowPollInterval)
 	}
+}
+
+// readEventGenerationAnchor returns the first complete record, bounded to a
+// small prefix so ordinary event following never allocates based on potentially
+// corrupt log contents. No complete record within the prefix means there is no
+// anchor yet; size/identity checks continue to provide the fallback semantics.
+// ReadAt deliberately leaves the follower's sequential offset untouched.
+func readEventGenerationAnchor(f *os.File) ([]byte, error) {
+	buf := make([]byte, eventGenerationAnchorLimit)
+	n, err := f.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("read event log generation anchor: %w", err)
+	}
+	if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+		return bytes.Clone(buf[:i+1]), nil
+	}
+	return nil, nil
 }
 
 func writeCompleteEventRecord(line []byte, opts StreamOptions, w io.Writer) error {
