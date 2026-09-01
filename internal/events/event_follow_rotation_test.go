@@ -60,6 +60,34 @@ func TestFollowOpenEventLogRequestsReopenAfterPathReplacement(t *testing.T) {
 	}
 }
 
+func TestFollowOpenEventLogRequestsReopenWhenPathDisappears(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.log")
+	oldEvent := Event{Timestamp: time.Unix(4, 0).UTC(), Type: EventStop, ContainerID: "unlinked-generation"}
+	writeFollowTestRecord(t, path, oldEvent, true)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	reopen, err := followOpenEventLog(f, path, StreamOptions{JSON: true}, &out)
+	if err != nil {
+		t.Fatalf("follow unlinked generation: %v", err)
+	}
+	if !reopen {
+		t.Fatal("expected missing logical path at EOF to request reopen")
+	}
+	if got := out.String(); !strings.Contains(got, "unlinked-generation") {
+		t.Fatalf("durable pre-unlink event was not emitted before reopen: %q", got)
+	}
+}
+
 func TestFollowOpenEventLogDropsTornOldTailOnReplacement(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.log")
