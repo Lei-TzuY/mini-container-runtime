@@ -82,6 +82,18 @@ func openEventAt(dirFD int, name, displayPath string, flags int, mode uint32) (*
 		unix.Close(fd)
 		return nil, fmt.Errorf("event log is not a regular file")
 	}
+	if st.Uid != uint32(unix.Geteuid()) {
+		unix.Close(fd)
+		return nil, fmt.Errorf("event log owner does not match runtime user")
+	}
+	if st.Nlink != 1 {
+		unix.Close(fd)
+		return nil, fmt.Errorf("event log has unexpected hard links")
+	}
+	if st.Mode&0o077 != 0 {
+		unix.Close(fd)
+		return nil, fmt.Errorf("event log permissions are not private")
+	}
 	if flags&(unix.O_WRONLY|unix.O_RDWR) != 0 {
 		if err := unix.Fchmod(fd, 0o600); err != nil {
 			unix.Close(fd)
