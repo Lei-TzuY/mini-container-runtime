@@ -200,11 +200,11 @@ func validateEventRecord(evt Event) error {
 		}
 		return fmt.Errorf("unknown type %q", evt.Type)
 	}
-	if (evt.ContainerPID > 0) != (evt.ContainerPIDStartTime != 0) {
-		return fmt.Errorf("incomplete container process generation")
-	}
 	if evt.ContainerPID < 0 {
 		return fmt.Errorf("invalid container_pid %d", evt.ContainerPID)
+	}
+	if (evt.ContainerPID > 0) != (evt.ContainerPIDStartTime != 0) {
+		return fmt.Errorf("incomplete container process generation")
 	}
 	return nil
 }
@@ -245,14 +245,20 @@ func streamEventLogWithOptions(r io.Reader, opts StreamOptions, w io.Writer) err
 			if opts.Follow && err == io.EOF {
 				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
 			} else {
-				evt, decodeErr := decodeEventRecord(line)
+				var evt Event
+				decodeErr := json.Unmarshal(line, &evt)
 				if decodeErr != nil {
 					if err != io.EOF {
-						return decodeErr
+						return fmt.Errorf("decode event log: %w", decodeErr)
 					}
-				} else if eventMatchesQuery(evt, opts) {
-					if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
-						return writeErr
+				} else {
+					if validateErr := validateEventRecord(evt); validateErr != nil {
+						return fmt.Errorf("validate event log: %w", validateErr)
+					}
+					if eventMatchesQuery(evt, opts) {
+						if writeErr := writeQueriedEvent(w, evt, opts.JSON); writeErr != nil {
+							return writeErr
+						}
 					}
 				}
 			}
