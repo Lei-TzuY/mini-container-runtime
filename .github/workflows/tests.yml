@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -19,11 +20,26 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
+        id: test
+        continue-on-error: true
         shell: bash
         run: |
           set +e
-          output=$(go test ./... 2>&1)
-          status=$?
-          printf '```text\n%s\n```\n' "$output" >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' "$output"
+          go test ./... 2>&1 | tee /tmp/go-test.log
+          status=${PIPESTATUS[0]}
           exit "$status"
+      - name: Report test failure
+        if: steps.test.outcome == 'failure' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo 'Diagnostic `go test ./...` output:'
+            echo '```text'
+            cat /tmp/go-test.log
+            echo '```'
+          } > /tmp/pr-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment.md
+      - name: Fail test job
+        if: steps.test.outcome == 'failure'
+        run: exit 1
