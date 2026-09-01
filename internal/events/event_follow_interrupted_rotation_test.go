@@ -54,57 +54,53 @@ func TestOpenEventLogGenerationForFollowFallsBackToRetainedOnlyAtStartup(t *test
 	}
 }
 
-func TestFollowEventLogRecoversRetainedGenerationWithoutReplay(t *testing.T) {
+func TestInterruptedRotationDrainsRetainedThenActiveExactlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.log")
-	retained := Event{Timestamp: time.Now().Add(-time.Second).UTC(), Type: EventStop, ContainerID: "retained-once"}
+	retained := Event{Timestamp: time.Unix(1, 0).UTC(), Type: EventStop, ContainerID: "retained-once"}
 	writeFollowTestRecord(t, path+".1", retained, true)
 
-	writes := make(chan []byte, 8)
-	result := make(chan error, 1)
-	go func() {
-		result <- followEventLogFile(path, StreamOptions{Follow: true, JSON: true, Until: time.Now().Add(900 * time.Millisecond)}, notifyingWriter{writes: writes})
-	}()
-
-	select {
-	case first := <-writes:
-		if !bytes.Contains(first, []byte("retained-once")) {
-			t.Fatalf("first event=%q, want retained generation", first)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for retained generation")
+	f, expired, err := openEventLogGenerationForFollowWith(path, time.Time{}, true, openEventLogForRead, time.Now, func(time.Duration) {
+		t.Fatal("unexpected wait while retained generation exists")
+	})
+	if err != nil || expired {
+		t.Fatalf("open retained: expired=%v err=%v", expired, err)
 	}
 
-	active := Event{Timestamp: time.Now().UTC(), Type: EventStart, ContainerID: "recovered-active"}
+	var out bytes.Buffer
+	reopen, err := followOpenEventLog(f, path, StreamOptions{Follow: true, JSON: true, Until: time.Unix(10, 0).UTC()}, &out)
+	if closeErr := f.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("drain retained generation: %v", err)
+	}
+	if !reopen {
+		t.Fatal("missing active pathname must request reopen after retained drain")
+	}
+
+	active := Event{Timestamp: time.Unix(2, 0).UTC(), Type: EventStart, ContainerID: "recovered-active"}
 	writeFollowTestRecord(t, path, active, true)
-
-	var observed bytes.Buffer
-	deadline := time.After(2 * time.Second)
-	for !strings.Contains(observed.String(), "recovered-active") {
-		select {
-		case chunk := <-writes:
-			observed.Write(chunk)
-		case err := <-result:
-			if err != nil {
-				t.Fatalf("follow interrupted rotation: %v", err)
-			}
-			t.Fatalf("follow exited before recovered active event: %q", observed.String())
-		case <-deadline:
-			t.Fatalf("timed out waiting for recovered active event: %q", observed.String())
-		}
+	f, expired, err = openEventLogGenerationForFollowWith(path, time.Unix(10, 0).UTC(), false, openEventLogForRead, func() time.Time { return time.Unix(3, 0).UTC() }, func(time.Duration) {
+		t.Fatal("active generation exists; reopen must not wait")
+	})
+	if err != nil || expired {
+		t.Fatalf("open recovered active: expired=%v err=%v", expired, err)
+	}
+	reopen, err = followOpenEventLog(f, path, StreamOptions{Follow: true, JSON: true, Until: time.Unix(10, 0).UTC()}, &out)
+	if closeErr := f.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("drain recovered active: %v", err)
+	}
+	if reopen {
+		t.Fatal("stable recovered active generation unexpectedly requested reopen")
 	}
 
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("follow interrupted rotation: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("follow did not terminate at until deadline")
-	}
-
-	if strings.Count(observed.String(), "retained-once") != 0 {
-		t.Fatalf("retained generation replayed after first delivery: %q", observed.String())
+	got := out.String()
+	if strings.Count(got, "retained-once") != 1 || strings.Count(got, "recovered-active") != 1 {
+		t.Fatalf("generation output=%q, want each event exactly once", got)
 	}
 }
 
