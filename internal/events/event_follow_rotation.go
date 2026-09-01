@@ -34,7 +34,7 @@ func followPollDelay(until, now time.Time) time.Duration {
 	return eventFollowPollInterval
 }
 
-func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpenFunc, now func() time.Time, wait func(time.Duration)) (*os.File, bool, error) {
+func openEventLogGenerationForFollowWith(logFile string, until time.Time, allowRetained bool, open eventLogOpenFunc, now func() time.Time, wait func(time.Duration)) (*os.File, bool, error) {
 	for {
 		f, err := open(logFile)
 		if err == nil {
@@ -44,16 +44,18 @@ func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpe
 			return nil, false, err
 		}
 
-		// Rotation renames the active generation before creating its replacement.
-		// If a follower starts in that crash/interruption window, drain the retained
-		// generation instead of waiting for a new active pathname and silently
-		// losing the durable records that were just rotated out.
-		retained, retainedErr := open(logFile + ".1")
-		if retainedErr == nil {
-			return retained, false, nil
-		}
-		if !os.IsNotExist(retainedErr) {
-			return nil, false, retainedErr
+		if allowRetained {
+			// Rotation renames the active generation before creating its replacement.
+			// If a follower starts in that crash/interruption window, drain the retained
+			// generation instead of waiting for a new active pathname and silently
+			// losing the durable records that were just rotated out.
+			retained, retainedErr := open(logFile + ".1")
+			if retainedErr == nil {
+				return retained, false, nil
+			}
+			if !os.IsNotExist(retainedErr) {
+				return nil, false, retainedErr
+			}
 		}
 
 		delay := followPollDelay(until, now())
@@ -64,20 +66,32 @@ func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpe
 	}
 }
 
+// openEventLogForFollowWith retains the active-path-only contract used by
+// focused deadline tests. Interrupted-rotation recovery is enabled explicitly
+// by followEventLogFile only for its first attachment.
+func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpenFunc, now func() time.Time, wait func(time.Duration)) (*os.File, bool, error) {
+	return openEventLogGenerationForFollowWith(logFile, until, false, open, now, wait)
+}
+
 // followEventLogFile follows the logical events.log pathname, not merely the
 // inode that happened to exist when the command started. This matters when an
 // administrator rotates/replaces the audit log or truncates it in place: a
 // long-running observer must not remain pinned forever to an orphaned inode or
 // an offset beyond the new end of file.
 func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
+	allowRetained := true
 	for {
-		f, expired, err := openEventLogForFollowWith(logFile, opts.Until, openEventLogForRead, time.Now, time.Sleep)
+		f, expired, err := openEventLogGenerationForFollowWith(logFile, opts.Until, allowRetained, openEventLogForRead, time.Now, time.Sleep)
 		if err != nil {
 			return err
 		}
 		if expired {
 			return nil
 		}
+		// Retained fallback is startup recovery only. After attaching to any
+		// generation, reopening .1 could replay the just-drained active inode after
+		// a later rotation.
+		allowRetained = false
 		reopen, err := followOpenEventLog(f, logFile, opts, w)
 		closeErr := f.Close()
 		if err != nil {
