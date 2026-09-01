@@ -73,6 +73,11 @@ type StreamOptions struct {
 	Until           time.Time
 }
 
+type eventLogSnapshotFile struct {
+	file *os.File
+	size int64
+}
+
 var mu sync.Mutex
 
 // LogPath returns the path to the events append-only log file.
@@ -338,6 +343,28 @@ func openEventLogForStream(logFile string, follow bool) (*os.File, error) {
 	})
 }
 
+func streamHistoricalEventLogs(logFile string, opts StreamOptions, w io.Writer) error {
+	snapshot, err := openEventLogSnapshotForRead(logFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() {
+		for _, generation := range snapshot {
+			_ = generation.file.Close()
+		}
+	}()
+
+	for _, generation := range snapshot {
+		if err := streamEventLogWithOptions(io.LimitReader(generation.file, generation.size), opts, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	if err := validateStreamOptions(opts); err != nil {
 		return fmt.Errorf("invalid event stream options: %w", err)
@@ -347,16 +374,7 @@ func StreamEventsWithOptions(opts StreamOptions, w io.Writer) error {
 	if opts.Follow {
 		return followEventLogFile(logFile, opts, w)
 	}
-	f, err := openEventLogForStream(logFile, false)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-
-	return streamEventLogWithOptions(f, opts, w)
+	return streamHistoricalEventLogs(logFile, opts, w)
 }
 
 func StreamEvents(follow bool, w io.Writer) error {
