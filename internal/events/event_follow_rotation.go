@@ -103,10 +103,10 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 }
 
 // inspectEventLogGeneration verifies that the open descriptor still represents
-// the same append-only generation exposed by logFile. The first complete event
-// is an immutable anchor: it catches copytruncate races where the same inode is
-// truncated and regrown beyond the old offset between polling intervals, which
-// a size-only check cannot detect.
+// the same append-only generation exposed by logFile. A bounded prefix anchor
+// is immutable for an append-only file and catches copytruncate races where the
+// same inode is truncated and regrown beyond the old offset between polling
+// intervals, including logs whose first JSON record exceeds the anchor limit.
 func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generationAnchor []byte) (bool, []byte, error) {
 	currentInfo, err := f.Stat()
 	if err != nil {
@@ -132,30 +132,29 @@ func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generat
 	if err != nil {
 		return false, generationAnchor, err
 	}
-	if len(generationAnchor) > 0 && !bytes.Equal(generationAnchor, currentAnchor) {
-		return true, generationAnchor, nil
-	}
-	if len(generationAnchor) == 0 && len(currentAnchor) > 0 {
+	if len(generationAnchor) > 0 {
+		if len(currentAnchor) < len(generationAnchor) || !bytes.Equal(generationAnchor, currentAnchor[:len(generationAnchor)]) {
+			return true, generationAnchor, nil
+		}
+	} else if len(currentAnchor) > 0 {
 		generationAnchor = currentAnchor
 	}
 	return false, generationAnchor, nil
 }
 
-// readEventGenerationAnchor returns the first complete record, bounded to a
-// small prefix so ordinary event following never allocates based on potentially
-// corrupt log contents. No complete record within the prefix means there is no
-// anchor yet; size/identity checks continue to provide the fallback semantics.
-// ReadAt deliberately leaves the follower's sequential offset untouched.
+// readEventGenerationAnchor returns a bounded prefix of the current log
+// generation. The prefix does not require a terminating newline: anchoring the
+// bytes of a large or temporarily torn first record still detects an in-place
+// generation reset, while later append-only growth leaves the captured prefix
+// unchanged. ReadAt deliberately leaves the follower's sequential offset
+// untouched.
 func readEventGenerationAnchor(f *os.File) ([]byte, error) {
 	buf := make([]byte, eventGenerationAnchorLimit)
 	n, err := f.ReadAt(buf, 0)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("read event log generation anchor: %w", err)
 	}
-	if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
-		return bytes.Clone(buf[:i+1]), nil
-	}
-	return nil, nil
+	return bytes.Clone(buf[:n]), nil
 }
 
 func writeCompleteEventRecord(line []byte, opts StreamOptions, w io.Writer) error {
