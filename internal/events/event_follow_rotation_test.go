@@ -44,7 +44,7 @@ func TestFollowOpenEventLogRequestsReopenAfterPathReplacement(t *testing.T) {
 	writeFollowTestRecord(t, path, newEvent, true)
 
 	var out bytes.Buffer
-	reopen, err := followOpenEventLog(f, path, StreamOptions{}, &out)
+	reopen, err := followOpenEventLog(f, path, StreamOptions{JSON: true}, &out)
 	if err != nil {
 		t.Fatalf("follow old generation: %v", err)
 	}
