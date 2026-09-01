@@ -12,6 +12,17 @@ import (
 // controlled events.log from making queries/followers allocate without bound.
 const maxEventRecordBytes = 1 << 20
 
+func eventRecordTooLargeError() error {
+	return fmt.Errorf("event record exceeds maximum size of %d bytes", maxEventRecordBytes)
+}
+
+func validateEventRecordSize(data []byte) error {
+	if len(data) > maxEventRecordBytes {
+		return eventRecordTooLargeError()
+	}
+	return nil
+}
+
 func newEventRecordReader(r io.Reader) *bufio.Reader {
 	// One extra byte lets a record exactly at the limit plus its newline fit in
 	// one slice, while any larger unterminated prefix trips ErrBufferFull.
@@ -21,7 +32,7 @@ func newEventRecordReader(r io.Reader) *bufio.Reader {
 func readEventRecord(reader *bufio.Reader) ([]byte, error) {
 	line, err := reader.ReadSlice('\n')
 	if errors.Is(err, bufio.ErrBufferFull) {
-		return nil, fmt.Errorf("event record exceeds maximum size of %d bytes", maxEventRecordBytes)
+		return nil, eventRecordTooLargeError()
 	}
 
 	payloadLen := len(line)
@@ -29,7 +40,7 @@ func readEventRecord(reader *bufio.Reader) ([]byte, error) {
 		payloadLen--
 	}
 	if payloadLen > maxEventRecordBytes {
-		return nil, fmt.Errorf("event record exceeds maximum size of %d bytes", maxEventRecordBytes)
+		return nil, eventRecordTooLargeError()
 	}
 	return line, err
 }
