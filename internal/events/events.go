@@ -63,12 +63,15 @@ type Event struct {
 // StreamOptions controls event query and rendering without changing the durable
 // append-only log schema. ContainerPrefix is intentionally a prefix selector so
 // callers can use the same short IDs exposed by other minictl commands. Types is
-// an OR filter; an empty slice selects every event type.
+// an OR filter; an empty slice selects every event type. Since and Until are
+// inclusive absolute timestamp bounds; zero values leave that side unbounded.
 type StreamOptions struct {
 	Follow          bool
 	JSON            bool
 	ContainerPrefix string
 	Types           []EventType
+	Since           time.Time
+	Until           time.Time
 }
 
 var mu sync.Mutex
@@ -182,6 +185,12 @@ func eventMatchesQuery(evt Event, opts StreamOptions) bool {
 	if opts.ContainerPrefix != "" && !strings.HasPrefix(evt.ContainerID, opts.ContainerPrefix) {
 		return false
 	}
+	if !opts.Since.IsZero() && evt.Timestamp.Before(opts.Since) {
+		return false
+	}
+	if !opts.Until.IsZero() && evt.Timestamp.After(opts.Until) {
+		return false
+	}
 	if len(opts.Types) == 0 {
 		return true
 	}
@@ -194,6 +203,9 @@ func eventMatchesQuery(evt Event, opts StreamOptions) bool {
 }
 
 func validateStreamOptions(opts StreamOptions) error {
+	if !opts.Since.IsZero() && !opts.Until.IsZero() && opts.Since.After(opts.Until) {
+		return fmt.Errorf("since timestamp must not be after until timestamp")
+	}
 	for _, eventType := range opts.Types {
 		switch eventType {
 		case EventCreate, EventStart, EventExec, EventPause, EventUnpause, EventStop, EventSignal, EventDie, EventRemove, EventExecExit, EventExecFailed:
