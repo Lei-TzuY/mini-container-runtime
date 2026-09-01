@@ -7,6 +7,8 @@
 package events
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -167,6 +169,46 @@ func FormatEvent(evt Event) string {
 	return b.String()
 }
 
+// streamEventLog consumes the append-only log one record boundary at a time.
+// A crash can leave the final JSON record torn after the previous fsync. Such an
+// unterminated tail is not durable evidence and must not make all historical
+// events unreadable. Complete malformed records still fail closed as corruption.
+func streamEventLog(r io.Reader, follow bool, w io.Writer) error {
+	reader := bufio.NewReader(r)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if follow && err == io.EOF {
+				// A follower cannot treat an unterminated record as committed yet: the
+				// writer may still append the newline (or the rest of a torn JSON value).
+				// Re-prepend exactly what was consumed and retry after the file grows.
+				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(line), reader))
+			} else {
+				var evt Event
+				if decodeErr := json.Unmarshal(line, &evt); decodeErr != nil {
+					if err != io.EOF {
+						return fmt.Errorf("decode event log: %w", decodeErr)
+					}
+					// A non-following reader ignores only an invalid unterminated tail.
+				} else if _, writeErr := fmt.Fprintln(w, FormatEvent(evt)); writeErr != nil {
+					return fmt.Errorf("write event stream: %w", writeErr)
+				}
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+		if err != io.EOF {
+			return fmt.Errorf("read event log: %w", err)
+		}
+		if !follow {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // StreamEvents reads and outputs historical and real-time events to w.
 func StreamEvents(follow bool, w io.Writer) error {
 	logFile := LogPath()
@@ -179,22 +221,5 @@ func StreamEvents(follow bool, w io.Writer) error {
 	}
 	defer f.Close()
 
-	dec := json.NewDecoder(f)
-	for {
-		var evt Event
-		if err := dec.Decode(&evt); err != nil {
-			if err == io.EOF {
-				if !follow {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
-				continue
-			}
-			return fmt.Errorf("decode event log: %w", err)
-		}
-		if _, err := fmt.Fprintln(w, FormatEvent(evt)); err != nil {
-			return fmt.Errorf("write event stream: %w", err)
-		}
-	}
-	return nil
+	return streamEventLog(f, follow, w)
 }
