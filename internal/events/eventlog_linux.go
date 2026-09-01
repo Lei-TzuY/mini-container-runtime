@@ -3,6 +3,7 @@
 package events
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,8 +11,74 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func openEventLogForAppend(path string) (*os.File, error) {
-	return openEventLog(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600)
+type lockedEventLogFile struct {
+	*os.File
+	lockFile *os.File
+}
+
+func (f *lockedEventLogFile) Close() error {
+	if f == nil {
+		return nil
+	}
+	var fileErr error
+	if f.File != nil {
+		fileErr = f.File.Close()
+		f.File = nil
+	}
+	if f.lockFile == nil {
+		return fileErr
+	}
+	unlockErr := unix.Flock(int(f.lockFile.Fd()), unix.LOCK_UN)
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("unlock event log writer: %w", unlockErr)
+	}
+	lockCloseErr := f.lockFile.Close()
+	f.lockFile = nil
+	return errors.Join(fileErr, unlockErr, lockCloseErr)
+}
+
+func verifyLockedEventPath(file *os.File, path string) error {
+	held, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect held event lock: %w", err)
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("verify event lock path identity: %w", err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(held, current) {
+		return fmt.Errorf("event lock path changed while locked")
+	}
+	return nil
+}
+
+func openEventLogForAppend(path string) (*lockedEventLogFile, error) {
+	// Lock a stable sidecar rather than events.log itself. The audit log pathname
+	// may later be replaced during retention/rotation; an inode lock on the old
+	// generation would then allow a second writer to lock the new generation and
+	// enter the append critical section concurrently.
+	lockPath := path + ".lock"
+	lockFile, err := openEventLog(lockPath, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open event log writer lock: %w", err)
+	}
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("lock event log writer: %w", err)
+	}
+	if err := verifyLockedEventPath(lockFile, lockPath); err != nil {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+
+	file, err := openEventLog(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600)
+	if err != nil {
+		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+		_ = lockFile.Close()
+		return nil, err
+	}
+	return &lockedEventLogFile{File: file, lockFile: lockFile}, nil
 }
 
 func openEventLogForRead(path string) (*os.File, error) {
