@@ -38,7 +38,11 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 }
 
 // followOpenEventLog returns reopen=true when the pathname now identifies a
-// different file or the current file was truncated behind our read offset.
+// different file, disappears, or the current file was truncated behind our
+// read offset. Once EOF proves we have consumed the current generation, a
+// missing pathname is also a generation boundary: waiting on the orphaned open
+// inode would otherwise allow post-unlink appends to leak into the logical
+// events.log stream.
 func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Writer) (bool, error) {
 	reader := bufio.NewReader(f)
 	var pending []byte
@@ -68,8 +72,11 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 		pathInfo, pathErr := os.Stat(logFile)
 		if pathErr != nil {
 			if os.IsNotExist(pathErr) {
-				time.Sleep(eventFollowPollInterval)
-				continue
+				// EOF on an inode that no longer has the logical pathname is a
+				// completed generation. Reopen through the pathname so the outer
+				// loop waits for the replacement instead of accepting later writes
+				// through an orphaned descriptor.
+				return true, nil
 			}
 			return false, fmt.Errorf("stat event log path: %w", pathErr)
 		}
