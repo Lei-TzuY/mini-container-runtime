@@ -12,6 +12,11 @@ import (
 const eventFollowPollInterval = 200 * time.Millisecond
 const eventGenerationAnchorLimit = 4096
 
+type eventGenerationCheckpoint struct {
+	offset int64
+	data   []byte
+}
+
 // followEventLogFile follows the logical events.log pathname, not merely the
 // inode that happened to exist when the command started. This matters when an
 // administrator rotates/replaces the audit log or truncates it in place: a
@@ -50,6 +55,7 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 	if err != nil {
 		return false, err
 	}
+	var checkpoint eventGenerationCheckpoint
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -69,7 +75,7 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			return false, fmt.Errorf("read event log: %w", err)
 		}
 
-		reopen, updatedAnchor, inspectErr := inspectEventLogGeneration(f, logFile, reader.Buffered(), generationAnchor)
+		reopen, updatedAnchor, inspectErr := inspectEventLogGenerationWithCheckpoint(f, logFile, reader.Buffered(), generationAnchor, checkpoint)
 		if inspectErr != nil {
 			return false, inspectErr
 		}
@@ -78,6 +84,10 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			// Never emit a pending unterminated record from the old generation. A
 			// complete event is durable only after its terminating newline.
 			return true, nil
+		}
+		checkpoint, inspectErr = readEventGenerationCheckpoint(f, reader.Buffered())
+		if inspectErr != nil {
+			return false, inspectErr
 		}
 
 		if len(pending) > 0 {
@@ -91,7 +101,7 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 		// Rotation can happen after the EOF inspection but before the next read.
 		// Revalidate here so we never consume bytes from a reset generation at an
 		// offset inherited from the previous one.
-		reopen, updatedAnchor, inspectErr = inspectEventLogGeneration(f, logFile, reader.Buffered(), generationAnchor)
+		reopen, updatedAnchor, inspectErr = inspectEventLogGenerationWithCheckpoint(f, logFile, reader.Buffered(), generationAnchor, checkpoint)
 		if inspectErr != nil {
 			return false, inspectErr
 		}
@@ -103,11 +113,18 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 }
 
 // inspectEventLogGeneration verifies that the open descriptor still represents
-// the same append-only generation exposed by logFile. A bounded prefix anchor
-// is immutable for an append-only file and catches copytruncate races where the
-// same inode is truncated and regrown beyond the old offset between polling
-// intervals, including logs whose first JSON record exceeds the anchor limit.
+// the same append-only generation exposed by logFile. The compatibility wrapper
+// retains the focused prefix-anchor API used by earlier tests.
 func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generationAnchor []byte) (bool, []byte, error) {
+	return inspectEventLogGenerationWithCheckpoint(f, logFile, buffered, generationAnchor, eventGenerationCheckpoint{})
+}
+
+// inspectEventLogGenerationWithCheckpoint combines the bounded prefix anchor
+// with a bounded checkpoint immediately behind the follower's last consumed
+// offset. The second anchor closes the common copytruncate race where a tool
+// preserves the first prefix while replacing later bytes and regrowing past the
+// old offset before the next poll.
+func inspectEventLogGenerationWithCheckpoint(f *os.File, logFile string, buffered int, generationAnchor []byte, checkpoint eventGenerationCheckpoint) (bool, []byte, error) {
 	currentInfo, err := f.Stat()
 	if err != nil {
 		return false, generationAnchor, fmt.Errorf("stat open event log: %w", err)
@@ -124,7 +141,8 @@ func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generat
 	if err != nil {
 		return false, generationAnchor, fmt.Errorf("inspect event log offset: %w", err)
 	}
-	if !os.SameFile(currentInfo, pathInfo) || pathInfo.Size() < offset-int64(buffered) {
+	logicalOffset := offset - int64(buffered)
+	if !os.SameFile(currentInfo, pathInfo) || pathInfo.Size() < logicalOffset {
 		return true, generationAnchor, nil
 	}
 
@@ -138,6 +156,17 @@ func inspectEventLogGeneration(f *os.File, logFile string, buffered int, generat
 		}
 	} else if len(currentAnchor) > 0 {
 		generationAnchor = currentAnchor
+	}
+
+	if len(checkpoint.data) > 0 {
+		currentCheckpoint := make([]byte, len(checkpoint.data))
+		n, readErr := f.ReadAt(currentCheckpoint, checkpoint.offset)
+		if readErr != nil && readErr != io.EOF {
+			return false, generationAnchor, fmt.Errorf("read event log generation checkpoint: %w", readErr)
+		}
+		if n != len(checkpoint.data) || !bytes.Equal(checkpoint.data, currentCheckpoint) {
+			return true, generationAnchor, nil
+		}
 	}
 	return false, generationAnchor, nil
 }
@@ -155,6 +184,34 @@ func readEventGenerationAnchor(f *os.File) ([]byte, error) {
 		return nil, fmt.Errorf("read event log generation anchor: %w", err)
 	}
 	return bytes.Clone(buf[:n]), nil
+}
+
+// readEventGenerationCheckpoint captures a bounded immutable window ending at
+// the follower's logical consumed offset. Later append-only writes cannot alter
+// it, so a mismatch proves that the same inode was rewritten in place.
+func readEventGenerationCheckpoint(f *os.File, buffered int) (eventGenerationCheckpoint, error) {
+	offset, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return eventGenerationCheckpoint{}, fmt.Errorf("inspect event log checkpoint offset: %w", err)
+	}
+	logicalOffset := offset - int64(buffered)
+	if logicalOffset <= 0 {
+		return eventGenerationCheckpoint{}, nil
+	}
+	length := int64(eventGenerationAnchorLimit)
+	if logicalOffset < length {
+		length = logicalOffset
+	}
+	start := logicalOffset - length
+	data := make([]byte, int(length))
+	n, err := f.ReadAt(data, start)
+	if err != nil && err != io.EOF {
+		return eventGenerationCheckpoint{}, fmt.Errorf("read event log generation checkpoint: %w", err)
+	}
+	if n != len(data) {
+		return eventGenerationCheckpoint{}, fmt.Errorf("read event log generation checkpoint: short read %d/%d", n, len(data))
+	}
+	return eventGenerationCheckpoint{offset: start, data: data}, nil
 }
 
 func writeCompleteEventRecord(line []byte, opts StreamOptions, w io.Writer) error {
