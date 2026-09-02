@@ -186,3 +186,35 @@ func TestCompressRotatedLogRejectsReplacedSourceBeforeRemoval(t *testing.T) {
 		t.Fatalf("original source should remain at preserved path: %v", statErr)
 	}
 }
+
+func TestCompressRotatedLogRejectsSymlinkSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	victimPath := filepath.Join(tmpDir, "victim.log")
+	wantVictim := []byte("victim log data")
+	if err := os.WriteFile(victimPath, wantVictim, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	if err := os.Symlink(victimPath, logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CompressRotatedLog(logPath); err == nil {
+		t.Fatal("expected symlink source to be rejected")
+	}
+
+	gotVictim, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotVictim) != string(wantVictim) {
+		t.Fatalf("symlink target was modified: got %q, want %q", gotVictim, wantVictim)
+	}
+	if _, err := os.Lstat(logPath); err != nil {
+		t.Fatalf("symlink source should remain untouched: %v", err)
+	}
+	if _, err := os.Stat(logPath + ".gz"); !os.IsNotExist(err) {
+		t.Fatalf("gzip archive should not be created for symlink source, stat err = %v", err)
+	}
+}
