@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -24,7 +26,7 @@ func CompressRotatedLog(logPath string) error {
 	defer srcFile.Close()
 
 	gzPath := logPath + ".gz"
-	dstFile, err := os.Create(gzPath)
+	dstFile, err := os.OpenFile(gzPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|unix.O_NOFOLLOW, 0644)
 	if err != nil {
 		return fmt.Errorf("create gz file: %w", err)
 	}
