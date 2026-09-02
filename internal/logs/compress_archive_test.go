@@ -125,3 +125,27 @@ func TestCompressRotatedLogRequiresDurableArchiveBeforeSourceRemoval(t *testing.
 		t.Fatalf("source log should remain when archive durability is unconfirmed: %v", statErr)
 	}
 }
+
+func TestCompressRotatedLogReportsArchiveCloseFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	if err := os.WriteFile(logPath, []byte("log data content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldClose := compressArchiveFileClose
+	wantErr := errors.New("close failed")
+	compressArchiveFileClose = func(*os.File) error { return wantErr }
+	defer func() { compressArchiveFileClose = oldClose }()
+
+	err := CompressRotatedLog(logPath)
+	if err == nil {
+		t.Fatal("expected archive close failure to be reported before source removal")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CompressRotatedLog error = %v, want wrapped close failure", err)
+	}
+	if _, statErr := os.Stat(logPath); statErr != nil {
+		t.Fatalf("source log should remain after archive close failure: %v", statErr)
+	}
+}
