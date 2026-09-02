@@ -13,10 +13,9 @@ import (
 
 func writeSizedEventGeneration(t *testing.T, path, prefix string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(prefix), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Truncate(path, maxEventLogBytes); err != nil {
+	data := bytes.Repeat([]byte{'\n'}, int(maxEventLogBytes))
+	copy(data, prefix)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -12,10 +12,7 @@ import (
 func TestEventLogAppendRotatesAtRetentionLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.log")
-	if err := os.WriteFile(path, []byte("old-generation\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Truncate(path, maxEventLogBytes); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Repeat("x\n", int(maxEventLogBytes/2))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,10 +51,7 @@ func TestEventLogAppendRotatesAtRetentionLimit(t *testing.T) {
 func TestEventLogRotationReplacesOnlyPreviousGeneration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.log")
-	if err := os.WriteFile(path, []byte("current\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Truncate(path, maxEventLogBytes); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Repeat("x\n", int(maxEventLogBytes/2))), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path+".1", []byte("stale\n"), 0o600); err != nil {

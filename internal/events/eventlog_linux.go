@@ -3,6 +3,8 @@
 package events
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -109,6 +111,73 @@ func syncEventLogDirectory(path string) error {
 	return nil
 }
 
+// repairEventLogTail runs while the cross-process writer lock is held. A crash
+// can leave the active generation ending in a partial JSON record. Appending the
+// next event after that fragment would permanently merge two records into one
+// corrupt line, so repair the EOF before retention/rotation decisions are made.
+// A complete, valid event that only lost its terminating newline is salvaged;
+// complete JSON that violates the event schema fails closed instead of erasing
+// evidence that may represent tampering rather than a torn write.
+func repairEventLogTail(file *os.File, path string) error {
+	if err := verifyHeldEventPath(file, path, "event log tail repair"); err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat event log for tail repair: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+
+	var last [1]byte
+	if _, err := file.ReadAt(last[:], info.Size()-1); err != nil {
+		return fmt.Errorf("read event log tail marker: %w", err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+
+	start := info.Size() - int64(maxEventRecordBytes+1)
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, info.Size()-start)
+	if _, err := file.ReadAt(buf, start); err != nil {
+		return fmt.Errorf("read event log tail: %w", err)
+	}
+
+	lastNewline := bytes.LastIndexByte(buf, '\n')
+	if lastNewline < 0 && start > 0 {
+		return fmt.Errorf("unterminated event record exceeds maximum size of %d bytes", maxEventRecordBytes)
+	}
+	tailStart := start
+	if lastNewline >= 0 {
+		tailStart = start + int64(lastNewline) + 1
+		buf = buf[lastNewline+1:]
+	}
+
+	if json.Valid(buf) {
+		if _, err := decodeEventRecord(buf); err != nil {
+			return fmt.Errorf("validate unterminated event record: %w", err)
+		}
+		if _, err := file.WriteAt([]byte{'\n'}, info.Size()); err != nil {
+			return fmt.Errorf("terminate complete event record: %w", err)
+		}
+	} else {
+		if err := file.Truncate(tailStart); err != nil {
+			return fmt.Errorf("truncate torn event record: %w", err)
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync repaired event log tail: %w", err)
+	}
+	if err := verifyHeldEventPath(file, path, "repaired event log"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func rotateRetainedEventLog(path string) error {
 	retained := path + ".1"
 	older := path + ".2"
@@ -140,13 +209,18 @@ func rotateRetainedEventLog(path string) error {
 func rotateEventLogIfNeeded(path string) error {
 	// Use the writable validation path so an append keeps its established
 	// contract of repairing loose permissions to 0600 instead of regressing to
-	// the stricter read-only policy.
-	current, err := openEventLog(path, unix.O_WRONLY, 0)
+	// the stricter read-only policy. O_RDWR is required to inspect and recover a
+	// crash-torn final record before it can be rotated into retained history.
+	current, err := openEventLog(path, unix.O_RDWR, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("inspect event log for rotation: %w", err)
+	}
+	if err := repairEventLogTail(current, path); err != nil {
+		_ = current.Close()
+		return fmt.Errorf("repair event log tail: %w", err)
 	}
 	info, statErr := current.Stat()
 	if statErr != nil {
