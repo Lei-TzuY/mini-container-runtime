@@ -108,6 +108,27 @@ func TestOpenEventLogFollowSuccessorsReportsRetentionGap(t *testing.T) {
 	}
 }
 
+func TestOpenEventLogFollowSuccessorsReportsGapWhenWindowDisappears(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.log")
+	writeFollowTestRecord(t, path, Event{Timestamp: time.Unix(1, 0).UTC(), Type: EventStart, ContainerID: "orphaned"}, true)
+	previous, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer previous.Close()
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	successors, err := openEventLogFollowSuccessors(path, previous)
+	closeEventFollowFiles(successors)
+	if err == nil || !strings.Contains(err.Error(), "event follow generation gap") {
+		t.Fatalf("error=%v, want explicit gap after all managed generations disappear", err)
+	}
+}
+
 func TestOpenEventLogFollowSuccessorsReopensCopytruncateActiveFromStart(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.log")
