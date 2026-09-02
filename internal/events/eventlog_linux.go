@@ -203,6 +203,13 @@ func rotateRetainedEventLog(path string) error {
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close older retained event log: %w", err)
 	}
+	// Persist the retained-generation shift before touching the active pathname.
+	// A crash between `.1 -> .2` and `active -> .1` must leave a recoverable
+	// intermediate state (active + durable .2), rather than relying on the later
+	// directory fsync that may never execute.
+	if err := syncEventLogDirectory(path); err != nil {
+		return fmt.Errorf("sync event log directory after retained rotation: %w", err)
+	}
 	return nil
 }
 
