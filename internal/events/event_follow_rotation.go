@@ -75,12 +75,52 @@ func openEventLogForFollowWith(logFile string, until time.Time, open eventLogOpe
 }
 
 // followEventLogFile follows the logical events.log pathname, not merely the
-// inode that happened to exist when the command started. This matters when an
-// administrator rotates/replaces the audit log or truncates it in place: a
-// long-running observer must not remain pinned forever to an orphaned inode or
-// an offset beyond the new end of file.
+// inode that happened to exist when the command started. Startup takes a stable
+// retained+active snapshot so a follower sees the complete retention window
+// before handing the already-open active descriptor to the live tail.
 func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
-	allowRetained := true
+	startup, err := openEventLogFollowStartupSnapshot(logFile)
+	if err != nil {
+		return err
+	}
+	hadStartupGeneration := len(startup.retained) > 0 || startup.active != nil
+
+	retainedOpts := opts
+	retainedOpts.Follow = false
+	for _, generation := range startup.retained {
+		if err := streamEventLogWithOptions(io.LimitReader(generation.file, generation.size), retainedOpts, w); err != nil {
+			startup.close()
+			return err
+		}
+		if err := generation.file.Close(); err != nil {
+			startup.close()
+			return fmt.Errorf("close retained event log: %w", err)
+		}
+	}
+	startup.retained = nil
+
+	if startup.active != nil {
+		f := startup.active
+		startup.active = nil
+		reopen, err := followOpenEventLog(f, logFile, opts, w)
+		closeErr := f.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close event log: %w", closeErr)
+		}
+		if !reopen {
+			return nil
+		}
+	}
+	startup.close()
+
+	// If the startup snapshot already consumed any generation, never fall back to
+	// .1 again: after a subsequent rotation that pathname may be the generation we
+	// just drained, which would replay it. A completely empty startup may still
+	// use retained fallback to cover a rotation that begins immediately afterward.
+	allowRetained := !hadStartupGeneration
 	for {
 		f, expired, err := openEventLogGenerationForFollowWith(logFile, opts.Until, allowRetained, openEventLogForRead, time.Now, time.Sleep)
 		if err != nil {
@@ -89,9 +129,6 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 		if expired {
 			return nil
 		}
-		// Retained fallback is startup recovery only. After attaching to any
-		// generation, reopening .1 could replay the just-drained active inode after
-		// a later rotation.
 		allowRetained = false
 		reopen, err := followOpenEventLog(f, logFile, opts, w)
 		closeErr := f.Close()
