@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -14,6 +15,7 @@ var (
 	compressArchiveGzipClose = func(w *gzip.Writer) error { return w.Close() }
 	compressArchiveSync      = func(f *os.File) error { return f.Sync() }
 	compressArchiveFileClose = func(f *os.File) error { return f.Close() }
+	compressArchiveSyncDir   = syncArchiveDirectory
 )
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
@@ -79,6 +81,10 @@ func CompressRotatedLog(logPath string) error {
 	if !currentDstInfo.Mode().IsRegular() || !os.SameFile(dstInfo, currentDstInfo) {
 		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
 	}
+	archiveDir := filepath.Dir(logPath)
+	if err := compressArchiveSyncDir(archiveDir); err != nil {
+		return fmt.Errorf("persist gzip archive %q: %w", gzPath, err)
+	}
 
 	if err := srcFile.Close(); err != nil {
 		return fmt.Errorf("close compressed source log %q: %w", logPath, err)
@@ -92,6 +98,9 @@ func CompressRotatedLog(logPath string) error {
 	}
 	if err := compressArchiveRemove(logPath); err != nil {
 		return fmt.Errorf("remove compressed source log %q: %w", logPath, err)
+	}
+	if err := compressArchiveSyncDir(archiveDir); err != nil {
+		return fmt.Errorf("persist compressed source log removal %q: %w", logPath, err)
 	}
 
 	return nil
