@@ -36,11 +36,25 @@ func CompressRotatedLog(logPath string) error {
 	}
 
 	gzPath := logPath + ".gz"
-	dstFile, err := os.OpenFile(gzPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|unix.O_NOFOLLOW, 0644)
+	dstFile, err := os.OpenFile(gzPath, os.O_WRONLY|os.O_CREATE|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0644)
 	if err != nil {
 		return fmt.Errorf("create gz file: %w", err)
 	}
 	defer dstFile.Close()
+
+	dstInfo, err := dstFile.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened gzip archive %q: %w", gzPath, err)
+	}
+	if !dstInfo.Mode().IsRegular() {
+		return fmt.Errorf("unsafe gzip archive destination %q: mode %v", gzPath, dstInfo.Mode())
+	}
+	if err := dstFile.Truncate(0); err != nil {
+		return fmt.Errorf("truncate gzip archive %q: %w", gzPath, err)
+	}
+	if _, err := dstFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind gzip archive %q: %w", gzPath, err)
+	}
 
 	gzWriter := gzip.NewWriter(dstFile)
 
