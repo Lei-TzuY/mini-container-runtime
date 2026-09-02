@@ -2,7 +2,6 @@ package network
 
 import (
 	"fmt"
-	"os/exec"
 	"runtime"
 )
 
@@ -16,8 +15,7 @@ func SetInterfaceMTU(ifName string, mtu int) error {
 		return nil
 	}
 
-	cmd := exec.Command("ip", "link", "set", "dev", ifName, "mtu", fmt.Sprintf("%d", mtu))
-	if output, err := cmd.CombinedOutput(); err != nil {
+	if output, err := runTrustedHostTool("ip", "link", "set", "dev", ifName, "mtu", fmt.Sprintf("%d", mtu)); err != nil {
 		return fmt.Errorf("set mtu failed: %s (%w)", string(output), err)
 	}
 

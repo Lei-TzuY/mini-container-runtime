@@ -2,7 +2,6 @@ package network
 
 import (
 	"fmt"
-	"os/exec"
 	"runtime"
 )
 
@@ -23,18 +22,15 @@ func CreateOverlayInterface(cfg OverlayConfig) error {
 		return nil
 	}
 
-	cmd := exec.Command("ip", "link", "add", cfg.InterfaceName, "type", "vxlan",
+	if output, err := runTrustedHostTool("ip", "link", "add", cfg.InterfaceName, "type", "vxlan",
 		"id", fmt.Sprintf("%d", cfg.VNI),
 		"remote", cfg.RemoteIP,
 		"dstport", "4789",
-	)
-
-	if output, err := cmd.CombinedOutput(); err != nil {
+	); err != nil {
 		return fmt.Errorf("ip link add vxlan failed: %s (%w)", string(output), err)
 	}
 
-	setUpCmd := exec.Command("ip", "link", "set", cfg.InterfaceName, "up")
-	if output, err := setUpCmd.CombinedOutput(); err != nil {
+	if output, err := runTrustedHostTool("ip", "link", "set", cfg.InterfaceName, "up"); err != nil {
 		return fmt.Errorf("ip link set up vxlan failed: %s (%w)", string(output), err)
 	}
 

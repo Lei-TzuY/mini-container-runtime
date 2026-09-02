@@ -22,14 +22,13 @@ package network
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 )
 
 type iptablesCommand func(args ...string) ([]byte, error)
 
 func runIPTables(args ...string) ([]byte, error) {
-	return exec.Command("iptables", args...).CombinedOutput()
+	return runTrustedHostTool("iptables", args...)
 }
 
 // SetupPortForwarding configures iptables DNAT rules for port mapping.
