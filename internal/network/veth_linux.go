@@ -49,7 +49,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"syscall"
 	"unsafe"
 )
@@ -466,9 +465,9 @@ func SetupNAT(subnet string, debug bool) error {
 	check := []string{"-t", "nat", "-C", "POSTROUTING",
 		"-s", subnet, "!", "-d", subnet, "-j", "MASQUERADE"}
 
-	if err := exec.Command("iptables", check...).Run(); err != nil {
+	if _, err := runTrustedHostTool("iptables", check...); err != nil {
 		// Rule absent — add it.
-		if out, err := exec.Command("iptables", rule...).CombinedOutput(); err != nil {
+		if out, err := runTrustedHostTool("iptables", rule...); err != nil {
 			return fmt.Errorf("iptables MASQUERADE: %w\n%s", err, out)
 		}
 	}
