@@ -24,10 +24,10 @@ func (snapshot *eventFollowStartupSnapshot) close() {
 	}
 }
 
-// openEventLogFollowStartupSnapshot captures the retained generation and the
-// active descriptor under the same writer lock. Holding both descriptors across
-// the handoff makes a concurrent rename safe: the follower can drain the exact
-// generations it observed without reopening pathnames in between.
+// openEventLogFollowStartupSnapshot captures all retained generations and the
+// active descriptor under the same writer lock. Holding these descriptors
+// across the handoff makes concurrent renames safe and preserves oldest-first
+// ordering across the bounded retention window.
 func openEventLogFollowStartupSnapshot(path string) (*eventFollowStartupSnapshot, error) {
 	lockPath := path + ".lock"
 	lockFile, err := openEventLog(lockPath, unix.O_RDWR|unix.O_CREAT, 0o600)
@@ -45,21 +45,25 @@ func openEventLogFollowStartupSnapshot(path string) (*eventFollowStartupSnapshot
 	}
 
 	snapshot := &eventFollowStartupSnapshot{}
-	retainedPath := path + ".1"
-	retained, err := openEventLogForRead(retainedPath)
-	if err == nil {
-		if err := verifyHeldEventPath(retained, retainedPath, "event log follow retained snapshot"); err != nil {
-			_ = retained.Close()
+	for _, retainedPath := range []string{path + ".2", path + ".1"} {
+		retained, err := openEventLogForRead(retainedPath)
+		if err == nil {
+			if err := verifyHeldEventPath(retained, retainedPath, "event log follow retained snapshot"); err != nil {
+				_ = retained.Close()
+				snapshot.close()
+				return nil, err
+			}
+			info, err := retained.Stat()
+			if err != nil {
+				_ = retained.Close()
+				snapshot.close()
+				return nil, fmt.Errorf("stat retained event log follow snapshot: %w", err)
+			}
+			snapshot.retained = append(snapshot.retained, eventLogSnapshotFile{file: retained, size: info.Size()})
+		} else if !errors.Is(err, os.ErrNotExist) {
+			snapshot.close()
 			return nil, err
 		}
-		info, err := retained.Stat()
-		if err != nil {
-			_ = retained.Close()
-			return nil, fmt.Errorf("stat retained event log follow snapshot: %w", err)
-		}
-		snapshot.retained = append(snapshot.retained, eventLogSnapshotFile{file: retained, size: info.Size()})
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
 	}
 
 	active, err := openEventLogForRead(path)

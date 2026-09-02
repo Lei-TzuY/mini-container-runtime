@@ -12,6 +12,7 @@ import (
 )
 
 const maxEventLogBytes int64 = 16 << 20
+const retainedEventLogGenerations = 2
 
 type lockedEventLogFile struct {
 	*os.File
@@ -108,6 +109,34 @@ func syncEventLogDirectory(path string) error {
 	return nil
 }
 
+func rotateRetainedEventLog(path string) error {
+	retained := path + ".1"
+	older := path + ".2"
+	file, err := openEventLogForRead(retained)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open retained event log for rotation: %w", err)
+	}
+	if err := verifyHeldEventPath(file, retained, "retained event log rotation source"); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := os.Rename(retained, older); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("rotate retained event log: %w", err)
+	}
+	if err := verifyHeldEventPath(file, older, "older retained event log"); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close older retained event log: %w", err)
+	}
+	return nil
+}
+
 func rotateEventLogIfNeeded(path string) error {
 	// Use the writable validation path so an append keeps its established
 	// contract of repairing loose permissions to 0600 instead of regressing to
@@ -128,6 +157,14 @@ func rotateEventLogIfNeeded(path string) error {
 		return current.Close()
 	}
 	if err := verifyHeldEventPath(current, path, "event log rotation source"); err != nil {
+		_ = current.Close()
+		return err
+	}
+
+	// Shift the previous retained generation first. os.Rename replaces an
+	// existing .2 atomically, keeping storage bounded at active + two retained
+	// generations while preserving one additional handoff window for followers.
+	if err := rotateRetainedEventLog(path); err != nil {
 		_ = current.Close()
 		return err
 	}

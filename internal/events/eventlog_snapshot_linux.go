@@ -26,7 +26,7 @@ func openEventLogSnapshotForRead(path string) ([]eventLogSnapshotFile, error) {
 		return nil, err
 	}
 
-	paths := []string{path + ".1", path}
+	paths := []string{path + ".2", path + ".1", path}
 	snapshot := make([]eventLogSnapshotFile, 0, len(paths))
 	closeSnapshot := func() {
 		for _, generation := range snapshot {
