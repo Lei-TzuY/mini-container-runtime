@@ -18,7 +18,7 @@ var (
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
 func CompressRotatedLog(logPath string) error {
-	srcFile, err := os.Open(logPath)
+	srcFile, err := os.OpenFile(logPath, os.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
