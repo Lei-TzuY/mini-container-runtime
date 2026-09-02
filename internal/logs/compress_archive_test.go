@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"compress/gzip"
 	"errors"
 	"os"
 	"path/filepath"
