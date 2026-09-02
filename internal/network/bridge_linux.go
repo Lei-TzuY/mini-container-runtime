@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -74,7 +73,7 @@ func CreateBridge(netName, cidr string, debug bool) error {
 }
 
 func runBridgeIPCommand(args ...string) ([]byte, error) {
-	return exec.Command("ip", args...).CombinedOutput()
+	return runTrustedHostTool("ip", args...)
 }
 
 func createBridgeWith(netName, cidr string, debug bool, run bridgeCommandRunner) error {
