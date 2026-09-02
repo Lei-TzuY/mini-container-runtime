@@ -82,8 +82,9 @@ func openEventLogFollowStartupSnapshot(path string) (*eventFollowStartupSnapshot
 }
 
 type eventFollowGeneration struct {
-	file *os.File
-	info os.FileInfo
+	file   *os.File
+	info   os.FileInfo
+	active bool
 }
 
 func closeEventFollowGenerations(generations []eventFollowGeneration) {
@@ -139,7 +140,7 @@ func openEventLogFollowSuccessors(path string, previous *os.File) ([]*os.File, e
 			closeEventFollowGenerations(generations)
 			return nil, fmt.Errorf("stat event log successor snapshot: %w", statErr)
 		}
-		generations = append(generations, eventFollowGeneration{file: candidate, info: info})
+		generations = append(generations, eventFollowGeneration{file: candidate, info: info, active: candidatePath == path})
 	}
 
 	if len(generations) == 0 {
@@ -161,7 +162,7 @@ func openEventLogFollowSuccessors(path string, previous *os.File) ([]*os.File, e
 	// Same inode at the active pathname means inspectEventLogGeneration detected
 	// an in-place reset (for example copytruncate). Re-read that active generation
 	// from offset zero rather than treating it as already consumed.
-	if match == len(generations)-1 && os.SameFile(previousInfo, generations[match].info) {
+	if generations[match].active {
 		result := []*os.File{generations[match].file}
 		closeEventFollowGenerations(generations[:match])
 		return result, nil
