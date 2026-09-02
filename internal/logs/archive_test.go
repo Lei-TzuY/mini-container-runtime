@@ -63,3 +63,48 @@ func TestArchiveLogFileRejectsDanglingActiveSymlink(t *testing.T) {
 		t.Fatalf("active path mode = %v, want symlink", fi.Mode())
 	}
 }
+
+func TestArchiveLogFileRejectsActiveIdentityReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log")
+	originalPath := filepath.Join(tmpDir, "original.log")
+	if err := os.WriteFile(logPath, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLstat := archiveLstat
+	replaced := false
+	archiveLstat = func(path string) (os.FileInfo, error) {
+		fi, err := os.Lstat(path)
+		if err == nil && path == logPath && !replaced {
+			replaced = true
+			if err := os.Rename(logPath, originalPath); err != nil {
+				t.Fatalf("move inspected log: %v", err)
+			}
+			if err := os.WriteFile(logPath, []byte("replacement"), 0644); err != nil {
+				t.Fatalf("replace inspected log: %v", err)
+			}
+		}
+		return fi, err
+	}
+	defer func() { archiveLstat = oldLstat }()
+
+	if err := ArchiveLogFile(logPath, 3); err == nil {
+		t.Fatal("expected archive failure after active-log identity replacement")
+	}
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("replacement path should remain untouched: %v", err)
+	}
+	if string(got) != "replacement" {
+		t.Fatalf("replacement path changed: %q", got)
+	}
+	got, err = os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatalf("original inspected inode should remain available: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("original inspected inode changed: %q", got)
+	}
+}
