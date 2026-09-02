@@ -31,3 +31,14 @@ func openEventLogFollowStartupSnapshot(path string) (*eventFollowStartupSnapshot
 	}
 	return &eventFollowStartupSnapshot{active: active}, nil
 }
+
+func openEventLogFollowSuccessors(path string, previous *os.File) ([]*os.File, error) {
+	active, err := openEventLogForRead(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return []*os.File{active}, nil
+}

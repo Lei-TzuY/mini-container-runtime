@@ -102,13 +102,9 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 	if startup.active != nil {
 		f := startup.active
 		startup.active = nil
-		reopen, err := followOpenEventLog(f, logFile, opts, w)
-		closeErr := f.Close()
+		reopen, err := followEventLogAttachment(f, logFile, opts, w)
 		if err != nil {
 			return err
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close event log: %w", closeErr)
 		}
 		if !reopen {
 			return nil
@@ -130,13 +126,9 @@ func followEventLogFile(logFile string, opts StreamOptions, w io.Writer) error {
 			return nil
 		}
 		allowRetained = false
-		reopen, err := followOpenEventLog(f, logFile, opts, w)
-		closeErr := f.Close()
+		reopen, err := followEventLogAttachment(f, logFile, opts, w)
 		if err != nil {
 			return err
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close event log: %w", closeErr)
 		}
 		if !reopen {
 			return nil
