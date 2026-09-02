@@ -144,7 +144,7 @@ func openEventLogFollowSuccessors(path string, previous *os.File) ([]*os.File, e
 	}
 
 	if len(generations) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("event follow generation gap: previous generation disappeared with no retained successor")
 	}
 
 	match := -1
