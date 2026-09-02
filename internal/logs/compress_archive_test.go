@@ -126,6 +126,64 @@ func TestCompressRotatedLogRequiresDurableArchiveBeforeSourceRemoval(t *testing.
 	}
 }
 
+func TestCompressRotatedLogRequiresDurableArchiveDirectoryBeforeSourceRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	if err := os.WriteFile(logPath, []byte("log data content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := compressArchiveSyncDir
+	wantErr := errors.New("directory sync failed")
+	compressArchiveSyncDir = func(string) error { return wantErr }
+	defer func() { compressArchiveSyncDir = oldSyncDir }()
+
+	err := CompressRotatedLog(logPath)
+	if err == nil {
+		t.Fatal("expected archive directory sync failure to be reported before source removal")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CompressRotatedLog error = %v, want wrapped directory sync failure", err)
+	}
+	if _, statErr := os.Stat(logPath); statErr != nil {
+		t.Fatalf("source log should remain when archive directory durability is unconfirmed: %v", statErr)
+	}
+}
+
+func TestCompressRotatedLogReportsSourceRemovalDirectorySyncFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	if err := os.WriteFile(logPath, []byte("log data content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := compressArchiveSyncDir
+	wantErr := errors.New("directory sync failed")
+	calls := 0
+	compressArchiveSyncDir = func(string) error {
+		calls++
+		if calls == 2 {
+			return wantErr
+		}
+		return nil
+	}
+	defer func() { compressArchiveSyncDir = oldSyncDir }()
+
+	err := CompressRotatedLog(logPath)
+	if err == nil {
+		t.Fatal("expected source removal directory sync failure to be reported")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CompressRotatedLog error = %v, want wrapped directory sync failure", err)
+	}
+	if calls != 2 {
+		t.Fatalf("directory sync calls = %d, want 2", calls)
+	}
+	if _, statErr := os.Stat(logPath); !os.IsNotExist(statErr) {
+		t.Fatalf("source log should already be removed when post-remove directory sync fails, stat err = %v", statErr)
+	}
+}
+
 func TestCompressRotatedLogReportsArchiveCloseFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "container.log.1")
