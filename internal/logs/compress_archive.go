@@ -51,6 +51,13 @@ func CompressRotatedLog(logPath string) error {
 	if !dstInfo.Mode().IsRegular() {
 		return fmt.Errorf("unsafe gzip archive destination %q: mode %v", gzPath, dstInfo.Mode())
 	}
+	var dstStat unix.Stat_t
+	if err := unix.Fstat(int(dstFile.Fd()), &dstStat); err != nil {
+		return fmt.Errorf("fstat gzip archive %q: %w", gzPath, err)
+	}
+	if dstStat.Nlink != 1 {
+		return fmt.Errorf("unsafe gzip archive destination %q: link count %d", gzPath, dstStat.Nlink)
+	}
 	if err := dstFile.Truncate(0); err != nil {
 		return fmt.Errorf("truncate gzip archive %q: %w", gzPath, err)
 	}
