@@ -44,3 +44,27 @@ func TestCompressRotatedLogReportsSourceRemovalFailure(t *testing.T) {
 		t.Fatalf("source log should remain after failed removal: %v", statErr)
 	}
 }
+
+func TestCompressRotatedLogReportsGzipFinalizeFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	if err := os.WriteFile(logPath, []byte("log data content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldClose := compressArchiveGzipClose
+	wantErr := errors.New("gzip finalize failed")
+	compressArchiveGzipClose = func(*gzip.Writer) error { return wantErr }
+	defer func() { compressArchiveGzipClose = oldClose }()
+
+	err := CompressRotatedLog(logPath)
+	if err == nil {
+		t.Fatal("expected gzip finalize failure to be reported")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CompressRotatedLog error = %v, want wrapped finalize failure", err)
+	}
+	if _, statErr := os.Stat(logPath); statErr != nil {
+		t.Fatalf("source log should remain after failed gzip finalize: %v", statErr)
+	}
+}
