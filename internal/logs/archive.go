@@ -21,15 +21,22 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 		dst := fmt.Sprintf("%s.%d", logPath, i+1)
 		if fileExists(src) {
 			if i+1 >= maxFiles {
-				_ = os.Remove(src)
+				if err := os.Remove(src); err != nil {
+					return fmt.Errorf("remove expired archived log %q: %w", src, err)
+				}
 			} else {
-				_ = os.Rename(src, dst)
+				if err := os.Rename(src, dst); err != nil {
+					return fmt.Errorf("rotate archived log %q to %q: %w", src, dst, err)
+				}
 			}
 		}
 	}
 
 	if fileExists(logPath) {
-		_ = os.Rename(logPath, fmt.Sprintf("%s.1", logPath))
+		dst := fmt.Sprintf("%s.1", logPath)
+		if err := os.Rename(logPath, dst); err != nil {
+			return fmt.Errorf("archive active log %q to %q: %w", logPath, dst, err)
+		}
 	}
 
 	return nil
