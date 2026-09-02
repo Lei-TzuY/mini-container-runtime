@@ -27,6 +27,11 @@ func CompressRotatedLog(logPath string) error {
 	}
 	defer srcFile.Close()
 
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened log file %q: %w", logPath, err)
+	}
+
 	gzPath := logPath + ".gz"
 	dstFile, err := os.OpenFile(gzPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|unix.O_NOFOLLOW, 0644)
 	if err != nil {
@@ -52,6 +57,13 @@ func CompressRotatedLog(logPath string) error {
 
 	if err := srcFile.Close(); err != nil {
 		return fmt.Errorf("close compressed source log %q: %w", logPath, err)
+	}
+	currentInfo, err := os.Lstat(logPath)
+	if err != nil {
+		return fmt.Errorf("revalidate compressed source log %q: %w", logPath, err)
+	}
+	if currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(srcInfo, currentInfo) {
+		return fmt.Errorf("compressed source log %q changed during compression", logPath)
 	}
 	if err := compressArchiveRemove(logPath); err != nil {
 		return fmt.Errorf("remove compressed source log %q: %w", logPath, err)
