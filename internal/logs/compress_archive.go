@@ -36,7 +36,9 @@ func CompressRotatedLog(logPath string) error {
 
 	_ = gzWriter.Close()
 	_ = srcFile.Close()
-	_ = os.Remove(logPath)
+	if err := compressArchiveRemove(logPath); err != nil {
+		return fmt.Errorf("remove compressed source log %q: %w", logPath, err)
+	}
 
 	return nil
 }
