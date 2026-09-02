@@ -12,6 +12,7 @@ import (
 var (
 	compressArchiveRemove    = os.Remove
 	compressArchiveGzipClose = func(w *gzip.Writer) error { return w.Close() }
+	compressArchiveSync      = func(f *os.File) error { return f.Sync() }
 )
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
