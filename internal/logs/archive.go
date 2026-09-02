@@ -6,6 +6,7 @@ import (
 )
 
 var archiveLstat = os.Lstat
+var archiveSyncDir = func(string) error { return nil }
 
 func inspectArchiveFile(p string) (os.FileInfo, bool, error) {
 	fi, err := archiveLstat(p)
