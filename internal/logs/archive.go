@@ -3,9 +3,23 @@ package logs
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 var archiveLstat = os.Lstat
+var archiveSyncDir = syncArchiveDirectory
+
+func syncArchiveDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open log archive directory %q for fsync: %w", dir, err)
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("fsync log archive directory %q: %w", dir, err)
+	}
+	return nil
+}
 
 func inspectArchiveFile(p string) (os.FileInfo, bool, error) {
 	fi, err := archiveLstat(p)
@@ -41,6 +55,7 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 		return nil
 	}
 
+	dir := filepath.Dir(logPath)
 	for i := maxFiles - 1; i >= 1; i-- {
 		src := fmt.Sprintf("%s.%d", logPath, i)
 		dst := fmt.Sprintf("%s.%d", logPath, i+1)
@@ -56,9 +71,15 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 				if err := os.Remove(src); err != nil {
 					return fmt.Errorf("remove expired archived log %q: %w", src, err)
 				}
+				if err := archiveSyncDir(dir); err != nil {
+					return fmt.Errorf("persist expired archived log removal %q: %w", src, err)
+				}
 			} else {
 				if err := os.Rename(src, dst); err != nil {
 					return fmt.Errorf("rotate archived log %q to %q: %w", src, dst, err)
+				}
+				if err := archiveSyncDir(dir); err != nil {
+					return fmt.Errorf("persist archived log rotation %q to %q: %w", src, dst, err)
 				}
 			}
 		}
@@ -75,6 +96,9 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 		dst := fmt.Sprintf("%s.1", logPath)
 		if err := os.Rename(logPath, dst); err != nil {
 			return fmt.Errorf("archive active log %q to %q: %w", logPath, dst, err)
+		}
+		if err := archiveSyncDir(dir); err != nil {
+			return fmt.Errorf("persist active log archive %q to %q: %w", logPath, dst, err)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,5 +107,55 @@ func TestArchiveLogFileRejectsActiveIdentityReplacement(t *testing.T) {
 	}
 	if string(got) != "original" {
 		t.Fatalf("original inspected inode changed: %q", got)
+	}
+}
+
+func TestArchiveLogFileSyncsDirectoryAfterActiveRename(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log")
+	if err := os.WriteFile(logPath, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := archiveSyncDir
+	calls := 0
+	archiveSyncDir = func(dir string) error {
+		calls++
+		if dir != tmpDir {
+			t.Fatalf("sync dir = %q, want %q", dir, tmpDir)
+		}
+		return nil
+	}
+	defer func() { archiveSyncDir = oldSyncDir }()
+
+	if err := ArchiveLogFile(logPath, 3); err != nil {
+		t.Fatalf("ArchiveLogFile error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("directory sync calls = %d, want 1 after active rename", calls)
+	}
+}
+
+func TestArchiveLogFileReportsDirectorySyncFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log")
+	if err := os.WriteFile(logPath, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := archiveSyncDir
+	wantErr := errors.New("sync failed")
+	archiveSyncDir = func(string) error { return wantErr }
+	defer func() { archiveSyncDir = oldSyncDir }()
+
+	err := ArchiveLogFile(logPath, 3)
+	if err == nil {
+		t.Fatal("expected directory sync failure to be reported")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ArchiveLogFile error = %v, want wrapped sync failure", err)
+	}
+	if _, statErr := os.Stat(logPath + ".1"); statErr != nil {
+		t.Fatalf("rename should have completed before durability failure: %v", statErr)
 	}
 }
