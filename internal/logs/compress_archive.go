@@ -72,6 +72,14 @@ func CompressRotatedLog(logPath string) error {
 		return fmt.Errorf("close gzip archive %q: %w", gzPath, err)
 	}
 
+	currentDstInfo, err := os.Lstat(gzPath)
+	if err != nil {
+		return fmt.Errorf("revalidate gzip archive %q: %w", gzPath, err)
+	}
+	if !currentDstInfo.Mode().IsRegular() || !os.SameFile(dstInfo, currentDstInfo) {
+		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
+	}
+
 	if err := srcFile.Close(); err != nil {
 		return fmt.Errorf("close compressed source log %q: %w", logPath, err)
 	}
