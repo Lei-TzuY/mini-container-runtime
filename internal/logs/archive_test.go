@@ -42,3 +42,24 @@ func TestArchiveLogFileReportsActiveRenameFailure(t *testing.T) {
 		t.Fatalf("active log changed after failed rename: %q", got)
 	}
 }
+
+func TestArchiveLogFileRejectsDanglingActiveSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log")
+	target := filepath.Join(tmpDir, "missing-target")
+	if err := os.Symlink(target, logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ArchiveLogFile(logPath, 3); err == nil {
+		t.Fatal("expected archive failure for dangling active symlink")
+	}
+
+	fi, err := os.Lstat(logPath)
+	if err != nil {
+		t.Fatalf("dangling symlink should remain after rejection: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("active path mode = %v, want symlink", fi.Mode())
+	}
+}
