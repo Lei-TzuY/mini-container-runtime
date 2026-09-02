@@ -5,8 +5,10 @@ import (
 	"os"
 )
 
+var archiveLstat = os.Lstat
+
 func archiveFileExists(p string) (bool, error) {
-	fi, err := os.Lstat(p)
+	fi, err := archiveLstat(p)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
