@@ -149,3 +149,40 @@ func TestCompressRotatedLogReportsArchiveCloseFailure(t *testing.T) {
 		t.Fatalf("source log should remain after archive close failure: %v", statErr)
 	}
 }
+
+func TestCompressRotatedLogRejectsReplacedSourceBeforeRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	originalPath := filepath.Join(tmpDir, "original-preserved")
+	if err := os.WriteFile(logPath, []byte("original log data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldClose := compressArchiveFileClose
+	compressArchiveFileClose = func(f *os.File) error {
+		if err := f.Close(); err != nil {
+			return err
+		}
+		if err := os.Rename(logPath, originalPath); err != nil {
+			return err
+		}
+		return os.WriteFile(logPath, []byte("replacement log data"), 0644)
+	}
+	defer func() { compressArchiveFileClose = oldClose }()
+
+	err := CompressRotatedLog(logPath)
+	if err == nil {
+		t.Fatal("expected replaced source identity to be rejected before removal")
+	}
+
+	got, statErr := os.ReadFile(logPath)
+	if statErr != nil {
+		t.Fatalf("replacement source should remain untouched: %v", statErr)
+	}
+	if string(got) != "replacement log data" {
+		t.Fatalf("replacement source content = %q, want %q", got, "replacement log data")
+	}
+	if _, statErr := os.Stat(originalPath); statErr != nil {
+		t.Fatalf("original source should remain at preserved path: %v", statErr)
+	}
+}
