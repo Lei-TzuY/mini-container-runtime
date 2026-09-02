@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+var compressArchiveRemove = os.Remove
+
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
 func CompressRotatedLog(logPath string) error {
 	srcFile, err := os.Open(logPath)
@@ -34,7 +36,9 @@ func CompressRotatedLog(logPath string) error {
 
 	_ = gzWriter.Close()
 	_ = srcFile.Close()
-	_ = os.Remove(logPath)
+	if err := compressArchiveRemove(logPath); err != nil {
+		return fmt.Errorf("remove compressed source log %q: %w", logPath, err)
+	}
 
 	return nil
 }
