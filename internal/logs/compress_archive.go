@@ -7,7 +7,10 @@ import (
 	"os"
 )
 
-var compressArchiveRemove = os.Remove
+var (
+	compressArchiveRemove    = os.Remove
+	compressArchiveGzipClose = func(w *gzip.Writer) error { return w.Close() }
+)
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
 func CompressRotatedLog(logPath string) error {
@@ -28,14 +31,18 @@ func CompressRotatedLog(logPath string) error {
 	defer dstFile.Close()
 
 	gzWriter := gzip.NewWriter(dstFile)
-	defer gzWriter.Close()
 
 	if _, err := io.Copy(gzWriter, srcFile); err != nil {
+		_ = gzWriter.Close()
 		return fmt.Errorf("gzip compress: %w", err)
 	}
+	if err := compressArchiveGzipClose(gzWriter); err != nil {
+		return fmt.Errorf("finalize gzip archive %q: %w", gzPath, err)
+	}
 
-	_ = gzWriter.Close()
-	_ = srcFile.Close()
+	if err := srcFile.Close(); err != nil {
+		return fmt.Errorf("close compressed source log %q: %w", logPath, err)
+	}
 	if err := compressArchiveRemove(logPath); err != nil {
 		return fmt.Errorf("remove compressed source log %q: %w", logPath, err)
 	}
