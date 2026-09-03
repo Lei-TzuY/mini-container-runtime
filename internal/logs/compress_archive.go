@@ -45,6 +45,13 @@ func CompressRotatedLog(logPath string) error {
 	if !srcInfo.Mode().IsRegular() {
 		return fmt.Errorf("unsafe compressed source log %q: mode %v", logPath, srcInfo.Mode())
 	}
+	srcNlink, err := fileInfoLinkCount(srcInfo)
+	if err != nil {
+		return fmt.Errorf("stat compressed source log link count %q: %w", logPath, err)
+	}
+	if srcNlink != 1 {
+		return fmt.Errorf("unsafe compressed source log %q: link count %d", logPath, srcNlink)
+	}
 
 	gzPath := logPath + ".gz"
 	dstFile, err := os.OpenFile(gzPath, os.O_WRONLY|os.O_CREATE|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0644)
