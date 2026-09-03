@@ -47,6 +47,37 @@ func fileInfoSameCTime(a, b os.FileInfo) (bool, error) {
 	return aStat.Ctim.Sec == bStat.Ctim.Sec && aStat.Ctim.Nsec == bStat.Ctim.Nsec, nil
 }
 
+func revalidateCompressedArchive(gzPath string, openedInfo, durableInfo os.FileInfo) error {
+	currentInfo, err := os.Lstat(gzPath)
+	if err != nil {
+		return fmt.Errorf("revalidate gzip archive %q: %w", gzPath, err)
+	}
+	if !currentInfo.Mode().IsRegular() || !os.SameFile(openedInfo, currentInfo) {
+		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
+	}
+	if currentInfo.Size() != durableInfo.Size() || !currentInfo.ModTime().Equal(durableInfo.ModTime()) {
+		return fmt.Errorf("gzip archive destination %q content changed after sync", gzPath)
+	}
+	sameCTime, err := fileInfoSameCTime(durableInfo, currentInfo)
+	if err != nil {
+		return fmt.Errorf("revalidate gzip archive change time %q: %w", gzPath, err)
+	}
+	if !sameCTime {
+		return fmt.Errorf("gzip archive destination %q metadata changed after sync", gzPath)
+	}
+	if currentInfo.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentInfo.Mode().Perm())
+	}
+	currentNlink, err := fileInfoLinkCount(currentInfo)
+	if err != nil {
+		return fmt.Errorf("revalidate gzip archive link count %q: %w", gzPath, err)
+	}
+	if currentNlink != 1 {
+		return fmt.Errorf("gzip archive destination %q gained hard links during compression (link count %d)", gzPath, currentNlink)
+	}
+	return nil
+}
+
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
 func CompressRotatedLog(logPath string) error {
 	srcFile, err := os.OpenFile(logPath, os.O_RDONLY|unix.O_NOFOLLOW, 0)
@@ -124,36 +155,15 @@ func CompressRotatedLog(logPath string) error {
 		return fmt.Errorf("close gzip archive %q: %w", gzPath, err)
 	}
 
-	currentDstInfo, err := os.Lstat(gzPath)
-	if err != nil {
-		return fmt.Errorf("revalidate gzip archive %q: %w", gzPath, err)
-	}
-	if !currentDstInfo.Mode().IsRegular() || !os.SameFile(dstInfo, currentDstInfo) {
-		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
-	}
-	if currentDstInfo.Size() != durableDstInfo.Size() || !currentDstInfo.ModTime().Equal(durableDstInfo.ModTime()) {
-		return fmt.Errorf("gzip archive destination %q content changed after sync", gzPath)
-	}
-	sameDstCTime, err := fileInfoSameCTime(durableDstInfo, currentDstInfo)
-	if err != nil {
-		return fmt.Errorf("revalidate gzip archive change time %q: %w", gzPath, err)
-	}
-	if !sameDstCTime {
-		return fmt.Errorf("gzip archive destination %q metadata changed after sync", gzPath)
-	}
-	if currentDstInfo.Mode().Perm()&0022 != 0 {
-		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentDstInfo.Mode().Perm())
-	}
-	currentDstNlink, err := fileInfoLinkCount(currentDstInfo)
-	if err != nil {
-		return fmt.Errorf("revalidate gzip archive link count %q: %w", gzPath, err)
-	}
-	if currentDstNlink != 1 {
-		return fmt.Errorf("gzip archive destination %q gained hard links during compression (link count %d)", gzPath, currentDstNlink)
+	if err := revalidateCompressedArchive(gzPath, dstInfo, durableDstInfo); err != nil {
+		return err
 	}
 	archiveDir := filepath.Dir(logPath)
 	if err := compressArchiveSyncDir(archiveDir); err != nil {
 		return fmt.Errorf("persist gzip archive %q: %w", gzPath, err)
+	}
+	if err := revalidateCompressedArchive(gzPath, dstInfo, durableDstInfo); err != nil {
+		return err
 	}
 
 	if err := srcFile.Close(); err != nil {
