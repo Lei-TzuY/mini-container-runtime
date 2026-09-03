@@ -11,6 +11,27 @@ import (
 var pruneBeforeInfo = func(string) {}
 var pruneBeforeDelete = func(string) {}
 
+func isRotatedLogName(name string) bool {
+	marker := strings.LastIndex(name, ".log.")
+	if marker < 0 {
+		return false
+	}
+
+	suffix := name[marker+len(".log."):]
+	if strings.HasSuffix(suffix, ".gz") {
+		suffix = strings.TrimSuffix(suffix, ".gz")
+	}
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // PruneRotatedLogs deletes rotated log files older than maxAge duration.
 func PruneRotatedLogs(logDir string, maxAge time.Duration) (int, error) {
 	if maxAge <= 0 {
@@ -30,7 +51,7 @@ func PruneRotatedLogs(logDir string, maxAge time.Duration) (int, error) {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.Contains(name, ".log.") && !entry.IsDir() {
+		if isRotatedLogName(name) && !entry.IsDir() {
 			path := filepath.Join(logDir, name)
 			pruneBeforeInfo(path)
 			fi, err := entry.Info()
