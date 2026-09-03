@@ -94,6 +94,13 @@ func CompressRotatedLog(logPath string) error {
 	if currentDstInfo.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentDstInfo.Mode().Perm())
 	}
+	var currentDstStat unix.Stat_t
+	if err := unix.Lstat(gzPath, &currentDstStat); err != nil {
+		return fmt.Errorf("revalidate gzip archive link count %q: %w", gzPath, err)
+	}
+	if currentDstStat.Nlink != 1 {
+		return fmt.Errorf("gzip archive destination %q gained hard links during compression (link count %d)", gzPath, currentDstStat.Nlink)
+	}
 	archiveDir := filepath.Dir(logPath)
 	if err := compressArchiveSyncDir(archiveDir); err != nil {
 		return fmt.Errorf("persist gzip archive %q: %w", gzPath, err)
