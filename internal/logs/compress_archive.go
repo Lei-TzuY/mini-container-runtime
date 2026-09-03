@@ -51,6 +51,9 @@ func CompressRotatedLog(logPath string) error {
 	if !dstInfo.Mode().IsRegular() {
 		return fmt.Errorf("unsafe gzip archive destination %q: mode %v", gzPath, dstInfo.Mode())
 	}
+	if dstInfo.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("unsafe gzip archive destination %q: writable by group or others (mode %v)", gzPath, dstInfo.Mode().Perm())
+	}
 	var dstStat unix.Stat_t
 	if err := unix.Fstat(int(dstFile.Fd()), &dstStat); err != nil {
 		return fmt.Errorf("fstat gzip archive %q: %w", gzPath, err)
