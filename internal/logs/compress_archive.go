@@ -132,6 +132,9 @@ func CompressRotatedLog(logPath string) error {
 	if currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(srcInfo, currentInfo) {
 		return fmt.Errorf("compressed source log %q changed during compression", logPath)
 	}
+	if currentInfo.Size() != srcInfo.Size() || !currentInfo.ModTime().Equal(srcInfo.ModTime()) {
+		return fmt.Errorf("compressed source log %q content changed during compression", logPath)
+	}
 	currentNlink, err := fileInfoLinkCount(currentInfo)
 	if err != nil {
 		return fmt.Errorf("revalidate compressed source log link count %q: %w", logPath, err)
