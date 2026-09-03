@@ -44,15 +44,26 @@ func openRunningProcess(st *state.Store, containerID string) (*state.Container, 
 }
 
 // StopContainer gracefully terminates the exact process identity stored for a
-// running container. It sends SIGTERM through pidfd, waits for that pidfd to
-// become readable, then escalates to SIGKILL on timeout. State is reconciled
-// only after the referenced process is confirmed exited, and only if the state
-// record still points at the same PID/start-time pair. The exact generation's
-// cgroup is then removed even if a concurrent lifecycle actor already updated
-// the state record.
+// running container with the historical SIGTERM default.
 func StopContainer(st *state.Store, containerID string, timeout time.Duration) (*state.Container, error) {
+	return StopContainerWithSignal(st, containerID, "SIGTERM", timeout)
+}
+
+// StopContainerWithSignal gracefully terminates the exact process identity
+// stored for a running container. It sends the requested signal through pidfd,
+// waits for that pidfd to become readable, then escalates to SIGKILL on timeout.
+// State is reconciled only after the referenced process is confirmed exited,
+// and only if the state record still points at the same PID/start-time pair.
+// The exact generation's cgroup is then removed even if a concurrent lifecycle
+// actor already updated the state record.
+func StopContainerWithSignal(st *state.Store, containerID, signal string, timeout time.Duration) (*state.Container, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("stop timeout must not be negative")
+	}
+
+	graceful, err := ParseSignal(signal)
+	if err != nil {
+		return nil, fmt.Errorf("resolve graceful stop signal %q: %w", signal, err)
 	}
 
 	c, handle, err := openRunningProcess(st, containerID)
@@ -61,12 +72,8 @@ func StopContainer(st *state.Store, containerID string, timeout time.Duration) (
 	}
 	defer handle.Close()
 
-	term, err := ParseSignal("SIGTERM")
-	if err != nil {
-		return nil, fmt.Errorf("resolve SIGTERM: %w", err)
-	}
-	if err := handle.Signal(term); err != nil && !errors.Is(err, ErrProcessNotFound) {
-		return nil, fmt.Errorf("gracefully stop container: %w", err)
+	if err := handle.Signal(graceful); err != nil && !errors.Is(err, ErrProcessNotFound) {
+		return nil, fmt.Errorf("gracefully stop container with %s: %w", signal, err)
 	}
 
 	exited, err := handle.WaitExit(timeout)
