@@ -75,6 +75,23 @@ func removeExpiredArchive(src string, inspected os.FileInfo) error {
 }
 
 func removeExpiredArchiveBefore(src string, inspected os.FileInfo, cutoff time.Time) error {
+	if !cutoff.IsZero() {
+		current, err := revalidateArchiveFile(src, inspected)
+		if err != nil {
+			return err
+		}
+		sameCTime, err := fileInfoSameCTime(inspected, current)
+		if err != nil {
+			return fmt.Errorf("revalidate archived log change time %q before removal: %w", src, err)
+		}
+		if !sameCTime {
+			return fmt.Errorf("archived log %q changed after prune age check", src)
+		}
+		if !current.ModTime().Before(cutoff) {
+			return fmt.Errorf("archived log %q became fresh before removal", src)
+		}
+	}
+
 	dir := filepath.Dir(src)
 	placeholder, err := os.CreateTemp(dir, "."+filepath.Base(src)+".delete-*")
 	if err != nil {
