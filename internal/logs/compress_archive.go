@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,6 +18,14 @@ var (
 	compressArchiveFileClose = func(f *os.File) error { return f.Close() }
 	compressArchiveSyncDir   = syncArchiveDirectory
 )
+
+func fileInfoLinkCount(info os.FileInfo) (uint64, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("unexpected stat payload %T", info.Sys())
+	}
+	return uint64(stat.Nlink), nil
+}
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
 func CompressRotatedLog(logPath string) error {
@@ -94,12 +103,12 @@ func CompressRotatedLog(logPath string) error {
 	if currentDstInfo.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentDstInfo.Mode().Perm())
 	}
-	var currentDstStat unix.Stat_t
-	if err := unix.Lstat(gzPath, &currentDstStat); err != nil {
+	currentDstNlink, err := fileInfoLinkCount(currentDstInfo)
+	if err != nil {
 		return fmt.Errorf("revalidate gzip archive link count %q: %w", gzPath, err)
 	}
-	if currentDstStat.Nlink != 1 {
-		return fmt.Errorf("gzip archive destination %q gained hard links during compression (link count %d)", gzPath, currentDstStat.Nlink)
+	if currentDstNlink != 1 {
+		return fmt.Errorf("gzip archive destination %q gained hard links during compression (link count %d)", gzPath, currentDstNlink)
 	}
 	archiveDir := filepath.Dir(logPath)
 	if err := compressArchiveSyncDir(archiveDir); err != nil {
