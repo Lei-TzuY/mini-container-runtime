@@ -17,3 +17,26 @@ func TestPruneRotatedLogs(t *testing.T) {
 		t.Fatalf("PruneRotatedLogs error: %v", err)
 	}
 }
+
+func TestPruneRotatedLogsLeavesUnrelatedGzipFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	backup := filepath.Join(tmpDir, "backup.gz")
+	if err := os.WriteFile(backup, []byte("unrelated backup"), 0644); err != nil {
+		t.Fatalf("write unrelated gzip: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(backup, old, old); err != nil {
+		t.Fatalf("age unrelated gzip: %v", err)
+	}
+
+	count, err := PruneRotatedLogs(tmpDir, time.Hour)
+	if err != nil {
+		t.Fatalf("PruneRotatedLogs error: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("deleted %d files, want 0", count)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("unrelated gzip was removed: %v", err)
+	}
+}
