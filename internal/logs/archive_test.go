@@ -159,3 +159,47 @@ func TestArchiveLogFileReportsDirectorySyncFailure(t *testing.T) {
 		t.Fatalf("rename should have completed before durability failure: %v", statErr)
 	}
 }
+
+func TestArchiveLogFileDoesNotClobberDestinationCreatedAfterSourceRevalidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log")
+	dst := logPath + ".1"
+	if err := os.WriteFile(logPath, []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLstat := archiveLstat
+	calls := 0
+	archiveLstat = func(path string) (os.FileInfo, error) {
+		fi, err := os.Lstat(path)
+		if path == logPath && err == nil {
+			calls++
+			if calls == 2 {
+				if err := os.WriteFile(dst, []byte("concurrent-destination"), 0644); err != nil {
+					t.Fatalf("create concurrent destination: %v", err)
+				}
+			}
+		}
+		return fi, err
+	}
+	defer func() { archiveLstat = oldLstat }()
+
+	if err := ArchiveLogFile(logPath, 3); err == nil {
+		t.Fatal("expected archive failure when destination appears before rename")
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("concurrent destination should remain: %v", err)
+	}
+	if string(got) != "concurrent-destination" {
+		t.Fatalf("destination was clobbered: %q", got)
+	}
+	got, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("source should remain after no-clobber failure: %v", err)
+	}
+	if string(got) != "source" {
+		t.Fatalf("source changed after no-clobber failure: %q", got)
+	}
+}
