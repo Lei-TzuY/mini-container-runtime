@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/unix"
 )
 
 var archiveLstat = os.Lstat
@@ -19,6 +21,10 @@ func syncArchiveDirectory(dir string) error {
 		return fmt.Errorf("fsync log archive directory %q: %w", dir, err)
 	}
 	return nil
+}
+
+func renameArchiveNoReplace(src, dst string) error {
+	return unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
 }
 
 func inspectArchiveFile(p string) (os.FileInfo, bool, error) {
@@ -89,8 +95,8 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 					return fmt.Errorf("persist expired archived log removal %q: %w", src, err)
 				}
 			} else {
-				if err := os.Rename(src, dst); err != nil {
-					return fmt.Errorf("rotate archived log %q to %q: %w", src, dst, err)
+				if err := renameArchiveNoReplace(src, dst); err != nil {
+					return fmt.Errorf("rotate archived log %q to %q without replacement: %w", src, dst, err)
 				}
 				if err := archiveSyncDir(dir); err != nil {
 					return fmt.Errorf("persist archived log rotation %q to %q: %w", src, dst, err)
@@ -108,8 +114,8 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 			return err
 		}
 		dst := fmt.Sprintf("%s.1", logPath)
-		if err := os.Rename(logPath, dst); err != nil {
-			return fmt.Errorf("archive active log %q to %q: %w", logPath, dst, err)
+		if err := renameArchiveNoReplace(logPath, dst); err != nil {
+			return fmt.Errorf("archive active log %q to %q without replacement: %w", logPath, dst, err)
 		}
 		if err := archiveSyncDir(dir); err != nil {
 			return fmt.Errorf("persist active log archive %q to %q: %w", logPath, dst, err)
