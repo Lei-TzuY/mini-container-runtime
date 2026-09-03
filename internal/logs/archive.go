@@ -32,6 +32,13 @@ func inspectArchiveFile(p string) (os.FileInfo, bool, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, false, fmt.Errorf("unsafe archived log path %q: mode %v", p, fi.Mode())
 	}
+	nlink, err := fileInfoLinkCount(fi)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect archived log link count %q: %w", p, err)
+	}
+	if nlink != 1 {
+		return nil, false, fmt.Errorf("unsafe archived log path %q: link count %d", p, nlink)
+	}
 	return fi, true, nil
 }
 
@@ -45,6 +52,13 @@ func revalidateArchiveFile(p string, inspected os.FileInfo) error {
 	}
 	if !os.SameFile(inspected, current) {
 		return fmt.Errorf("archived log path %q changed identity before rotation", p)
+	}
+	nlink, err := fileInfoLinkCount(current)
+	if err != nil {
+		return fmt.Errorf("revalidate archived log link count %q: %w", p, err)
+	}
+	if nlink != 1 {
+		return fmt.Errorf("archived log path %q gained hard links before rotation (link count %d)", p, nlink)
 	}
 	return nil
 }
