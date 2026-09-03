@@ -7,14 +7,18 @@ import (
 
 func TestParseStopCommandArgsSupportsAliases(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
-		want time.Duration
+		name       string
+		args       []string
+		want       time.Duration
+		wantSignal string
 	}{
-		{name: "default", args: []string{"ctr"}, want: 10 * time.Second},
-		{name: "short", args: []string{"-t", "3", "ctr"}, want: 3 * time.Second},
-		{name: "long", args: []string{"--timeout", "4", "ctr"}, want: 4 * time.Second},
-		{name: "long equals", args: []string{"--timeout=5", "ctr"}, want: 5 * time.Second},
+		{name: "default", args: []string{"ctr"}, want: 10 * time.Second, wantSignal: "SIGTERM"},
+		{name: "short timeout", args: []string{"-t", "3", "ctr"}, want: 3 * time.Second, wantSignal: "SIGTERM"},
+		{name: "long timeout", args: []string{"--timeout", "4", "ctr"}, want: 4 * time.Second, wantSignal: "SIGTERM"},
+		{name: "long timeout equals", args: []string{"--timeout=5", "ctr"}, want: 5 * time.Second, wantSignal: "SIGTERM"},
+		{name: "short signal", args: []string{"-s", "SIGINT", "ctr"}, want: 10 * time.Second, wantSignal: "SIGINT"},
+		{name: "long signal", args: []string{"--signal", "SIGQUIT", "ctr"}, want: 10 * time.Second, wantSignal: "SIGQUIT"},
+		{name: "numeric signal", args: []string{"--signal=10", "ctr"}, want: 10 * time.Second, wantSignal: "10"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -22,8 +26,8 @@ func TestParseStopCommandArgsSupportsAliases(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseStopCommandArgs: %v", err)
 			}
-			if got.containerID != "ctr" || got.timeout != tt.want {
-				t.Fatalf("got id=%q timeout=%v, want ctr/%v", got.containerID, got.timeout, tt.want)
+			if got.containerID != "ctr" || got.timeout != tt.want || got.signal != tt.wantSignal {
+				t.Fatalf("got id=%q timeout=%v signal=%q, want ctr/%v/%q", got.containerID, got.timeout, got.signal, tt.want, tt.wantSignal)
 			}
 		})
 	}
@@ -32,6 +36,7 @@ func TestParseStopCommandArgsSupportsAliases(t *testing.T) {
 func TestParseStopCommandArgsRejectsUnsafeInput(t *testing.T) {
 	for _, args := range [][]string{
 		{"--timeout", "-1", "ctr"},
+		{"--signal", "NOTASIGNAL", "ctr"},
 		{},
 		{"ctr", "extra"},
 	} {
