@@ -46,3 +46,38 @@ func TestCompressRotatedLogRejectsDestinationHardLinkedBeforeSourceRemoval(t *te
 		t.Fatalf("source log should be retained: %v", err)
 	}
 }
+
+func TestCompressRotatedLogRejectsSourceHardLinkedBeforeRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "container.log.1")
+	linkPath := filepath.Join(tmpDir, "source-link.log")
+
+	if err := os.WriteFile(logPath, []byte("new log data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSyncDir := compressArchiveSyncDir
+	compressArchiveSyncDir = func(dir string) error {
+		if err := oldSyncDir(dir); err != nil {
+			return err
+		}
+		if _, err := os.Stat(linkPath); os.IsNotExist(err) {
+			if err := os.Link(logPath, linkPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { compressArchiveSyncDir = oldSyncDir })
+
+	if err := CompressRotatedLog(logPath); err == nil {
+		t.Fatal("expected source hard-linked during compression to be rejected")
+	}
+
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("source log should be retained: %v", err)
+	}
+	if _, err := os.Stat(linkPath); err != nil {
+		t.Fatalf("source hard link should remain: %v", err)
+	}
+}
