@@ -157,6 +157,19 @@ func followOpenEventLog(f *os.File, logFile string, opts StreamOptions, w io.Wri
 			pending = append(pending, line...)
 			if err == nil {
 				if decodeErr := writeCompleteEventRecord(pending, opts, w); decodeErr != nil {
+					// A copytruncate can reset and regrow the same inode between two
+					// reads without ever presenting EOF at the inherited offset. In
+					// that race the next ReadSlice starts in the middle of the new JSON
+					// generation and looks like corruption. Revalidate the generation
+					// before reporting a durable-record decode failure.
+					reopen, updatedAnchor, inspectErr := inspectEventLogGenerationWithCheckpoint(f, logFile, reader.Buffered(), generationAnchor, checkpoint)
+					if inspectErr != nil {
+						return false, inspectErr
+					}
+					generationAnchor = updatedAnchor
+					if reopen {
+						return true, nil
+					}
 					return false, decodeErr
 				}
 				pending = pending[:0]

@@ -34,7 +34,8 @@ func marshalFollowTestRecord(t *testing.T, evt Event) []byte {
 }
 
 type notifyingWriter struct {
-	writes chan []byte
+	writes  chan []byte
+	release <-chan struct{}
 }
 
 func (w notifyingWriter) Write(p []byte) (int, error) {
@@ -42,6 +43,9 @@ func (w notifyingWriter) Write(p []byte) (int, error) {
 	select {
 	case w.writes <- copyOfP:
 	default:
+	}
+	if w.release != nil {
+		<-w.release
 	}
 	return len(p), nil
 }
@@ -160,12 +164,19 @@ func TestFollowOpenEventLogDetectsCopytruncateAfterFastRegrowth(t *testing.T) {
 	}
 
 	writes := make(chan []byte, 1)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
 	result := make(chan struct {
 		reopen bool
 		err    error
 	}, 1)
 	go func() {
-		reopen, err := followOpenEventLog(f, path, StreamOptions{JSON: true}, notifyingWriter{writes: writes})
+		reopen, err := followOpenEventLog(f, path, StreamOptions{JSON: true}, notifyingWriter{writes: writes, release: release})
 		result <- struct {
 			reopen bool
 			err    error
@@ -201,6 +212,12 @@ func TestFollowOpenEventLogDetectsCopytruncateAfterFastRegrowth(t *testing.T) {
 	if !os.SameFile(before, after) {
 		t.Fatal("test setup replaced inode; expected copytruncate on same inode")
 	}
+
+	// Release the follower only after the same inode has been truncated and
+	// regrown past its inherited read offset. This deterministically exercises
+	// the window that previously depended on scheduler timing.
+	close(release)
+	released = true
 
 	select {
 	case got := <-result:
