@@ -30,7 +30,7 @@ func PruneRotatedLogs(logDir string, maxAge time.Duration) (int, error) {
 
 	for _, entry := range entries {
 		name := entry.Name()
-		if (strings.Contains(name, ".log.") || strings.HasSuffix(name, ".gz")) && !entry.IsDir() {
+		if strings.Contains(name, ".log.") && !entry.IsDir() {
 			path := filepath.Join(logDir, name)
 			pruneBeforeInfo(path)
 			fi, err := entry.Info()
