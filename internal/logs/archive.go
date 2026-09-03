@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -48,28 +49,32 @@ func inspectArchiveFile(p string) (os.FileInfo, bool, error) {
 	return fi, true, nil
 }
 
-func revalidateArchiveFile(p string, inspected os.FileInfo) error {
+func revalidateArchiveFile(p string, inspected os.FileInfo) (os.FileInfo, error) {
 	current, err := archiveLstat(p)
 	if err != nil {
-		return fmt.Errorf("revalidate archived log %q: %w", p, err)
+		return nil, fmt.Errorf("revalidate archived log %q: %w", p, err)
 	}
 	if !current.Mode().IsRegular() {
-		return fmt.Errorf("unsafe archived log path %q during revalidation: mode %v", p, current.Mode())
+		return nil, fmt.Errorf("unsafe archived log path %q during revalidation: mode %v", p, current.Mode())
 	}
 	if !os.SameFile(inspected, current) {
-		return fmt.Errorf("archived log path %q changed identity before rotation", p)
+		return nil, fmt.Errorf("archived log path %q changed identity before rotation", p)
 	}
 	nlink, err := fileInfoLinkCount(current)
 	if err != nil {
-		return fmt.Errorf("revalidate archived log link count %q: %w", p, err)
+		return nil, fmt.Errorf("revalidate archived log link count %q: %w", p, err)
 	}
 	if nlink != 1 {
-		return fmt.Errorf("archived log path %q gained hard links before rotation (link count %d)", p, nlink)
+		return nil, fmt.Errorf("archived log path %q gained hard links before rotation (link count %d)", p, nlink)
 	}
-	return nil
+	return current, nil
 }
 
 func removeExpiredArchive(src string, inspected os.FileInfo) error {
+	return removeExpiredArchiveBefore(src, inspected, time.Time{})
+}
+
+func removeExpiredArchiveBefore(src string, inspected os.FileInfo, cutoff time.Time) error {
 	dir := filepath.Dir(src)
 	placeholder, err := os.CreateTemp(dir, "."+filepath.Base(src)+".delete-*")
 	if err != nil {
@@ -87,7 +92,11 @@ func removeExpiredArchive(src string, inspected os.FileInfo) error {
 	if err := renameArchiveNoReplace(src, tombstone); err != nil {
 		return fmt.Errorf("stage expired archived log %q for removal without replacement: %w", src, err)
 	}
-	if err := revalidateArchiveFile(tombstone, inspected); err != nil {
+	current, err := revalidateArchiveFile(tombstone, inspected)
+	if err == nil && !cutoff.IsZero() && !current.ModTime().Before(cutoff) {
+		err = fmt.Errorf("archived log %q became fresh before removal", src)
+	}
+	if err != nil {
 		if restoreErr := renameArchiveNoReplace(tombstone, src); restoreErr != nil {
 			return fmt.Errorf("%w; additionally failed to restore staged expired archived log %q to %q: %v", err, tombstone, src, restoreErr)
 		}
@@ -114,7 +123,7 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 			return err
 		}
 		if exists {
-			if err := revalidateArchiveFile(src, inspected); err != nil {
+			if _, err := revalidateArchiveFile(src, inspected); err != nil {
 				return err
 			}
 			if i+1 >= maxFiles {
@@ -140,7 +149,7 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 		return err
 	}
 	if exists {
-		if err := revalidateArchiveFile(logPath, inspected); err != nil {
+		if _, err := revalidateArchiveFile(logPath, inspected); err != nil {
 			return err
 		}
 		dst := fmt.Sprintf("%s.1", logPath)

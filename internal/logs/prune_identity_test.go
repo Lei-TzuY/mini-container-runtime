@@ -56,3 +56,45 @@ func TestPruneRotatedLogsDoesNotDeleteReplacementAfterAgeCheck(t *testing.T) {
 		t.Fatalf("original archive changed: %q", got)
 	}
 }
+
+func TestPruneRotatedLogsDoesNotDeleteCandidateThatBecomesFresh(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "container.log.2")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHook := pruneBeforeDelete
+	pruneBeforeDelete = func(deletePath string) {
+		if deletePath != path {
+			return
+		}
+		if err := os.WriteFile(path, []byte("fresh"), 0o644); err != nil {
+			t.Fatalf("refresh candidate: %v", err)
+		}
+		now := time.Now()
+		if err := os.Chtimes(path, now, now); err != nil {
+			t.Fatalf("refresh candidate mtime: %v", err)
+		}
+	}
+	defer func() { pruneBeforeDelete = oldHook }()
+
+	deleted, err := PruneRotatedLogs(tmpDir, time.Hour)
+	if err == nil {
+		t.Fatal("expected prune failure after candidate becomes fresh")
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted count = %d, want 0", deleted)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("fresh candidate should remain: %v", err)
+	}
+	if string(got) != "fresh" {
+		t.Fatalf("fresh candidate changed: %q", got)
+	}
+}

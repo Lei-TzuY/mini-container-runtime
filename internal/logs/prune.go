@@ -60,7 +60,7 @@ func PruneRotatedLogs(logDir string, maxAge time.Duration) (int, error) {
 			}
 			if fi.ModTime().Before(cutoff) {
 				pruneBeforeDelete(path)
-				if err := removeExpiredArchive(path, fi); err != nil {
+				if err := removeExpiredArchiveBefore(path, fi, cutoff); err != nil {
 					return deletedCount, fmt.Errorf("prune rotated log %q: %w", path, err)
 				}
 				if err := archiveSyncDir(logDir); err != nil {
