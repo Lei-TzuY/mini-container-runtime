@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+var pruneBeforeInfo = func(string) {}
 var pruneBeforeDelete = func(string) {}
 
 // PruneRotatedLogs deletes rotated log files older than maxAge duration.
@@ -31,8 +32,12 @@ func PruneRotatedLogs(logDir string, maxAge time.Duration) (int, error) {
 		name := entry.Name()
 		if (strings.Contains(name, ".log.") || strings.HasSuffix(name, ".gz")) && !entry.IsDir() {
 			path := filepath.Join(logDir, name)
+			pruneBeforeInfo(path)
 			fi, err := entry.Info()
-			if err == nil && fi.ModTime().Before(cutoff) {
+			if err != nil {
+				return deletedCount, fmt.Errorf("inspect rotated log %q: %w", path, err)
+			}
+			if fi.ModTime().Before(cutoff) {
 				pruneBeforeDelete(path)
 				if err := removeExpiredArchive(path, fi); err != nil {
 					return deletedCount, fmt.Errorf("prune rotated log %q: %w", path, err)
