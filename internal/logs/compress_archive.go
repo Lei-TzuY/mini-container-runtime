@@ -116,6 +116,10 @@ func CompressRotatedLog(logPath string) error {
 	if err := compressArchiveSync(dstFile); err != nil {
 		return fmt.Errorf("sync gzip archive %q: %w", gzPath, err)
 	}
+	durableDstInfo, err := dstFile.Stat()
+	if err != nil {
+		return fmt.Errorf("stat synced gzip archive %q: %w", gzPath, err)
+	}
 	if err := compressArchiveFileClose(dstFile); err != nil {
 		return fmt.Errorf("close gzip archive %q: %w", gzPath, err)
 	}
@@ -126,6 +130,16 @@ func CompressRotatedLog(logPath string) error {
 	}
 	if !currentDstInfo.Mode().IsRegular() || !os.SameFile(dstInfo, currentDstInfo) {
 		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
+	}
+	if currentDstInfo.Size() != durableDstInfo.Size() || !currentDstInfo.ModTime().Equal(durableDstInfo.ModTime()) {
+		return fmt.Errorf("gzip archive destination %q content changed after sync", gzPath)
+	}
+	sameDstCTime, err := fileInfoSameCTime(durableDstInfo, currentDstInfo)
+	if err != nil {
+		return fmt.Errorf("revalidate gzip archive change time %q: %w", gzPath, err)
+	}
+	if !sameDstCTime {
+		return fmt.Errorf("gzip archive destination %q metadata changed after sync", gzPath)
 	}
 	if currentDstInfo.Mode().Perm()&0022 != 0 {
 		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentDstInfo.Mode().Perm())
