@@ -69,6 +69,36 @@ func revalidateArchiveFile(p string, inspected os.FileInfo) error {
 	return nil
 }
 
+func removeExpiredArchive(src string, inspected os.FileInfo) error {
+	dir := filepath.Dir(src)
+	placeholder, err := os.CreateTemp(dir, "."+filepath.Base(src)+".delete-*")
+	if err != nil {
+		return fmt.Errorf("reserve expired archived log tombstone for %q: %w", src, err)
+	}
+	tombstone := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		_ = os.Remove(tombstone)
+		return fmt.Errorf("close expired archived log tombstone placeholder %q: %w", tombstone, err)
+	}
+	if err := os.Remove(tombstone); err != nil {
+		return fmt.Errorf("release expired archived log tombstone placeholder %q: %w", tombstone, err)
+	}
+
+	if err := renameArchiveNoReplace(src, tombstone); err != nil {
+		return fmt.Errorf("stage expired archived log %q for removal without replacement: %w", src, err)
+	}
+	if err := revalidateArchiveFile(tombstone, inspected); err != nil {
+		if restoreErr := renameArchiveNoReplace(tombstone, src); restoreErr != nil {
+			return fmt.Errorf("%w; additionally failed to restore staged expired archived log %q to %q: %v", err, tombstone, src, restoreErr)
+		}
+		return err
+	}
+	if err := os.Remove(tombstone); err != nil {
+		return fmt.Errorf("remove staged expired archived log %q: %w", tombstone, err)
+	}
+	return nil
+}
+
 // ArchiveLogFile shifts old log files (e.g. log.1 -> log.2) up to maxFiles.
 func ArchiveLogFile(logPath string, maxFiles int) error {
 	if maxFiles <= 1 {
@@ -88,8 +118,8 @@ func ArchiveLogFile(logPath string, maxFiles int) error {
 				return err
 			}
 			if i+1 >= maxFiles {
-				if err := os.Remove(src); err != nil {
-					return fmt.Errorf("remove expired archived log %q: %w", src, err)
+				if err := removeExpiredArchive(src, inspected); err != nil {
+					return err
 				}
 				if err := archiveSyncDir(dir); err != nil {
 					return fmt.Errorf("persist expired archived log removal %q: %w", src, err)
