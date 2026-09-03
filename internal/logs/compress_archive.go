@@ -19,12 +19,32 @@ var (
 	compressArchiveSyncDir   = syncArchiveDirectory
 )
 
-func fileInfoLinkCount(info os.FileInfo) (uint64, error) {
+func fileInfoStat(info os.FileInfo) (*syscall.Stat_t, error) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, fmt.Errorf("unexpected stat payload %T", info.Sys())
+		return nil, fmt.Errorf("unexpected stat payload %T", info.Sys())
+	}
+	return stat, nil
+}
+
+func fileInfoLinkCount(info os.FileInfo) (uint64, error) {
+	stat, err := fileInfoStat(info)
+	if err != nil {
+		return 0, err
 	}
 	return uint64(stat.Nlink), nil
+}
+
+func fileInfoSameCTime(a, b os.FileInfo) (bool, error) {
+	aStat, err := fileInfoStat(a)
+	if err != nil {
+		return false, err
+	}
+	bStat, err := fileInfoStat(b)
+	if err != nil {
+		return false, err
+	}
+	return aStat.Ctim.Sec == bStat.Ctim.Sec && aStat.Ctim.Nsec == bStat.Ctim.Nsec, nil
 }
 
 // CompressRotatedLog compresses logPath to logPath.gz and removes the uncompressed file.
@@ -134,6 +154,13 @@ func CompressRotatedLog(logPath string) error {
 	}
 	if currentInfo.Size() != srcInfo.Size() || !currentInfo.ModTime().Equal(srcInfo.ModTime()) {
 		return fmt.Errorf("compressed source log %q content changed during compression", logPath)
+	}
+	sameCTime, err := fileInfoSameCTime(srcInfo, currentInfo)
+	if err != nil {
+		return fmt.Errorf("revalidate compressed source log change time %q: %w", logPath, err)
+	}
+	if !sameCTime {
+		return fmt.Errorf("compressed source log %q metadata changed during compression", logPath)
 	}
 	currentNlink, err := fileInfoLinkCount(currentInfo)
 	if err != nil {
