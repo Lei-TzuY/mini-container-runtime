@@ -91,6 +91,9 @@ func CompressRotatedLog(logPath string) error {
 	if !currentDstInfo.Mode().IsRegular() || !os.SameFile(dstInfo, currentDstInfo) {
 		return fmt.Errorf("gzip archive destination %q changed during compression", gzPath)
 	}
+	if currentDstInfo.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("gzip archive destination %q became writable by group or others during compression (mode %v)", gzPath, currentDstInfo.Mode().Perm())
+	}
 	archiveDir := filepath.Dir(logPath)
 	if err := compressArchiveSyncDir(archiveDir); err != nil {
 		return fmt.Errorf("persist gzip archive %q: %w", gzPath, err)
