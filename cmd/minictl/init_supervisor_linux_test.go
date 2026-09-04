@@ -115,9 +115,6 @@ func runInitSupervisorReapHelper(t *testing.T, role string) {
 		if err := cmd.Start(); err != nil {
 			os.Exit(123)
 		}
-		// Do not let the parent exit until the child has captured this PID as its
-		// original parent. Otherwise a fast scheduler can reparent the child before
-		// it records Getppid(), making the orphan-adoption assertion impossible.
 		waitForPathInHelper(filepath.Join(dir, "orphan-ready"))
 		os.Exit(0)
 	case "orphan":
@@ -224,14 +221,14 @@ func waitForFile(t *testing.T, path string) []byte {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		data, err := os.ReadFile(path)
-		if err == nil {
+		if err == nil && len(data) > 0 {
 			return data
 		}
-		if !os.IsNotExist(err) {
+		if err != nil && !os.IsNotExist(err) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", path)
+			t.Fatalf("timed out waiting for non-empty %s", path)
 		}
 		runtime.Gosched()
 	}
