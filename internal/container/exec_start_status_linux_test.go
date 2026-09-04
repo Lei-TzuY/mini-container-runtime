@@ -3,12 +3,14 @@
 package container
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 
 	"minicontainer/internal/events"
@@ -78,6 +80,57 @@ func TestRunExecPayloadDoesNotSignalWhenStartFails(t *testing.T) {
 	}
 	if err := awaitExecPayloadStarted(readPipe); err == nil {
 		t.Fatal("failed payload Start produced success proof")
+	}
+}
+
+func TestExecPayloadSignalForwardingHelper(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_SIGNAL_FORWARD") != "1" {
+		return
+	}
+	err := runExecPayloadWithStartSignal(
+		[]string{"sh", "-c", "trap 'exit 0' USR1; echo ready; while :; do :; done"},
+		[]string{"PATH=/bin:/usr/bin"},
+		nil,
+		os.Stdout,
+		os.Stderr,
+		nil,
+	)
+	if err != nil {
+		os.Exit(77)
+	}
+	os.Exit(0)
+}
+
+func TestRunExecPayloadForwardsSignalFromExecInit(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadSignalForwardingHelper$")
+	cmd.Env = append(os.Environ(), "MINICONTAINER_TEST_EXEC_SIGNAL_FORWARD=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("await payload readiness: %v", err)
+	}
+	if strings.TrimSpace(line) != "ready" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("unexpected payload readiness %q", line)
+	}
+	if err := cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("signal exec-init helper: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("exec-init helper did not forward SIGUSR1 to payload: %v", err)
 	}
 }
 
