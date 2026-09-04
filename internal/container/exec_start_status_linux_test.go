@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"minicontainer/internal/events"
 )
@@ -131,6 +133,110 @@ func TestRunExecPayloadForwardsSignalFromExecInit(t *testing.T) {
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("exec-init helper did not forward SIGUSR1 to payload: %v", err)
+	}
+}
+
+func TestExecPayloadProcessGroupForwardingDescendant(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_GROUP_DESCENDANT") != "1" {
+		return
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR1)
+	defer signal.Stop(signals)
+
+	_, _ = os.Stdout.WriteString("descendant-ready\n")
+	select {
+	case <-signals:
+		_, _ = os.Stdout.WriteString("descendant-signaled\n")
+		os.Exit(0)
+	case <-time.After(5 * time.Second):
+		os.Exit(82)
+	}
+}
+
+func TestExecPayloadProcessGroupForwardingLeader(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_GROUP_LEADER") != "1" {
+		return
+	}
+
+	// The workload leader deliberately handles SIGUSR1 without exiting. A
+	// direct-PID forward therefore cannot complete the descendant handshake.
+	leaderSignals := make(chan os.Signal, 1)
+	signal.Notify(leaderSignals, syscall.SIGUSR1)
+	defer signal.Stop(leaderSignals)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadProcessGroupForwardingDescendant$")
+	cmd.Env = append(os.Environ(), "MINICONTAINER_TEST_EXEC_GROUP_DESCENDANT=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		os.Exit(81)
+	}
+	os.Exit(0)
+}
+
+func TestExecPayloadProcessGroupForwardingHelper(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_GROUP_FORWARD") != "1" {
+		return
+	}
+
+	err := runExecPayloadWithStartSignal(
+		[]string{os.Args[0], "-test.run=^TestExecPayloadProcessGroupForwardingLeader$"},
+		append(os.Environ(), "MINICONTAINER_TEST_EXEC_GROUP_LEADER=1"),
+		nil,
+		os.Stdout,
+		os.Stderr,
+		nil,
+	)
+	if err != nil {
+		os.Exit(77)
+	}
+	os.Exit(0)
+}
+
+func TestRunExecPayloadForwardsSignalToDescendantProcessGroup(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadProcessGroupForwardingHelper$")
+	cmd.Env = append(os.Environ(), "MINICONTAINER_TEST_EXEC_GROUP_FORWARD=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(stdout)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("await descendant readiness: %v", err)
+	}
+	if strings.TrimSpace(line) != "descendant-ready" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("unexpected descendant readiness %q", line)
+	}
+	if err := cmd.Process.Signal(syscall.SIGUSR1); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("signal exec-init helper: %v", err)
+	}
+	line, err = reader.ReadString('\n')
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("await descendant signal acknowledgement: %v", err)
+	}
+	if strings.TrimSpace(line) != "descendant-signaled" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("unexpected descendant acknowledgement %q", line)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("exec-init helper did not complete after descendant group signal: %v", err)
 	}
 }
 

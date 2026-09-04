@@ -177,6 +177,10 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	// Keep each exec workload in a dedicated process group. Lifecycle signals
+	// delivered to exec-init apply to the workload, not only its leader; group
+	// delivery prevents descendants from surviving a handled leader signal.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		if startWriter != nil {
 			_ = startWriter.Close()
@@ -199,8 +203,13 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 			if sig == nil {
 				continue
 			}
-			if err := cmd.Process.Signal(sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				forwardingErr = errors.Join(forwardingErr, fmt.Errorf("forward exec payload signal %v: %w", sig, err))
+			sysSig, ok := sig.(syscall.Signal)
+			if !ok {
+				forwardingErr = errors.Join(forwardingErr, fmt.Errorf("forward exec payload signal %v: unsupported signal type", sig))
+				continue
+			}
+			if err := syscall.Kill(-cmd.Process.Pid, sysSig); err != nil && !errors.Is(err, syscall.ESRCH) {
+				forwardingErr = errors.Join(forwardingErr, fmt.Errorf("forward exec payload process-group signal %v: %w", sig, err))
 			}
 		case waitErr := <-waitResult:
 			return errors.Join(waitErr, forwardingErr)
