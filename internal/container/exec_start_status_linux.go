@@ -3,11 +3,14 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	"minicontainer/internal/events"
 	"golang.org/x/sys/unix"
@@ -17,6 +20,20 @@ const (
 	execStartedFDKey       = "MINICONTAINER_EXEC_STARTED_FD"
 	execPayloadStartedByte = byte(0xe7)
 )
+
+var execPayloadForwardSignals = []os.Signal{
+	syscall.SIGHUP,
+	syscall.SIGINT,
+	syscall.SIGQUIT,
+	syscall.SIGUSR1,
+	syscall.SIGUSR2,
+	syscall.SIGTERM,
+	syscall.SIGTSTP,
+	syscall.SIGTTIN,
+	syscall.SIGTTOU,
+	syscall.SIGCONT,
+	syscall.SIGWINCH,
+}
 
 func discardPendingExecIntent() {
 	_ = events.DiscardPendingExec()
@@ -145,6 +162,16 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 		}
 		return fmt.Errorf("exec command is empty")
 	}
+
+	// ExecInit remains alive after setns(CLONE_NEWPID) because it must spawn the
+	// payload as a child in the target PID namespace. Once it takes that
+	// supervisor role, terminal/control signals delivered to the helper must be
+	// relayed to the payload instead of terminating only the helper and orphaning
+	// the command. Register before Start so there is no post-spawn delivery gap.
+	forwardedSignals := make(chan os.Signal, 16)
+	signal.Notify(forwardedSignals, execPayloadForwardSignals...)
+	defer signal.Stop(forwardedSignals)
+
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = env
 	cmd.Stdin = stdin
@@ -159,5 +186,24 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 	// cmd.Start returning nil is the admission boundary: the payload process
 	// exists. A failed observer write cannot safely revoke or kill it.
 	notifyExecPayloadStarted(startWriter)
-	return cmd.Wait()
+
+	waitResult := make(chan error, 1)
+	go func() {
+		waitResult <- cmd.Wait()
+	}()
+
+	var forwardingErr error
+	for {
+		select {
+		case sig := <-forwardedSignals:
+			if sig == nil {
+				continue
+			}
+			if err := cmd.Process.Signal(sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				forwardingErr = errors.Join(forwardingErr, fmt.Errorf("forward exec payload signal %v: %w", sig, err))
+			}
+		case waitErr := <-waitResult:
+			return errors.Join(waitErr, forwardingErr)
+		}
+	}
 }
