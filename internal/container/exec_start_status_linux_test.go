@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"minicontainer/internal/events"
+	"golang.org/x/sys/unix"
 )
 
 func readAllExecEvents(t *testing.T) []events.Event {
@@ -237,6 +239,118 @@ func TestRunExecPayloadForwardsSignalToDescendantProcessGroup(t *testing.T) {
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("exec-init helper did not complete after descendant group signal: %v", err)
+	}
+}
+
+func TestExecPayloadCleanupDescendant(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_CLEANUP_DESCENDANT") != "1" {
+		return
+	}
+	_, _ = os.Stdout.WriteString("cleanup-descendant-ready " + strconv.Itoa(os.Getpid()) + "\n")
+	select {
+	case <-time.After(10 * time.Second):
+		os.Exit(86)
+	}
+}
+
+func TestExecPayloadCleanupLeader(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_CLEANUP_LEADER") != "1" {
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadCleanupDescendant$")
+	cmd.Env = append(os.Environ(), "MINICONTAINER_TEST_EXEC_CLEANUP_DESCENDANT=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		os.Exit(83)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(84)
+	}
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		os.Exit(85)
+	}
+	_, _ = os.Stdout.WriteString(line)
+	os.Exit(0)
+}
+
+func TestExecPayloadCleanupHelper(t *testing.T) {
+	if os.Getenv("MINICONTAINER_TEST_EXEC_CLEANUP_HELPER") != "1" {
+		return
+	}
+
+	err := runExecPayloadWithStartSignal(
+		[]string{os.Args[0], "-test.run=^TestExecPayloadCleanupLeader$"},
+		append(os.Environ(), "MINICONTAINER_TEST_EXEC_CLEANUP_LEADER=1"),
+		nil,
+		os.Stdout,
+		os.Stderr,
+		nil,
+	)
+	if err != nil {
+		os.Exit(87)
+	}
+	os.Exit(0)
+}
+
+func TestRunExecPayloadCleansDescendantAfterLeaderExit(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadCleanupHelper$")
+	cmd.Env = append(os.Environ(), "MINICONTAINER_TEST_EXEC_CLEANUP_HELPER=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := bufio.NewReader(stdout)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("await cleanup descendant readiness: %v", err)
+	}
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) != 2 || fields[0] != "cleanup-descendant-ready" {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("unexpected cleanup readiness %q", line)
+	}
+	descendantPID, err := strconv.Atoi(fields[1])
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("parse cleanup descendant pid %q: %v", fields[1], err)
+	}
+
+	pidfd, err := unix.PidfdOpen(descendantPID, 0)
+	if err != nil && !errors.Is(err, syscall.ESRCH) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("open cleanup descendant pidfd: %v", err)
+	}
+	if pidfd >= 0 {
+		defer unix.Close(pidfd)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("exec-init helper did not complete after leader exit: %v", err)
+	}
+	if pidfd < 0 {
+		return
+	}
+
+	fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}}
+	n, err := unix.Poll(fds, 5000)
+	if err != nil {
+		t.Fatalf("wait for cleanup descendant exit: %v", err)
+	}
+	if n != 1 || fds[0].Revents&unix.POLLIN == 0 {
+		t.Fatalf("cleanup descendant %d outlived exec completion", descendantPID)
 	}
 }
 
