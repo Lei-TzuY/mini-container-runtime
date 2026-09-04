@@ -84,6 +84,22 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		return fail(fmt.Errorf("persist created state for container %s: %w", id, err))
 	}
 
+	stopSignal, err := imageStopSignalForRootFS(st, rootfs)
+	if err != nil {
+		if rollbackErr := st.Delete(id); rollbackErr != nil {
+			err = errors.Join(err, fmt.Errorf("rollback created container state: %w", rollbackErr))
+		}
+		return fail(fmt.Errorf("resolve image stop signal for container %s: %w", id, err))
+	}
+	if stopSignal != "" {
+		if err := st.SaveContainerStopSignal(id, stopSignal); err != nil {
+			if rollbackErr := st.Delete(id); rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("rollback created container state: %w", rollbackErr))
+			}
+			return fail(fmt.Errorf("persist image stop signal for container %s: %w", id, err))
+		}
+	}
+
 	// Publishing the normalized rootfs, its admitted filesystem identity, and ID
 	// is the admission commit point. An uncertain state write that returned an
 	// error must never mutate the runtime config even if a filesystem entry
