@@ -66,7 +66,12 @@ func TestRegistryMetadataClientHasHardTimeout(t *testing.T) {
 }
 
 func TestValidateManifestLayersRejectsExcessiveLayerCount(t *testing.T) {
-	manifest := &ManifestV2{SchemaVersion: 2, Layers: make([]Descriptor, maxManifestLayers+1)}
+	config := []byte("{}")
+	manifest := &ManifestV2{
+		SchemaVersion: 2,
+		Config:        Descriptor{Digest: digestForTest(config), Size: int64(len(config))},
+		Layers:        make([]Descriptor, maxManifestLayers+1),
+	}
 	err := validateManifestLayers(manifest)
 	if err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("excessive layer count error=%v", err)

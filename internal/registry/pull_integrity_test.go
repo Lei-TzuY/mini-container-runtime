@@ -100,9 +100,11 @@ func TestWriteVerifiedBlobDoesNotOverwriteExistingDestination(t *testing.T) {
 }
 
 func TestValidateManifestLayersPreflightsEveryDescriptor(t *testing.T) {
+	config := []byte("{}")
 	good := []byte("good-layer")
 	manifest := &ManifestV2{
 		SchemaVersion: 2,
+		Config:        Descriptor{Digest: digestForTest(config), Size: int64(len(config))},
 		Layers: []Descriptor{
 			{Digest: digestForTest(good), Size: int64(len(good))},
 			{Digest: "sha256:too-short", Size: 10},
