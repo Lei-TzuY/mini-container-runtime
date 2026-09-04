@@ -200,7 +200,18 @@ func runInitSupervisorSignalHelper(t *testing.T, role string) {
 }
 
 func helperEnv(k1, v1, k2, v2 string) []string {
-	env := append([]string{}, os.Environ()...)
+	prefix1 := k1 + "="
+	prefix2 := k2 + "="
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if len(entry) >= len(prefix1) && entry[:len(prefix1)] == prefix1 {
+			continue
+		}
+		if len(entry) >= len(prefix2) && entry[:len(prefix2)] == prefix2 {
+			continue
+		}
+		env = append(env, entry)
+	}
 	env = append(env, k1+"="+v1, k2+"="+v2)
 	return env
 }
