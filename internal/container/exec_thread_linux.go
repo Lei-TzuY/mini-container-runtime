@@ -21,6 +21,11 @@ func prepareExecThreadWith(unshare unshareCall) error {
 	if err := unshare(unix.CLONE_FS); err != nil {
 		return fmt.Errorf("unshare CLONE_FS before namespace entry: %w", err)
 	}
+	// Join the exact managed cgroup while the helper still has host cgroupfs
+	// access. The subsequently spawned payload inherits this resource domain.
+	if err := attachExecInitToPersistedCgroup(); err != nil {
+		return fmt.Errorf("admit exec-init to container cgroup: %w", err)
+	}
 	// ExecInit has consumed every runtime-owned handoff value before reaching
 	// this point. Drop the entire reserved control namespace now so future
 	// MINICONTAINER_* bootstrap keys cannot silently cross into exec payloads.
