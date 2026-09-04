@@ -10,14 +10,10 @@ import (
 
 const forcedStopWait = 5 * time.Second
 
-// openRunningProcess resolves a running container and opens a stable process
-// handle for the exact PID/start-time identity persisted in state. Callers must
-// keep the returned handle open for the whole control operation.
 func openRunningProcess(st *state.Store, containerID string) (*state.Container, *ProcessHandle, error) {
 	if st == nil {
 		return nil, nil, fmt.Errorf("state store is nil")
 	}
-
 	c, err := st.Resolve(containerID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve container: %w", err)
@@ -32,7 +28,6 @@ func openRunningProcess(st *state.Store, containerID string) (*state.Container, 
 	if c.PID <= 0 || c.PIDStartTime == 0 {
 		return nil, nil, fmt.Errorf("container %s: %w", shortID, ErrProcessIdentityUnavailable)
 	}
-
 	handle, err := OpenProcessHandle(c.PID, c.PIDStartTime)
 	if err != nil {
 		if errors.Is(err, ErrProcessNotFound) {
@@ -44,38 +39,39 @@ func openRunningProcess(st *state.Store, containerID string) (*state.Container, 
 }
 
 // StopContainer gracefully terminates the exact process identity stored for a
-// running container with the historical SIGTERM default.
+// running container. It honors persisted runtime stop-signal state and falls
+// back to SIGTERM for containers created before that state existed.
 func StopContainer(st *state.Store, containerID string, timeout time.Duration) (*state.Container, error) {
-	return StopContainerWithSignal(st, containerID, "SIGTERM", timeout)
+	if st == nil {
+		return nil, fmt.Errorf("state store is nil")
+	}
+	c, err := st.Resolve(containerID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve container stop signal owner: %w", err)
+	}
+	signal, err := st.ContainerStopSignal(c.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve container stop signal: %w", err)
+	}
+	return StopContainerWithSignal(st, c.ID, signal, timeout)
 }
 
-// StopContainerWithSignal gracefully terminates the exact process identity
-// stored for a running container. It sends the requested signal through pidfd,
-// waits for that pidfd to become readable, then escalates to SIGKILL on timeout.
-// State is reconciled only after the referenced process is confirmed exited,
-// and only if the state record still points at the same PID/start-time pair.
-// The exact generation's cgroup is then removed even if a concurrent lifecycle
-// actor already updated the state record.
 func StopContainerWithSignal(st *state.Store, containerID, signal string, timeout time.Duration) (*state.Container, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("stop timeout must not be negative")
 	}
-
 	graceful, err := ParseSignal(signal)
 	if err != nil {
 		return nil, fmt.Errorf("resolve graceful stop signal %q: %w", signal, err)
 	}
-
 	c, handle, err := openRunningProcess(st, containerID)
 	if err != nil {
 		return nil, err
 	}
 	defer handle.Close()
-
 	if err := handle.Signal(graceful); err != nil && !errors.Is(err, ErrProcessNotFound) {
 		return nil, fmt.Errorf("gracefully stop container with %s: %w", signal, err)
 	}
-
 	exited, err := handle.WaitExit(timeout)
 	if err != nil {
 		return nil, fmt.Errorf("wait for graceful stop: %w", err)
@@ -96,7 +92,6 @@ func StopContainerWithSignal(st *state.Store, containerID, signal string, timeou
 			return nil, fmt.Errorf("container process %d did not exit after SIGKILL", c.PID)
 		}
 	}
-
 	if _, err := FinalizeStoppedGeneration(st, c, -1, time.Now()); err != nil {
 		return c, fmt.Errorf("finalize stopped container: %w", err)
 	}
