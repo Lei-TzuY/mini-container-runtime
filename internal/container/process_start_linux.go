@@ -23,6 +23,9 @@ const pinnedRootFSEnvKey = "MINICONTAINER_ROOTFS_FD"
 // identified to the runtime bootstrap so it can be sealed close-on-exec before
 // the final payload exec rather than leaking a host-side directory capability.
 func startContainerProcess(cfg Config, cmd *exec.Cmd) error {
+	if err := validateSecurityProcessPolicy(cfg); err != nil {
+		return &runtimeSetupError{err: fmt.Errorf("validate security process policy: %w", err)}
+	}
 	if err := validateAdmittedRootFSIdentity(cfg); err != nil {
 		return err
 	}
