@@ -82,13 +82,15 @@ func DropCapabilities(capNames []string, debug bool) error {
 			return fmt.Errorf("unknown capability %q", raw)
 		}
 
-		// prctl(PR_CAPBSET_DROP, capVal, 0, 0, 0)
+		// A requested capability policy is a security boundary. Never treat a
+		// kernel refusal as success: EPERM means the runtime lacked the authority
+		// to enforce the drop, while EINVAL means the running kernel does not
+		// understand that capability. In both cases continuing would silently
+		// weaken the caller's requested process policy.
 		if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prCapBsetDrop, capVal, 0); errno != 0 {
-			// EPERM if process lacks CAP_SETPCAP, EINVAL if capability not supported by kernel
-			if errno != syscall.EPERM && errno != syscall.EINVAL {
-				return fmt.Errorf("prctl(PR_CAPBSET_DROP, %s): %w", name, errno)
-			}
-		} else if debug {
+			return fmt.Errorf("prctl(PR_CAPBSET_DROP, %s): %w", name, errno)
+		}
+		if debug {
 			fmt.Printf("[init] dropped capability %s (%d)\n", name, capVal)
 		}
 	}
