@@ -155,6 +155,33 @@ func notifyExecPayloadStarted(writePipe *os.File) {
 	_ = writePipe.Close()
 }
 
+func waitForExecPayloadLeaderExit(pid int) error {
+	var info unix.Siginfo
+	for {
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("observe exec payload leader exit: %w", err)
+		}
+		return nil
+	}
+}
+
+func cleanupExecPayloadProcessGroup(pgid int) error {
+	if pgid <= 0 {
+		return fmt.Errorf("invalid exec payload process group %d", pgid)
+	}
+	// The leader is intentionally still waitable here (Waitid used WNOWAIT), so
+	// its PID cannot be reused between exit observation and group cleanup. Kill
+	// any descendants that would otherwise outlive successful exec completion.
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("clean up exec payload process group %d: %w", pgid, err)
+	}
+	return nil
+}
+
 func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdout, stderr io.Writer, startWriter *os.File) error {
 	if len(command) == 0 || command[0] == "" {
 		if startWriter != nil {
@@ -191,9 +218,9 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 	// exists. A failed observer write cannot safely revoke or kill it.
 	notifyExecPayloadStarted(startWriter)
 
-	waitResult := make(chan error, 1)
+	leaderExit := make(chan error, 1)
 	go func() {
-		waitResult <- cmd.Wait()
+		leaderExit <- waitForExecPayloadLeaderExit(cmd.Process.Pid)
 	}()
 
 	var forwardingErr error
@@ -211,8 +238,14 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 			if err := syscall.Kill(-cmd.Process.Pid, sysSig); err != nil && !errors.Is(err, syscall.ESRCH) {
 				forwardingErr = errors.Join(forwardingErr, fmt.Errorf("forward exec payload process-group signal %v: %w", sig, err))
 			}
-		case waitErr := <-waitResult:
-			return errors.Join(waitErr, forwardingErr)
+		case observeErr := <-leaderExit:
+			if observeErr != nil {
+				waitErr := cmd.Wait()
+				return errors.Join(waitErr, forwardingErr, observeErr)
+			}
+			cleanupErr := cleanupExecPayloadProcessGroup(cmd.Process.Pid)
+			waitErr := cmd.Wait()
+			return errors.Join(waitErr, forwardingErr, cleanupErr)
 		}
 	}
 }
