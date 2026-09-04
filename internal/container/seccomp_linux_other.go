@@ -2,8 +2,8 @@
 
 package container
 
-// blockedSyscalls is empty for architectures other than amd64/arm64.
-// The seccomp filter will be installed but allow all syscalls, acting as
-// a no-op.  Extend this file (or add a new arch-specific file) to add
-// coverage for additional architectures.
+// Unknown audit architecture: applySeccomp rejects enabling the filter rather
+// than installing an allow-all or ABI-ambiguous policy.
+const auditArch uint32 = 0
+
 var blockedSyscalls = []uint32{}
