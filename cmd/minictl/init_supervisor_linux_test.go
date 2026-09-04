@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -76,9 +77,6 @@ func TestContainerInitSupervisorReapsOrphan(t *testing.T) {
 	}
 	waitForProcessGone(t, orphanPID)
 
-	// The primary payload is deliberately still alive here. The orphan can only
-	// disappear from /proc if the supervisor reaped it rather than waiting for
-	// namespace/process teardown to clean it up.
 	if err := os.WriteFile(filepath.Join(dir, "finish-payload"), []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,23 +114,30 @@ func runInitSupervisorReapHelper(t *testing.T, role string) {
 		if err := cmd.Start(); err != nil {
 			os.Exit(123)
 		}
+		// Do not let the parent exit until the child has captured this PID as its
+		// original parent. Otherwise a fast scheduler can reparent the child before
+		// it records Getppid(), making the orphan-adoption assertion impossible.
+		waitForPathInHelper(filepath.Join(dir, "orphan-ready"))
 		os.Exit(0)
 	case "orphan":
 		initialParent := os.Getppid()
+		if err := os.WriteFile(filepath.Join(dir, "orphan-ready"), []byte(strconv.Itoa(initialParent)), 0o600); err != nil {
+			os.Exit(124)
+		}
 		deadline := time.Now().Add(5 * time.Second)
 		for os.Getppid() == initialParent {
 			if time.Now().After(deadline) {
-				os.Exit(124)
+				os.Exit(125)
 			}
 			runtime.Gosched()
 		}
 		if err := os.WriteFile(filepath.Join(dir, "orphan.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-			os.Exit(125)
+			os.Exit(126)
 		}
 		waitForPathInHelper(filepath.Join(dir, "release-orphan"))
 		return
 	default:
-		os.Exit(126)
+		os.Exit(127)
 	}
 }
 
@@ -204,10 +209,7 @@ func helperEnv(k1, v1, k2, v2 string) []string {
 	prefix2 := k2 + "="
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {
-		if len(entry) >= len(prefix1) && entry[:len(prefix1)] == prefix1 {
-			continue
-		}
-		if len(entry) >= len(prefix2) && entry[:len(prefix2)] == prefix2 {
+		if strings.HasPrefix(entry, prefix1) || strings.HasPrefix(entry, prefix2) {
 			continue
 		}
 		env = append(env, entry)
