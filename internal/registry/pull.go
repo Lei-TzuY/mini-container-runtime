@@ -73,6 +73,11 @@ func PullImage(imageRef, destDir string) error {
 	defer os.RemoveAll(tmpDir)
 
 	client := &http.Client{Timeout: 60 * time.Second}
+	stopSignal, err := pullImageStopSignal(client, imageName, token, tmpDir, manifest.Config)
+	if err != nil {
+		return fmt.Errorf("fetch image config: %w", err)
+	}
+
 	layerFiles := make([]string, len(manifest.Layers))
 	for i, layer := range manifest.Layers {
 		short, err := shortDigest(layer.Digest)
@@ -91,6 +96,9 @@ func PullImage(imageRef, destDir string) error {
 
 	if err := applyVerifiedLayers(layerFiles, destDir); err != nil {
 		return err
+	}
+	if err := persistPulledImageMetadata(imageRef, destDir, stopSignal); err != nil {
+		return fmt.Errorf("persist pulled image metadata: %w", err)
 	}
 
 	fmt.Printf("Successfully pulled %s:%s -> %s\n", imageName, tag, destDir)
@@ -144,6 +152,9 @@ func validateManifestLayers(manifest *ManifestV2) error {
 	}
 	if manifest.SchemaVersion != 2 {
 		return fmt.Errorf("unsupported schema version %d", manifest.SchemaVersion)
+	}
+	if err := validateLayerDescriptor(manifest.Config); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	if len(manifest.Layers) > maxManifestLayers {
 		return fmt.Errorf("manifest contains %d layers; limit is %d", len(manifest.Layers), maxManifestLayers)
