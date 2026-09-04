@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -257,7 +258,7 @@ func waitForProcessGone(t *testing.T, pid int) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		_, err := os.Stat(path)
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		if err != nil {
