@@ -88,7 +88,7 @@ func TestExecPayloadSignalForwardingHelper(t *testing.T) {
 		return
 	}
 	err := runExecPayloadWithStartSignal(
-		[]string{"sh", "-c", "parent=$PPID; trap 'exit 0' USR1; echo ready; while kill -0 \"$parent\" 2>/dev/null; do :; done; exit 78"},
+		[]string{"sh", "-c", "parent=$PPID; trap 'exit 0' USR1; echo ready; exec 1>&-; while kill -0 \"$parent\" 2>/dev/null; do :; done; exit 78"},
 		[]string{"PATH=/bin:/usr/bin"},
 		nil,
 		os.Stdout,
