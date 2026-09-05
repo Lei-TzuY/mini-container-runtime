@@ -33,7 +33,7 @@ func TestImageEnvironmentForRootFSDrivesRealProcessAndCLIOverride(t *testing.T) 
 	if err != nil {
 		t.Fatalf("imageEnvironmentForRootFS() error = %v", err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", `test "$FROM_IMAGE" = present && test "$OVERRIDE" = cli && test "$CLI_ONLY" = yes`)
+	cmd := exec.Command("/bin/sh", "-c", "test \"$FROM_IMAGE\" = present && test \"$OVERRIDE\" = cli && test \"$CLI_ONLY\" = yes")
 	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("image environment did not reach process: %v, output=%q, env=%v", err, output, env)
