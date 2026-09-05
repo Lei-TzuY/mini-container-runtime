@@ -98,6 +98,9 @@ func persistPulledImageRuntimeMetadata(imageRef, destDir string, cfg imageRuntim
 	}); err != nil {
 		return fmt.Errorf("save pulled image: %w", err)
 	}
+	if err := st.SaveImageEnvironment(imageRef, cfg.Env); err != nil {
+		return fmt.Errorf("save pulled image environment: %w", err)
+	}
 	if err := st.SaveImageStopSignal(imageRef, cfg.StopSignal); err != nil {
 		return fmt.Errorf("save pulled image StopSignal: %w", err)
 	}
