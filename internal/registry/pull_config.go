@@ -17,12 +17,14 @@ type imageConfigDocument struct {
 	Config struct {
 		StopSignal string   `json:"StopSignal"`
 		Env        []string `json:"Env,omitempty"`
+		WorkingDir string   `json:"WorkingDir,omitempty"`
 	} `json:"config"`
 }
 
 type imageRuntimeConfig struct {
 	StopSignal string
 	Env        []string
+	WorkingDir string
 }
 
 func pullImageRuntimeConfig(client *http.Client, imageName, token, tmpDir string, desc Descriptor) (imageRuntimeConfig, error) {
@@ -72,7 +74,17 @@ func parseImageRuntimeConfig(data []byte) (imageRuntimeConfig, error) {
 		}
 		env = append(env, entry)
 	}
-	return imageRuntimeConfig{StopSignal: signal, Env: env}, nil
+	workingDir := strings.TrimSpace(cfg.Config.WorkingDir)
+	if strings.IndexByte(workingDir, 0) >= 0 {
+		return imageRuntimeConfig{}, fmt.Errorf("invalid image WorkingDir %q: contains NUL", workingDir)
+	}
+	if workingDir != "" {
+		if !filepath.IsAbs(workingDir) {
+			return imageRuntimeConfig{}, fmt.Errorf("invalid image WorkingDir %q: must be absolute", workingDir)
+		}
+		workingDir = filepath.Clean(workingDir)
+	}
+	return imageRuntimeConfig{StopSignal: signal, Env: env, WorkingDir: workingDir}, nil
 }
 
 func parseImageConfigStopSignal(data []byte) (string, error) {
@@ -91,15 +103,19 @@ func persistPulledImageRuntimeMetadata(imageRef, destDir string, cfg imageRuntim
 	defer st.Close()
 
 	if err := st.SaveImage(&state.Image{
-		Name:     imageRef,
-		RootFS:   destDir,
-		LoadedAt: time.Now(),
-		Env:      append([]string(nil), cfg.Env...),
+		Name:      imageRef,
+		RootFS:    destDir,
+		LoadedAt:  time.Now(),
+		WorkDir:   cfg.WorkingDir,
+		Env:       append([]string(nil), cfg.Env...),
 	}); err != nil {
 		return fmt.Errorf("save pulled image: %w", err)
 	}
 	if err := st.SaveImageEnvironment(imageRef, cfg.Env); err != nil {
 		return fmt.Errorf("save pulled image environment: %w", err)
+	}
+	if err := st.SaveImageWorkingDir(imageRef, cfg.WorkingDir); err != nil {
+		return fmt.Errorf("save pulled image WorkingDir: %w", err)
 	}
 	if err := st.SaveImageStopSignal(imageRef, cfg.StopSignal); err != nil {
 		return fmt.Errorf("save pulled image StopSignal: %w", err)

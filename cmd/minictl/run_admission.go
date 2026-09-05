@@ -71,6 +71,10 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if err != nil {
 		return fail(fmt.Errorf("resolve image environment for run: %w", err))
 	}
+	runtimeWorkDir, err := imageWorkingDirForRootFS(st, rootfs, cfg.WorkDir)
+	if err != nil {
+		return fail(fmt.Errorf("resolve image WorkingDir for run: %w", err))
+	}
 
 	id, err := deps.newID()
 	if err != nil {
@@ -107,13 +111,14 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	}
 
 	// Publishing the normalized rootfs, its admitted filesystem identity,
-	// resolved runtime environment, and ID is the admission commit point. An
-	// uncertain state write that returned an error must never mutate the runtime
-	// config even if a filesystem entry happened to become visible before that
-	// error.
+	// resolved runtime environment/workdir, and ID is the admission commit point.
+	// An uncertain state write that returned an error must never mutate the
+	// runtime config even if a filesystem entry happened to become visible before
+	// that error.
 	cfg.RootFS = rootfs
 	cfg.RootFSIdentity = rootfsIdentity
 	cfg.Env = runtimeEnv
+	cfg.WorkDir = runtimeWorkDir
 	cfg.ContainerID = id
 	return st, rec, nil
 }
