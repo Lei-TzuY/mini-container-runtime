@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseImageRuntimeConfigIncludesEnvironment(t *testing.T) {
-	cfg, err := parseImageRuntimeConfig([]byte(`{"config":{"StopSignal":"SIGUSR1","Env":["PATH=/bin","FOO=bar"]}}`))
+	cfg, err := parseImageRuntimeConfig([]byte("{\"config\":{\"StopSignal\":\"SIGUSR1\",\"Env\":[\"PATH=/bin\",\"FOO=bar\"]}}"))
 	if err != nil {
 		t.Fatalf("parseImageRuntimeConfig() error = %v", err)
 	}
@@ -21,7 +21,7 @@ func TestParseImageRuntimeConfigIncludesEnvironment(t *testing.T) {
 }
 
 func TestParseImageRuntimeConfigRejectsMalformedEnvironment(t *testing.T) {
-	_, err := parseImageRuntimeConfig([]byte(`{"config":{"Env":["BROKEN"]}}`))
+	_, err := parseImageRuntimeConfig([]byte("{\"config\":{\"Env\":[\"BROKEN\"]}}"))
 	if err == nil {
 		t.Fatal("parseImageRuntimeConfig() returned nil error for malformed environment")
 	}
