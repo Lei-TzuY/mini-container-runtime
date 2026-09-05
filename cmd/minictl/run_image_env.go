@@ -12,7 +12,7 @@ import (
 // imageEnvironmentForRootFS resolves OCI image environment defaults by the
 // filesystem identity admitted for the run. CLI-provided values override image
 // defaults by key. Multiple image records sharing one rootfs must agree on
-// their non-empty environment metadata so runtime behavior is deterministic.
+// their environment metadata so runtime behavior is deterministic.
 func imageEnvironmentForRootFS(st *state.Store, rootfs string, overrides []string) ([]string, error) {
 	if st == nil {
 		return nil, fmt.Errorf("state store is nil")
@@ -28,27 +28,40 @@ func imageEnvironmentForRootFS(st *state.Store, rootfs string, overrides []strin
 	}
 	var selected []string
 	var selectedSignature string
+	selectedKnown := false
 	for _, img := range images {
-		if img == nil || img.RootFS == "" || len(img.Env) == 0 {
+		if img == nil || img.RootFS == "" || img.Name == "" {
 			continue
 		}
 		info, err := os.Stat(img.RootFS)
 		if err != nil || !os.SameFile(rootInfo, info) {
 			continue
 		}
-		normalized, err := normalizeEnvironment(img.Env)
+
+		imageEnv, ok, err := st.ImageEnvironment(img.Name)
+		if err != nil {
+			return nil, fmt.Errorf("read image %q environment: %w", img.Name, err)
+		}
+		if !ok {
+			if len(img.Env) == 0 {
+				continue
+			}
+			imageEnv = img.Env
+		}
+		normalized, err := normalizeEnvironment(imageEnv)
 		if err != nil {
 			return nil, fmt.Errorf("image %q environment: %w", img.Name, err)
 		}
 		signature := environmentSignature(normalized)
-		if selected != nil && selectedSignature != signature {
+		if selectedKnown && selectedSignature != signature {
 			return nil, fmt.Errorf("conflicting image environments for rootfs %q", rootfs)
 		}
 		selected = normalized
 		selectedSignature = signature
+		selectedKnown = true
 	}
 
-	if selected == nil {
+	if !selectedKnown {
 		return append([]string(nil), overrides...), nil
 	}
 	return mergeEnvironment(selected, overrides)
