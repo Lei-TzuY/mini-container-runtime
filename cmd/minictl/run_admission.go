@@ -67,6 +67,11 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		return nil, nil, cause
 	}
 
+	runtimeEnv, err := imageEnvironmentForRootFS(st, rootfs, cfg.Env)
+	if err != nil {
+		return fail(fmt.Errorf("resolve image environment for run: %w", err))
+	}
+
 	id, err := deps.newID()
 	if err != nil {
 		return fail(fmt.Errorf("generate container ID: %w", err))
@@ -79,6 +84,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		Command:   cfg.Command,
 		Hostname:  cfg.Hostname,
 		CreatedAt: deps.now(),
+		Env:       append([]string(nil), runtimeEnv...),
 	}
 	if err := st.Save(rec); err != nil {
 		return fail(fmt.Errorf("persist created state for container %s: %w", id, err))
@@ -100,12 +106,14 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		}
 	}
 
-	// Publishing the normalized rootfs, its admitted filesystem identity, and ID
-	// is the admission commit point. An uncertain state write that returned an
-	// error must never mutate the runtime config even if a filesystem entry
-	// happened to become visible before that error.
+	// Publishing the normalized rootfs, its admitted filesystem identity,
+	// resolved runtime environment, and ID is the admission commit point. An
+	// uncertain state write that returned an error must never mutate the runtime
+	// config even if a filesystem entry happened to become visible before that
+	// error.
 	cfg.RootFS = rootfs
 	cfg.RootFSIdentity = rootfsIdentity
+	cfg.Env = runtimeEnv
 	cfg.ContainerID = id
 	return st, rec, nil
 }

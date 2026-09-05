@@ -73,7 +73,7 @@ func PullImage(imageRef, destDir string) error {
 	defer os.RemoveAll(tmpDir)
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	stopSignal, err := pullImageStopSignal(client, imageName, token, tmpDir, manifest.Config)
+	runtimeConfig, err := pullImageRuntimeConfig(client, imageName, token, tmpDir, manifest.Config)
 	if err != nil {
 		return fmt.Errorf("fetch image config: %w", err)
 	}
@@ -97,7 +97,7 @@ func PullImage(imageRef, destDir string) error {
 	if err := applyVerifiedLayers(layerFiles, destDir); err != nil {
 		return err
 	}
-	if err := persistPulledImageMetadata(imageRef, destDir, stopSignal); err != nil {
+	if err := persistPulledImageRuntimeMetadata(imageRef, destDir, runtimeConfig); err != nil {
 		return fmt.Errorf("persist pulled image metadata: %w", err)
 	}
 
