@@ -7,14 +7,44 @@ import (
 	"path/filepath"
 )
 
+// RestartPortMapping is the durable form of one published container port.
+type RestartPortMapping struct {
+	HostPort      int    `json:"host_port"`
+	ContainerPort int    `json:"container_port"`
+	Protocol      string `json:"protocol,omitempty"`
+}
+
+// RestartVolume is the durable form of one bind or named-volume mount.
+type RestartVolume struct {
+	HostPath      string `json:"host_path"`
+	ContainerPath string `json:"container_path"`
+	ReadOnly      bool   `json:"read_only,omitempty"`
+}
+
 // RestartSpec is the durable execution input required to relaunch a stopped
-// container without reconstructing runtime behavior from CLI arguments.
+// container without reconstructing runtime behavior from new CLI arguments.
+// Security, isolation, resource, mount and network settings are persisted with
+// the payload so restart cannot silently weaken the original execution policy.
 type RestartSpec struct {
-	RootFS   string   `json:"rootfs"`
-	Command  []string `json:"command"`
-	Env      []string `json:"env,omitempty"`
-	WorkDir  string   `json:"work_dir,omitempty"`
-	Hostname string   `json:"hostname,omitempty"`
+	RootFS        string               `json:"rootfs"`
+	Command       []string             `json:"command"`
+	Env           []string             `json:"env,omitempty"`
+	WorkDir       string               `json:"work_dir,omitempty"`
+	Hostname      string               `json:"hostname,omitempty"`
+	Overlay       bool                 `json:"overlay,omitempty"`
+	ReadOnly      bool                 `json:"read_only,omitempty"`
+	Restart       string               `json:"restart,omitempty"`
+	CapDrop       []string             `json:"cap_drop,omitempty"`
+	Memory        int64                `json:"memory,omitempty"`
+	CPUWeight     int64                `json:"cpu_weight,omitempty"`
+	CPUs          float64              `json:"cpus,omitempty"`
+	PidsLimit     int64                `json:"pids_limit,omitempty"`
+	Seccomp       bool                 `json:"seccomp,omitempty"`
+	BridgeNetwork bool                 `json:"bridge_network,omitempty"`
+	PortMappings  []RestartPortMapping `json:"port_mappings,omitempty"`
+	Volumes       []RestartVolume      `json:"volumes,omitempty"`
+	UserNS        bool                 `json:"user_ns"`
+	Debug         bool                 `json:"debug,omitempty"`
 }
 
 func restartSpecPath(dir, containerID string) string {
@@ -76,5 +106,8 @@ func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
 	}
 	spec.Command = append([]string(nil), spec.Command...)
 	spec.Env = append([]string(nil), spec.Env...)
+	spec.CapDrop = append([]string(nil), spec.CapDrop...)
+	spec.PortMappings = append([]RestartPortMapping(nil), spec.PortMappings...)
+	spec.Volumes = append([]RestartVolume(nil), spec.Volumes...)
 	return spec, nil
 }
