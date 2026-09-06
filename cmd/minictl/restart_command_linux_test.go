@@ -19,6 +19,7 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	rootfs := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "restarted")
 	id := "restart-real-process"
+	command := []string{"/bin/sh", "-c", "printf restarted > \"$1\"", "sh", marker}
 
 	st, err := state.Open(stateDir)
 	if err != nil {
@@ -28,7 +29,7 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 		ID:        id,
 		Status:    state.StatusStopped,
 		RootFS:    rootfs,
-		Command:   []string{"/bin/sh", "-c", "printf restarted > "$1"", "sh", marker},
+		Command:   append([]string(nil), command...),
 		Hostname:  "restart-host",
 		CreatedAt: time.Now(),
 	}); err != nil {
@@ -37,7 +38,7 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	}
 	wantSpec := state.RestartSpec{
 		RootFS:   rootfs,
-		Command:  []string{"/bin/sh", "-c", "printf restarted > \"$1\"", "sh", marker},
+		Command:  append([]string(nil), command...),
 		Env:      []string{"RESTART_TEST=1"},
 		WorkDir:  "/work",
 		Hostname: "restart-host",
@@ -88,14 +89,20 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	}
 }
 
-func TestRestartStoppedContainerRejectsRunningContainer(t *testing.T) {
+func TestRestartStoppedContainerRejectsNonStoppedContainer(t *testing.T) {
 	stateDir := t.TempDir()
 	st, err := state.Open(stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := "restart-running"
-	if err := st.Save(&state.Container{ID: id, Status: state.StatusRunning, PID: os.Getpid(), PIDStartTime: 1, RootFS: t.TempDir(), Command: []string{"/bin/true"}, CreatedAt: time.Now()}); err != nil {
+	id := "restart-created"
+	if err := st.Save(&state.Container{
+		ID:        id,
+		Status:    state.StatusCreated,
+		RootFS:    t.TempDir(),
+		Command:   []string{"/bin/true"},
+		CreatedAt: time.Now(),
+	}); err != nil {
 		st.Close()
 		t.Fatal(err)
 	}
@@ -113,7 +120,7 @@ func TestRestartStoppedContainerRejectsRunningContainer(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Fatal("expected running-container rejection")
+		t.Fatal("expected non-stopped-container rejection")
 	}
 	if called {
 		t.Fatal("runtime invoked for non-stopped container")
