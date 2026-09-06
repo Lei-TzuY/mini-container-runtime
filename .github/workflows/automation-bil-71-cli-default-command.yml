@@ -12,18 +12,25 @@ jobs:
   repair:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout automation helpers
+        uses: actions/checkout@v4
+        with:
+          path: automation
+      - name: Checkout exact PR branch
+        uses: actions/checkout@v4
         with:
           ref: conquest/bil-71-image-command
           fetch-depth: 0
+          path: source
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: source/go.mod
           cache: true
       - name: Verify exact PR head
         shell: bash
         run: |
           set -euo pipefail
+          cd source
           test "$(git rev-parse HEAD)" = "51ca349c269828cdbc042bdc8063128b9ed0ea56"
           remote_head="$(git ls-remote origin refs/heads/conquest/bil-71-image-command | awk '{print $1}')"
           test "$remote_head" = "51ca349c269828cdbc042bdc8063128b9ed0ea56"
@@ -31,115 +38,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          main = Path("cmd/minictl/main.go")
-          text = main.read_text()
-
-          replacements = [
-              (
-                  "  minictl run     [flags] <rootfs-dir> <command> [args...]   Launch a new container",
-                  "  minictl run     [flags] <rootfs-dir> [command [args...]]  Launch a new container",
-              ),
-              (
-                  'fmt.Fprintln(os.Stderr, "Usage: minictl run [flags] <rootfs-dir> <command> [args...]")',
-                  'fmt.Fprintln(os.Stderr, "Usage: minictl run [flags] <rootfs-dir> [command [args...]]")',
-              ),
-              (
-                  'if len(rest) < 2 {\n\t\treturn container.Config{}, fmt.Errorf("missing rootfs or command")\n\t}',
-                  'if len(rest) < 1 {\n\t\treturn container.Config{}, fmt.Errorf("missing rootfs")\n\t}',
-              ),
-          ]
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one main.go anchor, got {count}: {old!r}")
-              text = text.replace(old, new, 1)
-          main.write_text(text)
-
-          main_test = Path("cmd/minictl/main_test.go")
-          test_text = main_test.read_text()
-          marker = "func TestParseRunConfigAllowsRootFSOnlyForImageDefaults"
-          if marker in test_text:
-              raise SystemExit("rootfs-only parser regression already exists")
-          test_text += r'''
-
-func TestParseRunConfigAllowsRootFSOnlyForImageDefaults(t *testing.T) {
-	cfg, err := parseRunConfig([]string{"./rootfs"})
-	if err != nil {
-		t.Fatalf("parseRunConfig rootfs-only returned error: %v", err)
-	}
-	if cfg.RootFS != "./rootfs" {
-		t.Fatalf("RootFS = %q, want ./rootfs", cfg.RootFS)
-	}
-	if len(cfg.Command) != 0 {
-		t.Fatalf("Command = %#v, want empty so image defaults can resolve it", cfg.Command)
-	}
-}
-
-func TestParseRunConfigStillRequiresRootFS(t *testing.T) {
-	_, err := parseRunConfig(nil)
-	if err == nil {
-		t.Fatal("parseRunConfig(nil) succeeded, want missing-rootfs error")
-	}
-	if !strings.Contains(err.Error(), "missing rootfs") {
-		t.Fatalf("parseRunConfig(nil) error = %q, want missing rootfs", err)
-	}
-}
-'''
-          main_test.write_text(test_text)
-
-          image_test = Path("cmd/minictl/run_image_command_test.go")
-          image_text = image_test.read_text()
-          marker = "func TestRootFSOnlyRunConfigResolvesImageDefaults"
-          if marker in image_text:
-              raise SystemExit("parser-to-image-default regression already exists")
-          image_text += r'''
-
-func TestRootFSOnlyRunConfigResolvesImageDefaults(t *testing.T) {
-	st, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	defer st.Close()
-
-	rootfs := t.TempDir()
-	if err := st.SaveImage(&state.Image{Name: "example:latest", RootFS: rootfs, LoadedAt: time.Now()}); err != nil {
-		t.Fatalf("SaveImage() error = %v", err)
-	}
-	if err := st.SaveImageCommand("example:latest", state.ImageCommand{
-		Entrypoint: []string{"/bin/app"},
-		Cmd:        []string{"serve", "--foreground"},
-	}); err != nil {
-		t.Fatalf("SaveImageCommand() error = %v", err)
-	}
-
-	cfg, err := parseRunConfig([]string{rootfs})
-	if err != nil {
-		t.Fatalf("parseRunConfig rootfs-only error = %v", err)
-	}
-	got, err := imageCommandForRootFS(st, cfg.RootFS, cfg.Command)
-	if err != nil {
-		t.Fatalf("imageCommandForRootFS() error = %v", err)
-	}
-	if want := []string{"/bin/app", "serve", "--foreground"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("resolved command = %#v, want %#v", got, want)
-	}
-}
-'''
-          image_test.write_text(image_text)
-          PY
-          gofmt -w cmd/minictl/main.go cmd/minictl/main_test.go cmd/minictl/run_image_command_test.go
-          git diff --check
+          python3 automation/.github/automation/bil71_cli.py source
+          gofmt -w source/cmd/minictl/main.go source/cmd/minictl/main_test.go source/cmd/minictl/run_image_command_test.go
+          git -C source diff --check
       - name: Vet
+        working-directory: source
         run: go vet ./...
       - name: Test
+        working-directory: source
         run: go test ./...
       - name: Commit repair to PR branch
         shell: bash
         run: |
           set -euo pipefail
+          cd source
           remote_head="$(git ls-remote origin refs/heads/conquest/bil-71-image-command | awk '{print $1}')"
           test "$remote_head" = "51ca349c269828cdbc042bdc8063128b9ed0ea56"
           git config user.name "LeiZ"
