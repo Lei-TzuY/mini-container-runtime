@@ -70,16 +70,46 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		return nil, fmt.Errorf("restart rootfs %q is not a directory", spec.RootFS)
 	}
 
+	portMappings := make([]container.PortMapping, 0, len(spec.PortMappings))
+	for _, p := range spec.PortMappings {
+		portMappings = append(portMappings, container.PortMapping{
+			HostPort:      p.HostPort,
+			ContainerPort: p.ContainerPort,
+			Protocol:      p.Protocol,
+		})
+	}
+	volumes := make([]container.Volume, 0, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		volumes = append(volumes, container.Volume{
+			HostPath:      v.HostPath,
+			ContainerPath: v.ContainerPath,
+			ReadOnly:      v.ReadOnly,
+		})
+	}
+
 	cfg := container.Config{
 		ContainerID:    rec.ID,
 		StateDir:       st.Dir(),
 		RootFS:         spec.RootFS,
 		RootFSIdentity: rootfsIdentity,
+		Overlay:        spec.Overlay,
+		ReadOnly:       spec.ReadOnly,
+		Restart:        spec.Restart,
+		CapDrop:        append([]string(nil), spec.CapDrop...),
 		Command:        append([]string(nil), spec.Command...),
-		Env:            append([]string(nil), spec.Env...),
-		WorkDir:        spec.WorkDir,
 		Hostname:       spec.Hostname,
-		UserNS:         true,
+		WorkDir:        spec.WorkDir,
+		Env:            append([]string(nil), spec.Env...),
+		Memory:         spec.Memory,
+		CPUWeight:      spec.CPUWeight,
+		CPUs:           spec.CPUs,
+		PidsLimit:      spec.PidsLimit,
+		Seccomp:        spec.Seccomp,
+		BridgeNetwork:  spec.BridgeNetwork,
+		PortMappings:   portMappings,
+		Volumes:        volumes,
+		UserNS:         spec.UserNS,
+		Debug:          spec.Debug,
 	}
 	if err := deps.run(cfg); err != nil {
 		return nil, fmt.Errorf("restart container %s: %w", rec.ID, err)
