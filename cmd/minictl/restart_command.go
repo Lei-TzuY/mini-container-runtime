@@ -97,13 +97,13 @@ func cmdRestartSafe(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "restart: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Usage: minictl restart <id>")
-		return
+		os.Exit(1)
 	}
 
 	rec, err := restartStoppedContainer(id, defaultRestartCommandDeps())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "restart error: %v\n", err)
-		return
+		os.Exit(1)
 	}
 	fmt.Printf("%s\n", shortContainerID(rec.ID))
 }
