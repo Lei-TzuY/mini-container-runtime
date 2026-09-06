@@ -37,11 +37,29 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 		t.Fatal(err)
 	}
 	wantSpec := state.RestartSpec{
-		RootFS:   rootfs,
-		Command:  append([]string(nil), command...),
-		Env:      []string{"RESTART_TEST=1"},
-		WorkDir:  "/work",
-		Hostname: "restart-host",
+		RootFS:        rootfs,
+		Command:       append([]string(nil), command...),
+		Env:           []string{"RESTART_TEST=1"},
+		WorkDir:       "/work",
+		Hostname:      "restart-host",
+		Overlay:       true,
+		ReadOnly:      true,
+		Restart:       "on-failure:2",
+		CapDrop:       []string{"CAP_SYS_ADMIN"},
+		Memory:        32 << 20,
+		CPUWeight:     400,
+		CPUs:          0.5,
+		PidsLimit:     16,
+		Seccomp:       true,
+		BridgeNetwork: true,
+		PortMappings: []state.RestartPortMapping{{
+			HostPort: 18080, ContainerPort: 8080, Protocol: "tcp",
+		}},
+		Volumes: []state.RestartVolume{{
+			HostPath: "/host/data", ContainerPath: "/data", ReadOnly: true,
+		}},
+		UserNS: false,
+		Debug:  true,
 	}
 	if err := st.SaveRestartSpec(id, wantSpec); err != nil {
 		st.Close()
@@ -71,11 +89,22 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	if gotCfg.ContainerID != id || gotCfg.StateDir != stateDir || gotCfg.RootFS != rootfs {
 		t.Fatalf("restart config identity = %#v", gotCfg)
 	}
-	if !reflect.DeepEqual(gotCfg.Command, wantSpec.Command) || !reflect.DeepEqual(gotCfg.Env, wantSpec.Env) {
-		t.Fatalf("restart config command/env = %#v", gotCfg)
+	if !reflect.DeepEqual(gotCfg.Command, wantSpec.Command) || !reflect.DeepEqual(gotCfg.Env, wantSpec.Env) || !reflect.DeepEqual(gotCfg.CapDrop, wantSpec.CapDrop) {
+		t.Fatalf("restart config command/env/capabilities = %#v", gotCfg)
 	}
-	if gotCfg.WorkDir != wantSpec.WorkDir || gotCfg.Hostname != wantSpec.Hostname || !gotCfg.UserNS {
+	if gotCfg.WorkDir != wantSpec.WorkDir || gotCfg.Hostname != wantSpec.Hostname || gotCfg.UserNS != wantSpec.UserNS {
 		t.Fatalf("restart config execution metadata = %#v", gotCfg)
+	}
+	if gotCfg.Overlay != wantSpec.Overlay || gotCfg.ReadOnly != wantSpec.ReadOnly || gotCfg.Restart != wantSpec.Restart || gotCfg.Seccomp != wantSpec.Seccomp || gotCfg.BridgeNetwork != wantSpec.BridgeNetwork || gotCfg.Debug != wantSpec.Debug {
+		t.Fatalf("restart config isolation policy = %#v", gotCfg)
+	}
+	if gotCfg.Memory != wantSpec.Memory || gotCfg.CPUWeight != wantSpec.CPUWeight || gotCfg.CPUs != wantSpec.CPUs || gotCfg.PidsLimit != wantSpec.PidsLimit {
+		t.Fatalf("restart config resource policy = %#v", gotCfg)
+	}
+	wantPorts := []container.PortMapping{{HostPort: 18080, ContainerPort: 8080, Protocol: "tcp"}}
+	wantVolumes := []container.Volume{{HostPath: "/host/data", ContainerPath: "/data", ReadOnly: true}}
+	if !reflect.DeepEqual(gotCfg.PortMappings, wantPorts) || !reflect.DeepEqual(gotCfg.Volumes, wantVolumes) {
+		t.Fatalf("restart config network/mount policy = %#v", gotCfg)
 	}
 	if gotCfg.RootFSIdentity == nil || !gotCfg.RootFSIdentity.IsDir() {
 		t.Fatalf("restart rootfs identity = %#v", gotCfg.RootFSIdentity)
