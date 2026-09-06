@@ -17,6 +17,10 @@ type RestartSpec struct {
 	Hostname string   `json:"hostname,omitempty"`
 }
 
+func restartSpecPath(dir, containerID string) string {
+	return filepath.Join(dir, containerID+".restart")
+}
+
 func (s *Store) SaveRestartSpec(containerID string, spec RestartSpec) error {
 	if err := validateID(containerID); err != nil {
 		return err
@@ -41,7 +45,7 @@ func (s *Store) SaveRestartSpec(containerID string, spec RestartSpec) error {
 	if _, err := s.getUnlocked(containerID); err != nil {
 		return fmt.Errorf("load restart spec owner: %w", err)
 	}
-	return atomicWriteFile(s.ctrDir, filepath.Join(s.ctrDir, containerID+".restart.json"), data)
+	return atomicWriteFile(s.ctrDir, restartSpecPath(s.ctrDir, containerID), data)
 }
 
 func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
@@ -56,7 +60,7 @@ func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
 	if _, err := s.getUnlocked(containerID); err != nil {
 		return RestartSpec{}, fmt.Errorf("load restart spec owner: %w", err)
 	}
-	data, err := readRegularStateFile(filepath.Join(s.ctrDir, containerID+".restart.json"), "container restart spec")
+	data, err := readRegularStateFile(restartSpecPath(s.ctrDir, containerID), "container restart spec")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return RestartSpec{}, fmt.Errorf("container %s has no durable restart spec: %w", containerID, err)
