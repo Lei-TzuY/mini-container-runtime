@@ -49,17 +49,16 @@ func Run(cfg Config) (resultErr error) {
 		}()
 	}
 
-	maxAttempts := 1
-	if cfg.Restart == "always" || cfg.Restart == "on-failure" {
-		maxAttempts = 5
+	policy, err := ParseRestartPolicy(cfg.Restart)
+	if err != nil {
+		return fmt.Errorf("parse restart policy: %w", err)
 	}
 
-	attempt := 0
-	for {
-		attempt++
+	return runRestartLoop(policy, func() (int, error) {
 		rollbackAdmission, admissionErr := beginNetworkAttemptAdmission(cfg, lifecycleStore)
 		if admissionErr != nil {
-			return markPreGenerationRunFailure(admissionErr)
+			err := markPreGenerationRunFailure(admissionErr)
+			return exitCodeFromWaitError(err), err
 		}
 
 		err := runOnce(cfg, lifecycleStore)
@@ -68,31 +67,8 @@ func Run(cfg Config) (resultErr error) {
 				err = errors.Join(err, &runtimeSetupError{err: fmt.Errorf("rollback network attempt admission: %w", cleanupErr)})
 			}
 		}
-
-		if isRuntimeControlError(err) {
-			return err
-		}
-
-		if err == nil {
-			if cfg.Restart == "always" && attempt < maxAttempts {
-				if cfg.Debug {
-					fmt.Printf("[parent] restart policy %q: restarting container (attempt %d)\n", cfg.Restart, attempt+1)
-				}
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			return nil
-		}
-
-		if (cfg.Restart == "always" || cfg.Restart == "on-failure") && attempt < maxAttempts {
-			if cfg.Debug {
-				fmt.Printf("[parent] container failed (%v); restart policy %q: retrying (attempt %d)\n", err, cfg.Restart, attempt+1)
-			}
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		return err
-	}
+		return exitCodeFromWaitError(err), err
+	}, isRuntimeControlError)
 }
 
 func openLifecycleStore(cfg Config) (*state.Store, error) {
