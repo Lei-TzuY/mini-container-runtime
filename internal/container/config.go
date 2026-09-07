@@ -50,6 +50,10 @@ type Config struct {
 	// CapDrop is a list of Linux Capabilities to drop from the bounding set (e.g. CAP_SYS_ADMIN).
 	CapDrop []string
 
+	// NoNewPrivileges asks Linux to set PR_SET_NO_NEW_PRIVS for the container
+	// init generation before payload execution.
+	NoNewPrivileges bool
+
 	// Command is the executable and its arguments to run inside the container.
 	Command []string
 
