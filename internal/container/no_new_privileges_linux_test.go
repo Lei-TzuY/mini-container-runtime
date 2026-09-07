@@ -20,8 +20,9 @@ func TestNoNewPrivilegesInitMarkerEnforcesKernelPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper failed: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "1" {
-		t.Fatalf("PR_GET_NO_NEW_PRIVS = %q, want 1", got)
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 || fields[0] != "1" {
+		t.Fatalf("PR_GET_NO_NEW_PRIVS output = %q, want first field 1", out)
 	}
 }
 
@@ -36,5 +37,5 @@ func TestNoNewPrivilegesHelper(t *testing.T) {
 	if os.Getenv(noNewPrivilegesEnv) != "" {
 		t.Fatalf("runtime marker leaked into helper environment")
 	}
-	_, _ = os.Stdout.WriteString(strconv.FormatUint(uint64(r1), 10))
+	_, _ = os.Stdout.WriteString(strconv.FormatUint(uint64(r1), 10) + "\n")
 }
