@@ -95,7 +95,6 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		Env:      append([]string(nil), spec.Process.Env...),
 		WorkDir:  spec.Process.Cwd,
 		Hostname: spec.Hostname,
-		UserNS:   true,
 	}
 	for _, mount := range spec.Mounts {
 		volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)
@@ -105,12 +104,21 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		cfg.Volumes = append(cfg.Volumes, volume)
 	}
 	if spec.Linux != nil {
+		seenNamespaces := make(map[string]struct{}, len(spec.Linux.Namespaces))
 		for _, ns := range spec.Linux.Namespaces {
 			if ns.Path != "" {
 				return container.Config{}, fmt.Errorf("joining existing %s namespace is not supported", ns.Type)
 			}
+			if _, exists := seenNamespaces[ns.Type]; exists {
+				return container.Config{}, fmt.Errorf("duplicate linux namespace %q", ns.Type)
+			}
+			seenNamespaces[ns.Type] = struct{}{}
 			switch ns.Type {
-			case "pid", "mount", "uts", "ipc", "network", "user", "cgroup":
+			case "pid", "mount", "uts", "ipc", "network":
+			case "user":
+				cfg.UserNS = true
+			case "cgroup":
+				return container.Config{}, fmt.Errorf("linux cgroup namespace is not supported")
 			default:
 				return container.Config{}, fmt.Errorf("unsupported linux namespace %q", ns.Type)
 			}
