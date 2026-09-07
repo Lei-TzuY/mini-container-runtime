@@ -59,13 +59,23 @@
 //     queues) and POSIX message queues.  Containers can't signal each other
 //     via IPC primitives.
 //
+//   CLONE_NEWCGROUP — Cgroup namespace (optional)
+//     Gives the container a virtualized view of the cgroup hierarchy rooted
+//     at the cgroup visible when the process is created.
+//
 // Namespaces NOT created here (out of scope for this runtime):
 //   CLONE_NEWTIME   – per-container CLOCK_MONOTONIC offset (kernel ≥ 5.6)
-//   CLONE_NEWCGROUP – hides host cgroup hierarchy (kernel ≥ 4.6)
 
 package ns
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
+
+// CgroupNamespaceEnv is an internal parent-to-clone marker. It is consumed by
+// BuildCloneFlags and must be removed by the re-executed init before payload exec.
+const CgroupNamespaceEnv = "MINICONTAINER_CGROUP_NS"
 
 // Options controls which namespaces are created for the container.
 type Options struct {
@@ -95,6 +105,10 @@ func BuildCloneFlags(opts Options) *syscall.SysProcAttr {
 		// Pdeathsig ensures the child is killed if the parent dies unexpectedly
 		// (e.g. the user presses Ctrl-C before the child has exec'd its payload).
 		Pdeathsig: syscall.SIGKILL,
+	}
+
+	if os.Getenv(CgroupNamespaceEnv) == "1" {
+		attr.Cloneflags |= syscall.CLONE_NEWCGROUP
 	}
 
 	if opts.UserNS {

@@ -120,6 +120,7 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		PortMappings:    portMappings,
 		Volumes:         volumes,
 		UserNS:          spec.UserNS,
+		CgroupNS:        spec.CgroupNS,
 		Debug:           spec.Debug,
 	}
 	if err := deps.run(cfg); err != nil {

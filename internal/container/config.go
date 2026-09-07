@@ -93,6 +93,9 @@ type Config struct {
 	// UserNS enables user namespace isolation (CLONE_NEWUSER).
 	UserNS bool
 
+	// CgroupNS enables cgroup namespace isolation (CLONE_NEWCGROUP) on Linux.
+	CgroupNS bool
+
 	// Debug enables verbose logging of every significant syscall.
 	Debug bool
 }

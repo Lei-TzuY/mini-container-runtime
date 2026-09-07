@@ -25,11 +25,23 @@ func TestLoadOCIBundleUserNamespaceTracksOCIConfig(t *testing.T) {
 	}
 }
 
-func TestLoadOCIBundleRejectsUnimplementedCgroupNamespace(t *testing.T) {
-	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"namespaces":[{"type":"cgroup"}]}}`)
-	_, err := loadOCIBundle(bundle)
-	if err == nil || !strings.Contains(err.Error(), "cgroup namespace is not supported") {
-		t.Fatalf("error=%v", err)
+func TestLoadOCIBundleCgroupNamespaceTracksOCIConfig(t *testing.T) {
+	withCgroup := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"namespaces":[{"type":"cgroup"}]}}`)
+	cfg, err := loadOCIBundle(withCgroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CgroupNS {
+		t.Fatal("cgroup namespace requested by OCI config was not enabled")
+	}
+
+	withoutCgroup := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"namespaces":[{"type":"pid"}]}}`)
+	cfg, err = loadOCIBundle(withoutCgroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CgroupNS {
+		t.Fatal("cgroup namespace omitted by OCI config was silently enabled")
 	}
 }
 

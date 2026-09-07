@@ -150,6 +150,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		PortMappings:    portMappings,
 		Volumes:         volumes,
 		UserNS:          cfg.UserNS,
+		CgroupNS:        cfg.CgroupNS,
 		Debug:           cfg.Debug,
 	}
 	if err := st.SaveRestartSpec(id, restartSpec); err != nil {

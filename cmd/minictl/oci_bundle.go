@@ -133,7 +133,10 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 			case "user":
 				cfg.UserNS = true
 			case "cgroup":
-				return container.Config{}, fmt.Errorf("linux cgroup namespace is not supported")
+				if runtime.GOOS != "linux" {
+					return container.Config{}, fmt.Errorf("linux cgroup namespace requires linux")
+				}
+				cfg.CgroupNS = true
 			default:
 				return container.Config{}, fmt.Errorf("unsupported linux namespace %q", ns.Type)
 			}

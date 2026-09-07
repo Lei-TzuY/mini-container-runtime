@@ -45,6 +45,7 @@ type RestartSpec struct {
 	PortMappings     []RestartPortMapping `json:"port_mappings,omitempty"`
 	Volumes          []RestartVolume      `json:"volumes,omitempty"`
 	UserNS           bool                 `json:"user_ns"`
+	CgroupNS         bool                 `json:"cgroup_ns,omitempty"`
 	Debug            bool                 `json:"debug,omitempty"`
 }
 

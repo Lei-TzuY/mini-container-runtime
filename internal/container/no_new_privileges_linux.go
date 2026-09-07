@@ -7,38 +7,67 @@ import (
 	"os"
 	"sync"
 	"syscall"
+
+	"minicontainer/internal/ns"
 )
 
 const noNewPrivilegesEnv = "MINICONTAINER_NO_NEW_PRIVILEGES"
 
-var noNewPrivilegesRunMu sync.Mutex
+var securityPolicyRunMu sync.Mutex
 
 // RunWithSecurityPolicy launches a container while propagating parent-only
-// security policy into the re-executed init generation without leaking the
-// runtime marker into the payload environment.
+// Linux security/isolation policy into the re-executed init generation without
+// leaking runtime markers into the payload environment.
 func RunWithSecurityPolicy(cfg Config) error {
-	if !cfg.NoNewPrivileges {
+	if !cfg.NoNewPrivileges && !cfg.CgroupNS {
 		return Run(cfg)
 	}
-	noNewPrivilegesRunMu.Lock()
-	defer noNewPrivilegesRunMu.Unlock()
+	securityPolicyRunMu.Lock()
+	defer securityPolicyRunMu.Unlock()
 
-	old, hadOld := os.LookupEnv(noNewPrivilegesEnv)
-	if err := os.Setenv(noNewPrivilegesEnv, "1"); err != nil {
-		return fmt.Errorf("set no-new-privileges runtime marker: %w", err)
+	restore := make([]func(), 0, 2)
+	setMarker := func(key string) error {
+		old, hadOld := os.LookupEnv(key)
+		if err := os.Setenv(key, "1"); err != nil {
+			return err
+		}
+		restore = append(restore, func() {
+			if hadOld {
+				_ = os.Setenv(key, old)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+		return nil
+	}
+	if cfg.NoNewPrivileges {
+		if err := setMarker(noNewPrivilegesEnv); err != nil {
+			return fmt.Errorf("set no-new-privileges runtime marker: %w", err)
+		}
+	}
+	if cfg.CgroupNS {
+		if err := setMarker(ns.CgroupNamespaceEnv); err != nil {
+			for i := len(restore) - 1; i >= 0; i-- {
+				restore[i]()
+			}
+			return fmt.Errorf("set cgroup namespace runtime marker: %w", err)
+		}
 	}
 	defer func() {
-		if hadOld {
-			_ = os.Setenv(noNewPrivilegesEnv, old)
-		} else {
-			_ = os.Unsetenv(noNewPrivilegesEnv)
+		for i := len(restore) - 1; i >= 0; i-- {
+			restore[i]()
 		}
 	}()
 	return Run(cfg)
 }
 
 func init() {
-	if os.Getenv(sentinelEnvKey) != "1" || os.Getenv(noNewPrivilegesEnv) != "1" {
+	if os.Getenv(sentinelEnvKey) != "1" {
+		return
+	}
+	// The cgroup-namespace marker is parent-only: clone(2) already consumed it.
+	_ = os.Unsetenv(ns.CgroupNamespaceEnv)
+	if os.Getenv(noNewPrivilegesEnv) != "1" {
 		return
 	}
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0); errno != 0 {
