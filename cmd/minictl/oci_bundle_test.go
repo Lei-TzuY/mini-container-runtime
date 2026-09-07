@@ -21,7 +21,7 @@ func writeOCIBundle(t *testing.T, body string) string {
 }
 
 func TestLoadOCIBundleTranslatesExecutionConfig(t *testing.T) {
-	d := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs","readonly":true},"process":{"args":["/bin/app","--serve"],"env":["A=1","B=two"],"cwd":"/work"},"hostname":"demo","linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"user"}]}}`)
+	d := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs","readonly":true},"process":{"args":["/bin/app","--serve"],"env":["A=1","B=two"],"cwd":"/work"},"hostname":"demo","mounts":[{"destination":"/data","type":"bind","source":"/srv/data","options":["rbind","ro"]}],"linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"user"}]}}`)
 	cfg, err := loadOCIBundle(d)
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +31,12 @@ func TestLoadOCIBundleTranslatesExecutionConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Command, []string{"/bin/app", "--serve"}) || !reflect.DeepEqual(cfg.Env, []string{"A=1", "B=two"}) {
 		t.Fatalf("unexpected process config: %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.Volumes, []struct{ HostPath, ContainerPath string; ReadOnly bool }{}) {
+		// Keep the assertion below typed against the runtime model; this branch only prevents accidental omission.
+	}
+	if len(cfg.Volumes) != 1 || cfg.Volumes[0].HostPath != "/srv/data" || cfg.Volumes[0].ContainerPath != "/data" || !cfg.Volumes[0].ReadOnly {
+		t.Fatalf("unexpected OCI bind mounts: %+v", cfg.Volumes)
 	}
 }
 
@@ -59,6 +65,10 @@ func TestLoadOCIBundleRejectsUnsupportedOrUnsafeSemantics(t *testing.T) {
 		{"terminal", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"terminal":true,"args":["/bin/true"],"cwd":"/"}}`, "terminal is not supported"},
 		{"namespace path", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"namespaces":[{"type":"pid","path":"/proc/1/ns/pid"}]}}`, "joining existing pid namespace"},
 		{"unknown field", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mystery":true}`, "unknown field"},
+		{"unsupported mount type", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc"}]}`, "unsupported OCI mount type"},
+		{"relative bind source", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/data","type":"bind","source":"data"}]}`, "must be absolute"},
+		{"root bind destination", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/","type":"bind","source":"/srv/data"}]}`, "absolute path below root"},
+		{"unsupported bind option", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/data","type":"bind","source":"/srv/data","options":["nosuid"]}]}`, "unsupported OCI bind mount option"},
 		{"zero memory", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"resources":{"memory":{"limit":0}}}}`, "memory.limit must be greater than zero"},
 		{"zero pids", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"resources":{"pids":{"limit":0}}}}`, "pids.limit must be greater than zero"},
 		{"bad shares", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"resources":{"cpu":{"shares":1}}}}`, "cpu.shares must be in range"},
