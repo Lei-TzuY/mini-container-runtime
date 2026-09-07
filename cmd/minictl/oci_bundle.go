@@ -5,10 +5,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"minicontainer/internal/container"
 )
+
+type ociSeccompConfig struct {
+	DefaultAction string `json:"defaultAction"`
+	Architectures []string `json:"architectures,omitempty"`
+	Syscalls []struct {
+		Names    []string          `json:"names"`
+		Action   string            `json:"action"`
+		ErrnoRet *uint             `json:"errnoRet,omitempty"`
+		Args     []json.RawMessage `json:"args,omitempty"`
+	} `json:"syscalls,omitempty"`
+}
 
 type ociBundleConfig struct {
 	OCIVersion string `json:"ociVersion"`
@@ -48,6 +60,7 @@ type ociBundleConfig struct {
 				Limit int64 `json:"limit"`
 			} `json:"pids,omitempty"`
 		} `json:"resources,omitempty"`
+		Seccomp *ociSeccompConfig `json:"seccomp,omitempty"`
 	} `json:"linux,omitempty"`
 }
 
@@ -128,6 +141,11 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		if err := applyOCIResources(&cfg, spec.Linux.Resources); err != nil {
 			return container.Config{}, err
 		}
+		seccomp, err := translateOCISeccomp(spec.Linux.Seccomp)
+		if err != nil {
+			return container.Config{}, err
+		}
+		cfg.Seccomp = seccomp
 	}
 
 	rootfs := filepath.Clean(filepath.Join(abs, spec.Root.Path))
@@ -137,6 +155,62 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
+}
+
+var builtinSeccompAMD64Syscalls = []string{
+	"kexec_load", "kexec_file_load", "ptrace", "reboot", "syslog",
+	"init_module", "finit_module", "delete_module", "create_module", "iopl", "ioperm",
+	"settimeofday", "clock_settime", "clock_settime64", "mount", "umount2", "pivot_root",
+	"swapon", "swapoff", "acct", "add_key", "request_key", "keyctl", "bpf",
+	"perf_event_open", "process_vm_readv", "process_vm_writev", "open_by_handle_at",
+	"fanotify_init", "userfaultfd", "unshare",
+}
+
+func translateOCISeccomp(seccomp *ociSeccompConfig) (bool, error) {
+	if seccomp == nil {
+		return false, nil
+	}
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return false, fmt.Errorf("OCI seccomp profile is currently supported only on linux/amd64")
+	}
+	if seccomp.DefaultAction != "SCMP_ACT_ALLOW" {
+		return false, fmt.Errorf("OCI seccomp defaultAction %q cannot be represented by the runtime built-in profile", seccomp.DefaultAction)
+	}
+	if len(seccomp.Architectures) > 0 {
+		if len(seccomp.Architectures) != 1 || seccomp.Architectures[0] != "SCMP_ARCH_X86_64" {
+			return false, fmt.Errorf("OCI seccomp architectures must be exactly [SCMP_ARCH_X86_64]")
+		}
+	}
+
+	want := make(map[string]struct{}, len(builtinSeccompAMD64Syscalls))
+	for _, name := range builtinSeccompAMD64Syscalls {
+		want[name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(want))
+	for _, rule := range seccomp.Syscalls {
+		if rule.Action != "SCMP_ACT_KILL_PROCESS" {
+			return false, fmt.Errorf("OCI seccomp syscall action %q cannot be represented by the runtime built-in profile", rule.Action)
+		}
+		if rule.ErrnoRet != nil || len(rule.Args) != 0 {
+			return false, fmt.Errorf("OCI seccomp errno/argument filtering is not supported")
+		}
+		if len(rule.Names) == 0 {
+			return false, fmt.Errorf("OCI seccomp syscall rule has no names")
+		}
+		for _, name := range rule.Names {
+			if _, ok := want[name]; !ok {
+				return false, fmt.Errorf("OCI seccomp syscall %q is outside the runtime built-in profile", name)
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return false, fmt.Errorf("duplicate OCI seccomp syscall %q", name)
+			}
+			seen[name] = struct{}{}
+		}
+	}
+	if len(seen) != len(want) {
+		return false, fmt.Errorf("OCI seccomp profile does not exactly match the runtime built-in block list")
+	}
+	return true, nil
 }
 
 func translateOCIBindMount(destination, mountType, source string, options []string) (container.Volume, error) {
