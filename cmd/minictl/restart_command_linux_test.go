@@ -59,8 +59,9 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 		Volumes: []state.RestartVolume{{
 			HostPath: "/host/data", ContainerPath: "/data", ReadOnly: true,
 		}},
-		UserNS: false,
-		Debug:  true,
+		UserNS:   false,
+		CgroupNS: true,
+		Debug:    true,
 	}
 	if err := st.SaveRestartSpec(id, wantSpec); err != nil {
 		st.Close()
@@ -93,7 +94,7 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	if !reflect.DeepEqual(gotCfg.Command, wantSpec.Command) || !reflect.DeepEqual(gotCfg.Env, wantSpec.Env) || !reflect.DeepEqual(gotCfg.CapDrop, wantSpec.CapDrop) {
 		t.Fatalf("restart config command/env/capabilities = %#v", gotCfg)
 	}
-	if gotCfg.WorkDir != wantSpec.WorkDir || gotCfg.Hostname != wantSpec.Hostname || gotCfg.UserNS != wantSpec.UserNS {
+	if gotCfg.WorkDir != wantSpec.WorkDir || gotCfg.Hostname != wantSpec.Hostname || gotCfg.UserNS != wantSpec.UserNS || gotCfg.CgroupNS != wantSpec.CgroupNS {
 		t.Fatalf("restart config execution metadata = %#v", gotCfg)
 	}
 	if gotCfg.Overlay != wantSpec.Overlay || gotCfg.ReadOnly != wantSpec.ReadOnly || gotCfg.Restart != wantSpec.Restart || gotCfg.Seccomp != wantSpec.Seccomp || gotCfg.NoNewPrivileges != wantSpec.NoNewPrivileges || gotCfg.BridgeNetwork != wantSpec.BridgeNetwork || gotCfg.Debug != wantSpec.Debug {
