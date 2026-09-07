@@ -92,6 +92,9 @@ func runContainerInitSupervisor(command []string) (int, error) {
 	pid, err := syscall.ForkExec(binary, command, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
+		Sys: &syscall.SysProcAttr{
+			Setpgid: true,
+		},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("start payload: %w", err)
@@ -113,9 +116,9 @@ func runContainerInitSupervisor(command []string) (int, error) {
 				if !ok {
 					continue
 				}
-				if err := syscall.Kill(pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
+				if err := syscall.Kill(-pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
 					select {
-					case forwardingErr <- fmt.Errorf("forward signal %v to payload %d: %w", sig, pid, err):
+					case forwardingErr <- fmt.Errorf("forward signal %v to payload process group %d: %w", sig, pid, err):
 					default:
 					}
 				}
