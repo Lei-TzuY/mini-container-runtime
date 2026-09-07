@@ -26,25 +26,26 @@ type RestartVolume struct {
 // Security, isolation, resource, mount and network settings are persisted with
 // the payload so restart cannot silently weaken the original execution policy.
 type RestartSpec struct {
-	RootFS        string               `json:"rootfs"`
-	Command       []string             `json:"command"`
-	Env           []string             `json:"env,omitempty"`
-	WorkDir       string               `json:"work_dir,omitempty"`
-	Hostname      string               `json:"hostname,omitempty"`
-	Overlay       bool                 `json:"overlay,omitempty"`
-	ReadOnly      bool                 `json:"read_only,omitempty"`
-	Restart       string               `json:"restart,omitempty"`
-	CapDrop       []string             `json:"cap_drop,omitempty"`
-	Memory        int64                `json:"memory,omitempty"`
-	CPUWeight     int64                `json:"cpu_weight,omitempty"`
-	CPUs          float64              `json:"cpus,omitempty"`
-	PidsLimit     int64                `json:"pids_limit,omitempty"`
-	Seccomp       bool                 `json:"seccomp,omitempty"`
-	BridgeNetwork bool                 `json:"bridge_network,omitempty"`
-	PortMappings  []RestartPortMapping `json:"port_mappings,omitempty"`
-	Volumes       []RestartVolume      `json:"volumes,omitempty"`
-	UserNS        bool                 `json:"user_ns"`
-	Debug         bool                 `json:"debug,omitempty"`
+	RootFS           string               `json:"rootfs"`
+	Command          []string             `json:"command"`
+	Env              []string             `json:"env,omitempty"`
+	WorkDir          string               `json:"work_dir,omitempty"`
+	Hostname         string               `json:"hostname,omitempty"`
+	Overlay          bool                 `json:"overlay,omitempty"`
+	ReadOnly         bool                 `json:"read_only,omitempty"`
+	Restart          string               `json:"restart,omitempty"`
+	CapDrop          []string             `json:"cap_drop,omitempty"`
+	NoNewPrivileges  bool                 `json:"no_new_privileges,omitempty"`
+	Memory           int64                `json:"memory,omitempty"`
+	CPUWeight        int64                `json:"cpu_weight,omitempty"`
+	CPUs             float64              `json:"cpus,omitempty"`
+	PidsLimit        int64                `json:"pids_limit,omitempty"`
+	Seccomp          bool                 `json:"seccomp,omitempty"`
+	BridgeNetwork    bool                 `json:"bridge_network,omitempty"`
+	PortMappings     []RestartPortMapping `json:"port_mappings,omitempty"`
+	Volumes          []RestartVolume      `json:"volumes,omitempty"`
+	UserNS           bool                 `json:"user_ns"`
+	Debug            bool                 `json:"debug,omitempty"`
 }
 
 func restartSpecPath(dir, containerID string) string {
