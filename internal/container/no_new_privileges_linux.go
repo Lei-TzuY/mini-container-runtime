@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -27,6 +28,17 @@ func RunWithSecurityPolicy(cfg Config) error {
 	if cfg.ProcessUser != nil && cfg.UserNS && (cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0) {
 		return fmt.Errorf("process user %d:%d cannot be represented by one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
 	}
+	if cfg.ProcessUser != nil {
+		for _, entry := range cfg.Env {
+			key := entry
+			if i := strings.IndexByte(key, '='); i >= 0 {
+				key = key[:i]
+			}
+			if key == processUIDEnv || key == processGIDEnv {
+				return fmt.Errorf("payload environment key %q conflicts with internal process user policy", key)
+			}
+		}
+	}
 	if !cfg.NoNewPrivileges && !cfg.CgroupNS && cfg.ProcessUser == nil {
 		return Run(cfg)
 	}
@@ -34,6 +46,11 @@ func RunWithSecurityPolicy(cfg Config) error {
 	defer securityPolicyRunMu.Unlock()
 
 	restore := make([]func(), 0, 4)
+	defer func() {
+		for i := len(restore) - 1; i >= 0; i-- {
+			restore[i]()
+		}
+	}()
 	setMarker := func(key, value string) error {
 		old, hadOld := os.LookupEnv(key)
 		if err := os.Setenv(key, value); err != nil {
@@ -55,9 +72,6 @@ func RunWithSecurityPolicy(cfg Config) error {
 	}
 	if cfg.CgroupNS {
 		if err := setMarker(ns.CgroupNamespaceEnv, "1"); err != nil {
-			for i := len(restore) - 1; i >= 0; i-- {
-				restore[i]()
-			}
 			return fmt.Errorf("set cgroup namespace runtime marker: %w", err)
 		}
 	}
@@ -69,11 +83,6 @@ func RunWithSecurityPolicy(cfg Config) error {
 			return fmt.Errorf("set process gid runtime marker: %w", err)
 		}
 	}
-	defer func() {
-		for i := len(restore) - 1; i >= 0; i-- {
-			restore[i]()
-		}
-	}()
 	return Run(cfg)
 }
 
