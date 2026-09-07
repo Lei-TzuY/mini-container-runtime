@@ -23,7 +23,13 @@ type ociBundleConfig struct {
 		Cwd      string   `json:"cwd"`
 	} `json:"process"`
 	Hostname string `json:"hostname,omitempty"`
-	Linux    *struct {
+	Mounts []struct {
+		Destination string   `json:"destination"`
+		Type        string   `json:"type"`
+		Source      string   `json:"source"`
+		Options     []string `json:"options,omitempty"`
+	} `json:"mounts,omitempty"`
+	Linux *struct {
 		Namespaces []struct {
 			Type string `json:"type"`
 			Path string `json:"path,omitempty"`
@@ -91,6 +97,13 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		Hostname: spec.Hostname,
 		UserNS:   true,
 	}
+	for _, mount := range spec.Mounts {
+		volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)
+		if err != nil {
+			return container.Config{}, err
+		}
+		cfg.Volumes = append(cfg.Volumes, volume)
+	}
 	if spec.Linux != nil {
 		for _, ns := range spec.Linux.Namespaces {
 			if ns.Path != "" {
@@ -114,6 +127,29 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
+}
+
+func translateOCIBindMount(destination, mountType, source string, options []string) (container.Volume, error) {
+	if mountType != "bind" {
+		return container.Volume{}, fmt.Errorf("unsupported OCI mount type %q", mountType)
+	}
+	if !filepath.IsAbs(source) {
+		return container.Volume{}, fmt.Errorf("OCI bind mount source %q must be absolute", source)
+	}
+	if !filepath.IsAbs(destination) || filepath.Clean(destination) == "/" {
+		return container.Volume{}, fmt.Errorf("OCI bind mount destination %q must be an absolute path below root", destination)
+	}
+	readonly := false
+	for _, option := range options {
+		switch option {
+		case "bind", "rbind", "rw":
+		case "ro":
+			readonly = true
+		default:
+			return container.Volume{}, fmt.Errorf("unsupported OCI bind mount option %q", option)
+		}
+	}
+	return container.Volume{HostPath: filepath.Clean(source), ContainerPath: filepath.Clean(destination), ReadOnly: readonly}, nil
 }
 
 func applyOCIResources(cfg *container.Config, resources *struct {
