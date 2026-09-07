@@ -17,10 +17,11 @@ type ociBundleConfig struct {
 		Readonly bool   `json:"readonly,omitempty"`
 	} `json:"root"`
 	Process struct {
-		Terminal bool     `json:"terminal,omitempty"`
-		Args     []string `json:"args"`
-		Env      []string `json:"env,omitempty"`
-		Cwd      string   `json:"cwd"`
+		Terminal        bool     `json:"terminal,omitempty"`
+		Args            []string `json:"args"`
+		Env             []string `json:"env,omitempty"`
+		Cwd             string   `json:"cwd"`
+		NoNewPrivileges bool     `json:"noNewPrivileges,omitempty"`
 	} `json:"process"`
 	Hostname string `json:"hostname,omitempty"`
 	Mounts []struct {
@@ -90,11 +91,12 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 
 	cfg := container.Config{
-		ReadOnly: spec.Root.Readonly,
-		Command:  append([]string(nil), spec.Process.Args...),
-		Env:      append([]string(nil), spec.Process.Env...),
-		WorkDir:  spec.Process.Cwd,
-		Hostname: spec.Hostname,
+		ReadOnly:        spec.Root.Readonly,
+		Command:         append([]string(nil), spec.Process.Args...),
+		Env:             append([]string(nil), spec.Process.Env...),
+		WorkDir:         spec.Process.Cwd,
+		Hostname:        spec.Hostname,
+		NoNewPrivileges: spec.Process.NoNewPrivileges,
 	}
 	for _, mount := range spec.Mounts {
 		volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)

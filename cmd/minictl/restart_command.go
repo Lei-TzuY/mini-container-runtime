@@ -28,7 +28,7 @@ func defaultRestartCommandDeps() restartCommandDeps {
 	return restartCommandDeps{
 		openStore: openStore,
 		stat:      os.Stat,
-		run:       container.Run,
+		run:       container.RunWithSecurityPolicy,
 	}
 }
 
@@ -98,28 +98,29 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 	}
 
 	cfg := container.Config{
-		ContainerID:    rec.ID,
-		StateDir:       st.Dir(),
-		RootFS:         spec.RootFS,
-		RootFSIdentity: rootfsIdentity,
-		Overlay:        spec.Overlay,
-		ReadOnly:       spec.ReadOnly,
-		Restart:        spec.Restart,
-		CapDrop:        append([]string(nil), spec.CapDrop...),
-		Command:        append([]string(nil), spec.Command...),
-		Hostname:       spec.Hostname,
-		WorkDir:        spec.WorkDir,
-		Env:            append([]string(nil), spec.Env...),
-		Memory:         spec.Memory,
-		CPUWeight:      spec.CPUWeight,
-		CPUs:           spec.CPUs,
-		PidsLimit:      spec.PidsLimit,
-		Seccomp:        spec.Seccomp,
-		BridgeNetwork:  spec.BridgeNetwork,
-		PortMappings:   portMappings,
-		Volumes:        volumes,
-		UserNS:         spec.UserNS,
-		Debug:          spec.Debug,
+		ContainerID:     rec.ID,
+		StateDir:        st.Dir(),
+		RootFS:          spec.RootFS,
+		RootFSIdentity:  rootfsIdentity,
+		Overlay:         spec.Overlay,
+		ReadOnly:        spec.ReadOnly,
+		Restart:         spec.Restart,
+		CapDrop:         append([]string(nil), spec.CapDrop...),
+		NoNewPrivileges: spec.NoNewPrivileges,
+		Command:         append([]string(nil), spec.Command...),
+		Hostname:        spec.Hostname,
+		WorkDir:         spec.WorkDir,
+		Env:             append([]string(nil), spec.Env...),
+		Memory:          spec.Memory,
+		CPUWeight:       spec.CPUWeight,
+		CPUs:            spec.CPUs,
+		PidsLimit:       spec.PidsLimit,
+		Seccomp:         spec.Seccomp,
+		BridgeNetwork:   spec.BridgeNetwork,
+		PortMappings:    portMappings,
+		Volumes:         volumes,
+		UserNS:          spec.UserNS,
+		Debug:           spec.Debug,
 	}
 	if err := deps.run(cfg); err != nil {
 		return nil, fmt.Errorf("restart container %s: %w", rec.ID, err)
