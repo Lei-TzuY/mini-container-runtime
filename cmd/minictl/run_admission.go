@@ -24,7 +24,11 @@ type runRootFSAdmissionDeps struct {
 }
 
 func prepareManagedRunState(cfg *container.Config) (*state.Store, *state.Container, error) {
-	return prepareManagedRunStateWith(cfg, runAdmissionDeps{openStore: openStore, newID: state.NewID, now: time.Now})
+	return prepareManagedRunStateWith(cfg, runAdmissionDeps{
+		openStore: openStore,
+		newID:     state.NewID,
+		now:       time.Now,
+	})
 }
 
 func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*state.Store, *state.Container, error) {
@@ -48,6 +52,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if deps.openStore == nil || deps.newID == nil || deps.now == nil {
 		return nil, nil, fmt.Errorf("run admission dependencies are incomplete")
 	}
+
 	st, err := deps.openStore()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state store: %w", err)
@@ -61,6 +66,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		}
 		return nil, nil, cause
 	}
+
 	runtimeEnv, err := imageEnvironmentForRootFS(st, rootfs, cfg.Env)
 	if err != nil {
 		return fail(fmt.Errorf("resolve image environment for run: %w", err))
@@ -73,14 +79,25 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if err != nil {
 		return fail(fmt.Errorf("resolve image command for run: %w", err))
 	}
+
 	id, err := deps.newID()
 	if err != nil {
 		return fail(fmt.Errorf("generate container ID: %w", err))
 	}
-	rec := &state.Container{ID: id, Status: state.StatusCreated, RootFS: rootfs, Command: append([]string(nil), runtimeCommand...), Hostname: cfg.Hostname, CreatedAt: deps.now(), Env: append([]string(nil), runtimeEnv...)}
+
+	rec := &state.Container{
+		ID:        id,
+		Status:    state.StatusCreated,
+		RootFS:    rootfs,
+		Command:   append([]string(nil), runtimeCommand...),
+		Hostname:  cfg.Hostname,
+		CreatedAt: deps.now(),
+		Env:       append([]string(nil), runtimeEnv...),
+	}
 	if err := st.Save(rec); err != nil {
 		return fail(fmt.Errorf("persist created state for container %s: %w", id, err))
 	}
+
 	stopSignal, err := imageStopSignalForRootFS(st, rootfs)
 	if err != nil {
 		if rollbackErr := st.Delete(id); rollbackErr != nil {
@@ -96,19 +113,45 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 			return fail(fmt.Errorf("persist image stop signal for container %s: %w", id, err))
 		}
 	}
+
 	portMappings := make([]state.RestartPortMapping, 0, len(cfg.PortMappings))
 	for _, p := range cfg.PortMappings {
-		portMappings = append(portMappings, state.RestartPortMapping{HostPort: p.HostPort, ContainerPort: p.ContainerPort, Protocol: p.Protocol})
+		portMappings = append(portMappings, state.RestartPortMapping{
+			HostPort:      p.HostPort,
+			ContainerPort: p.ContainerPort,
+			Protocol:      p.Protocol,
+		})
 	}
 	volumes := make([]state.RestartVolume, 0, len(cfg.Volumes))
 	for _, v := range cfg.Volumes {
-		volumes = append(volumes, state.RestartVolume{HostPath: v.HostPath, ContainerPath: v.ContainerPath, ReadOnly: v.ReadOnly})
+		volumes = append(volumes, state.RestartVolume{
+			HostPath:      v.HostPath,
+			ContainerPath: v.ContainerPath,
+			ReadOnly:      v.ReadOnly,
+		})
 	}
 	restartSpec := state.RestartSpec{
-		RootFS: rootfs, Command: append([]string(nil), runtimeCommand...), Env: append([]string(nil), runtimeEnv...), WorkDir: runtimeWorkDir, Hostname: cfg.Hostname,
-		Overlay: cfg.Overlay, ReadOnly: cfg.ReadOnly, Restart: cfg.Restart, CapDrop: append([]string(nil), cfg.CapDrop...), NoNewPrivileges: cfg.NoNewPrivileges,
-		Memory: cfg.Memory, CPUWeight: cfg.CPUWeight, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, Seccomp: cfg.Seccomp, BridgeNetwork: cfg.BridgeNetwork,
-		PortMappings: portMappings, Volumes: volumes, UserNS: cfg.UserNS, CgroupNS: cfg.CgroupNS, Debug: cfg.Debug,
+		RootFS:          rootfs,
+		Command:         append([]string(nil), runtimeCommand...),
+		Env:             append([]string(nil), runtimeEnv...),
+		WorkDir:         runtimeWorkDir,
+		Hostname:        cfg.Hostname,
+		Overlay:         cfg.Overlay,
+		ReadOnly:        cfg.ReadOnly,
+		Restart:         cfg.Restart,
+		CapDrop:         append([]string(nil), cfg.CapDrop...),
+		NoNewPrivileges: cfg.NoNewPrivileges,
+		Memory:          cfg.Memory,
+		CPUWeight:       cfg.CPUWeight,
+		CPUs:            cfg.CPUs,
+		PidsLimit:       cfg.PidsLimit,
+		Seccomp:         cfg.Seccomp,
+		BridgeNetwork:   cfg.BridgeNetwork,
+		PortMappings:    portMappings,
+		Volumes:         volumes,
+		UserNS:          cfg.UserNS,
+		CgroupNS:        cfg.CgroupNS,
+		Debug:           cfg.Debug,
 	}
 	if err := st.SaveRestartSpec(id, restartSpec); err != nil {
 		if rollbackErr := st.Delete(id); rollbackErr != nil {
@@ -116,6 +159,12 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		}
 		return fail(fmt.Errorf("persist restart spec for container %s: %w", id, err))
 	}
+
+	// Publishing the normalized rootfs, its admitted filesystem identity,
+	// resolved runtime environment/workdir/command, and ID is the admission
+	// commit point. An uncertain state write that returned an error must never
+	// mutate the runtime config even if a filesystem entry happened to become
+	// visible before that error.
 	cfg.RootFS = rootfs
 	cfg.RootFSIdentity = rootfsIdentity
 	cfg.Env = runtimeEnv
@@ -126,7 +175,11 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 }
 
 func normalizeRunAdmissionRootFS(rootfs string) (string, error) {
-	return normalizeRunAdmissionRootFSWith(rootfs, runRootFSAdmissionDeps{abs: filepath.Abs, stat: os.Stat, evalSymlinks: filepath.EvalSymlinks})
+	return normalizeRunAdmissionRootFSWith(rootfs, runRootFSAdmissionDeps{
+		abs:          filepath.Abs,
+		stat:         os.Stat,
+		evalSymlinks: filepath.EvalSymlinks,
+	})
 }
 
 func normalizeRunAdmissionRootFSWith(rootfs string, deps runRootFSAdmissionDeps) (string, error) {
@@ -136,6 +189,7 @@ func normalizeRunAdmissionRootFSWith(rootfs string, deps runRootFSAdmissionDeps)
 	if deps.abs == nil || deps.stat == nil || deps.evalSymlinks == nil {
 		return "", fmt.Errorf("run rootfs admission dependencies are incomplete")
 	}
+
 	abs, err := deps.abs(rootfs)
 	if err != nil {
 		return "", fmt.Errorf("resolve run rootfs %q: %w", rootfs, err)
@@ -148,6 +202,11 @@ func normalizeRunAdmissionRootFSWith(rootfs string, deps runRootFSAdmissionDeps)
 	if !before.IsDir() {
 		return "", fmt.Errorf("run rootfs %q is not a directory", abs)
 	}
+
+	// Persist and execute the resolved target rather than a symlink-bearing
+	// pathname. Otherwise a symlink retarget after durable admission could make
+	// the runtime execute a different filesystem tree than the one recorded in
+	// lifecycle state.
 	resolved, err := deps.evalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("resolve run rootfs symlinks %q: %w", abs, err)

@@ -12,9 +12,9 @@ import (
 )
 
 type ociSeccompConfig struct {
-	DefaultAction string   `json:"defaultAction"`
+	DefaultAction string `json:"defaultAction"`
 	Architectures []string `json:"architectures,omitempty"`
-	Syscalls      []struct {
+	Syscalls []struct {
 		Names    []string          `json:"names"`
 		Action   string            `json:"action"`
 		ErrnoRet *uint             `json:"errnoRet,omitempty"`
@@ -36,7 +36,7 @@ type ociBundleConfig struct {
 		NoNewPrivileges bool     `json:"noNewPrivileges,omitempty"`
 	} `json:"process"`
 	Hostname string `json:"hostname,omitempty"`
-	Mounts   []struct {
+	Mounts []struct {
 		Destination string   `json:"destination"`
 		Type        string   `json:"type"`
 		Source      string   `json:"source"`
@@ -184,6 +184,7 @@ func translateOCISeccomp(seccomp *ociSeccompConfig) (bool, error) {
 			return false, fmt.Errorf("OCI seccomp architectures must be exactly [SCMP_ARCH_X86_64]")
 		}
 	}
+
 	want := make(map[string]struct{}, len(builtinSeccompAMD64Syscalls))
 	for _, name := range builtinSeccompAMD64Syscalls {
 		want[name] = struct{}{}
@@ -239,33 +240,51 @@ func translateOCIBindMount(destination, mountType, source string, options []stri
 }
 
 func applyOCIResources(cfg *container.Config, resources *struct {
-	Memory *struct { Limit *int64 `json:"limit,omitempty"` } `json:"memory,omitempty"`
+	Memory *struct {
+		Limit *int64 `json:"limit,omitempty"`
+	} `json:"memory,omitempty"`
 	CPU *struct {
 		Shares *uint64 `json:"shares,omitempty"`
 		Quota  *int64  `json:"quota,omitempty"`
 		Period *uint64 `json:"period,omitempty"`
 	} `json:"cpu,omitempty"`
-	Pids *struct { Limit int64 `json:"limit"` } `json:"pids,omitempty"`
+	Pids *struct {
+		Limit int64 `json:"limit"`
+	} `json:"pids,omitempty"`
 }) error {
-	if resources == nil { return nil }
+	if resources == nil {
+		return nil
+	}
 	if resources.Memory != nil && resources.Memory.Limit != nil {
-		if *resources.Memory.Limit <= 0 { return fmt.Errorf("linux.resources.memory.limit must be greater than zero") }
+		if *resources.Memory.Limit <= 0 {
+			return fmt.Errorf("linux.resources.memory.limit must be greater than zero")
+		}
 		cfg.Memory = *resources.Memory.Limit
 	}
 	if resources.Pids != nil {
-		if resources.Pids.Limit <= 0 { return fmt.Errorf("linux.resources.pids.limit must be greater than zero") }
+		if resources.Pids.Limit <= 0 {
+			return fmt.Errorf("linux.resources.pids.limit must be greater than zero")
+		}
 		cfg.PidsLimit = resources.Pids.Limit
 	}
 	if resources.CPU != nil {
 		cpu := resources.CPU
 		if cpu.Shares != nil {
-			if *cpu.Shares < 2 || *cpu.Shares > 262144 { return fmt.Errorf("linux.resources.cpu.shares must be in range 2..262144") }
+			if *cpu.Shares < 2 || *cpu.Shares > 262144 {
+				return fmt.Errorf("linux.resources.cpu.shares must be in range 2..262144")
+			}
 			cfg.CPUWeight = 1 + int64((*cpu.Shares-2)*9999/262142)
 		}
-		if (cpu.Quota == nil) != (cpu.Period == nil) { return fmt.Errorf("linux.resources.cpu.quota and period must be specified together") }
+		if (cpu.Quota == nil) != (cpu.Period == nil) {
+			return fmt.Errorf("linux.resources.cpu.quota and period must be specified together")
+		}
 		if cpu.Quota != nil {
-			if *cpu.Quota == -1 { cfg.CPUs = 0 } else {
-				if *cpu.Quota <= 0 || *cpu.Period == 0 { return fmt.Errorf("linux.resources.cpu quota and period must be positive, or quota may be -1") }
+			if *cpu.Quota == -1 {
+				cfg.CPUs = 0
+			} else {
+				if *cpu.Quota <= 0 || *cpu.Period == 0 {
+					return fmt.Errorf("linux.resources.cpu quota and period must be positive, or quota may be -1")
+				}
 				cfg.CPUs = float64(*cpu.Quota) / float64(*cpu.Period)
 			}
 		}
