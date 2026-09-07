@@ -113,23 +113,23 @@ func TestOCICapabilityKernelHelper(t *testing.T) {
 		t.Skip("helper subprocess only")
 	}
 	drops := strings.Split(os.Getenv("MINICONTAINER_OCI_CAP_DROPS"), ",")
-	const capCHOWN = uintptr(0)
-	before, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, ociCapBsetRead, capCHOWN, 0)
+	const capDACOverride = uintptr(1)
+	before, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, ociCapBsetRead, capDACOverride, 0)
 	if errno != 0 {
 		t.Fatalf("PR_CAPBSET_READ before drop: %v", errno)
 	}
 
 	err := container.DropCapabilities(drops, false)
-	after, _, readErrno := syscall.RawSyscall(syscall.SYS_PRCTL, ociCapBsetRead, capCHOWN, 0)
+	after, _, readErrno := syscall.RawSyscall(syscall.SYS_PRCTL, ociCapBsetRead, capDACOverride, 0)
 	if readErrno != 0 {
 		t.Fatalf("PR_CAPBSET_READ after drop: %v", readErrno)
 	}
-	requestedDrop := containsCapability(drops, "CAP_CHOWN")
+	requestedDrop := containsCapability(drops, "CAP_DAC_OVERRIDE")
 	if !requestedDrop {
-		t.Fatal("kernel helper did not receive CAP_CHOWN in translated drop policy")
+		t.Fatal("kernel helper did not receive CAP_DAC_OVERRIDE in translated drop policy")
 	}
 	if err == nil && before == 1 && after != 0 {
-		t.Fatalf("capability policy reported success but CAP_CHOWN remained in bounding set")
+		t.Fatalf("capability policy reported success but CAP_DAC_OVERRIDE remained in bounding set")
 	}
 	if err != nil && before == 1 && after == 0 {
 		t.Fatalf("capability policy changed kernel state but returned error: %v", err)
