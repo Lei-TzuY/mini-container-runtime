@@ -12,14 +12,22 @@ import (
 )
 
 type ociSeccompConfig struct {
-	DefaultAction string `json:"defaultAction"`
+	DefaultAction string   `json:"defaultAction"`
 	Architectures []string `json:"architectures,omitempty"`
-	Syscalls []struct {
+	Syscalls      []struct {
 		Names    []string          `json:"names"`
 		Action   string            `json:"action"`
 		ErrnoRet *uint             `json:"errnoRet,omitempty"`
 		Args     []json.RawMessage `json:"args,omitempty"`
 	} `json:"syscalls,omitempty"`
+}
+
+type ociCapabilitiesConfig struct {
+	Bounding    *[]string `json:"bounding,omitempty"`
+	Effective   *[]string `json:"effective,omitempty"`
+	Permitted   *[]string `json:"permitted,omitempty"`
+	Inheritable *[]string `json:"inheritable,omitempty"`
+	Ambient     *[]string `json:"ambient,omitempty"`
 }
 
 type ociBundleConfig struct {
@@ -29,14 +37,15 @@ type ociBundleConfig struct {
 		Readonly bool   `json:"readonly,omitempty"`
 	} `json:"root"`
 	Process struct {
-		Terminal        bool     `json:"terminal,omitempty"`
-		Args            []string `json:"args"`
-		Env             []string `json:"env,omitempty"`
-		Cwd             string   `json:"cwd"`
-		NoNewPrivileges bool     `json:"noNewPrivileges,omitempty"`
+		Terminal        bool                   `json:"terminal,omitempty"`
+		Args            []string               `json:"args"`
+		Env             []string               `json:"env,omitempty"`
+		Cwd             string                 `json:"cwd"`
+		NoNewPrivileges bool                   `json:"noNewPrivileges,omitempty"`
+		Capabilities    *ociCapabilitiesConfig `json:"capabilities,omitempty"`
 	} `json:"process"`
 	Hostname string `json:"hostname,omitempty"`
-	Mounts []struct {
+	Mounts   []struct {
 		Destination string   `json:"destination"`
 		Type        string   `json:"type"`
 		Source      string   `json:"source"`
@@ -103,6 +112,10 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		}
 	}
 
+	capDrop, err := translateOCICapabilities(spec.Process.Capabilities)
+	if err != nil {
+		return container.Config{}, err
+	}
 	cfg := container.Config{
 		ReadOnly:        spec.Root.Readonly,
 		Command:         append([]string(nil), spec.Process.Args...),
@@ -110,6 +123,7 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		WorkDir:         spec.Process.Cwd,
 		Hostname:        spec.Hostname,
 		NoNewPrivileges: spec.Process.NoNewPrivileges,
+		CapDrop:         capDrop,
 	}
 	for _, mount := range spec.Mounts {
 		volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)
@@ -158,6 +172,60 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
+}
+
+var ociKnownLinuxCapabilities = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
+	"CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_LINUX_IMMUTABLE",
+	"CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST", "CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_IPC_LOCK",
+	"CAP_IPC_OWNER", "CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT", "CAP_SYS_PTRACE",
+	"CAP_SYS_PACCT", "CAP_SYS_ADMIN", "CAP_SYS_BOOT", "CAP_SYS_NICE", "CAP_SYS_RESOURCE",
+	"CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD", "CAP_LEASE", "CAP_AUDIT_WRITE",
+	"CAP_AUDIT_CONTROL", "CAP_SETFCAP", "CAP_MAC_OVERRIDE", "CAP_MAC_ADMIN", "CAP_SYSLOG",
+	"CAP_WAKE_ALARM", "CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ", "CAP_PERFMON", "CAP_BPF",
+	"CAP_CHECKPOINT_RESTORE",
+}
+
+func translateOCICapabilities(caps *ociCapabilitiesConfig) ([]string, error) {
+	if caps == nil {
+		return nil, nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("OCI process capabilities require linux")
+	}
+	if caps.Effective != nil || caps.Permitted != nil || caps.Inheritable != nil || caps.Ambient != nil {
+		return nil, fmt.Errorf("OCI effective/permitted/inheritable/ambient capability sets are not yet representable by the runtime")
+	}
+	if caps.Bounding == nil {
+		return nil, nil
+	}
+
+	known := make(map[string]struct{}, len(ociKnownLinuxCapabilities))
+	for _, name := range ociKnownLinuxCapabilities {
+		known[name] = struct{}{}
+	}
+	keep := make(map[string]struct{}, len(*caps.Bounding))
+	for _, raw := range *caps.Bounding {
+		name := strings.ToUpper(strings.TrimSpace(raw))
+		if !strings.HasPrefix(name, "CAP_") {
+			return nil, fmt.Errorf("invalid OCI capability %q: capability names must use CAP_ prefix", raw)
+		}
+		if _, ok := known[name]; !ok {
+			return nil, fmt.Errorf("unsupported OCI capability %q", raw)
+		}
+		if _, duplicate := keep[name]; duplicate {
+			return nil, fmt.Errorf("duplicate OCI bounding capability %q", raw)
+		}
+		keep[name] = struct{}{}
+	}
+
+	drops := make([]string, 0, len(known)-len(keep))
+	for _, name := range ociKnownLinuxCapabilities {
+		if _, retained := keep[name]; !retained {
+			drops = append(drops, name)
+		}
+	}
+	return drops, nil
 }
 
 var builtinSeccompAMD64Syscalls = []string{
