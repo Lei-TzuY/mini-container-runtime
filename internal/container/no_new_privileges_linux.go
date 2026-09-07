@@ -5,13 +5,18 @@ package container
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
 
 	"minicontainer/internal/ns"
 )
 
-const noNewPrivilegesEnv = "MINICONTAINER_NO_NEW_PRIVILEGES"
+const (
+	noNewPrivilegesEnv = "MINICONTAINER_NO_NEW_PRIVILEGES"
+	processUIDEnv       = "MINICONTAINER_PROCESS_UID"
+	processGIDEnv       = "MINICONTAINER_PROCESS_GID"
+)
 
 var securityPolicyRunMu sync.Mutex
 
@@ -19,16 +24,19 @@ var securityPolicyRunMu sync.Mutex
 // Linux security/isolation policy into the re-executed init generation without
 // leaking runtime markers into the payload environment.
 func RunWithSecurityPolicy(cfg Config) error {
-	if !cfg.NoNewPrivileges && !cfg.CgroupNS {
+	if cfg.ProcessUser != nil && cfg.UserNS && (cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0) {
+		return fmt.Errorf("process user %d:%d cannot be represented by one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+	}
+	if !cfg.NoNewPrivileges && !cfg.CgroupNS && cfg.ProcessUser == nil {
 		return Run(cfg)
 	}
 	securityPolicyRunMu.Lock()
 	defer securityPolicyRunMu.Unlock()
 
-	restore := make([]func(), 0, 2)
-	setMarker := func(key string) error {
+	restore := make([]func(), 0, 4)
+	setMarker := func(key, value string) error {
 		old, hadOld := os.LookupEnv(key)
-		if err := os.Setenv(key, "1"); err != nil {
+		if err := os.Setenv(key, value); err != nil {
 			return err
 		}
 		restore = append(restore, func() {
@@ -41,16 +49,24 @@ func RunWithSecurityPolicy(cfg Config) error {
 		return nil
 	}
 	if cfg.NoNewPrivileges {
-		if err := setMarker(noNewPrivilegesEnv); err != nil {
+		if err := setMarker(noNewPrivilegesEnv, "1"); err != nil {
 			return fmt.Errorf("set no-new-privileges runtime marker: %w", err)
 		}
 	}
 	if cfg.CgroupNS {
-		if err := setMarker(ns.CgroupNamespaceEnv); err != nil {
+		if err := setMarker(ns.CgroupNamespaceEnv, "1"); err != nil {
 			for i := len(restore) - 1; i >= 0; i-- {
 				restore[i]()
 			}
 			return fmt.Errorf("set cgroup namespace runtime marker: %w", err)
+		}
+	}
+	if cfg.ProcessUser != nil {
+		if err := setMarker(processUIDEnv, strconv.FormatUint(uint64(cfg.ProcessUser.UID), 10)); err != nil {
+			return fmt.Errorf("set process uid runtime marker: %w", err)
+		}
+		if err := setMarker(processGIDEnv, strconv.FormatUint(uint64(cfg.ProcessUser.GID), 10)); err != nil {
+			return fmt.Errorf("set process gid runtime marker: %w", err)
 		}
 	}
 	defer func() {
