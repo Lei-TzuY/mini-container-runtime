@@ -5,6 +5,7 @@ package container
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,5 +36,5 @@ func TestNoNewPrivilegesHelper(t *testing.T) {
 	if os.Getenv(noNewPrivilegesEnv) != "" {
 		t.Fatalf("runtime marker leaked into helper environment")
 	}
-	_, _ = os.Stdout.WriteString(string(rune('0' + r1)))
+	_, _ = os.Stdout.WriteString(strconv.FormatUint(uint64(r1), 10))
 }
