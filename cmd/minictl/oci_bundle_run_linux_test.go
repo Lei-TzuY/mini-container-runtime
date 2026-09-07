@@ -71,7 +71,7 @@ func TestOCIBundleRunConnectsAdmissionResourcesAndRealProcess(t *testing.T) {
 	if rec.RootFS != filepath.Join(bundle, "rootfs") || rec.Hostname != "oci-test" {
 		t.Fatalf("unexpected persisted OCI state: %+v", rec)
 	}
-	spec, err := st.ReadRestartSpec(id)
+	spec, err := st.RestartSpec(id)
 	if err != nil {
 		t.Fatal(err)
 	}
