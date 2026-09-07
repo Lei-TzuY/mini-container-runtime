@@ -21,7 +21,7 @@ func runOCIBundle(bundle string) (string, error) {
 	return runOCIBundleWith(bundle, ociBundleRunDeps{
 		load:    loadOCIBundle,
 		prepare: prepareManagedRunState,
-		run:     container.Run,
+		run:     container.RunWithSecurityPolicy,
 		settle:  settleRunCommandState,
 		now:     time.Now,
 	})
