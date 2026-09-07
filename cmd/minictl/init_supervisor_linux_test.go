@@ -161,10 +161,12 @@ func TestContainerInitSupervisorForwardsSignal(t *testing.T) {
 	}()
 
 	waitForFile(t, filepath.Join(dir, "payload-ready"))
+	waitForFile(t, filepath.Join(dir, "descendant-ready"))
 	if err := cmd.Process.Signal(syscall.SIGUSR1); err != nil {
 		t.Fatalf("signal supervisor: %v", err)
 	}
 	waitForFile(t, filepath.Join(dir, "payload-signaled"))
+	waitForFile(t, filepath.Join(dir, "descendant-signaled"))
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("signal supervisor helper failed: %v", err)
 	}
@@ -189,16 +191,42 @@ func runInitSupervisorSignalHelper(t *testing.T, role string) {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGUSR1)
 		defer signal.Stop(sigCh)
-		if err := os.WriteFile(filepath.Join(dir, "payload-ready"), []byte("1"), 0o600); err != nil {
+
+		cmd := exec.Command(os.Args[0], "-test.run=^TestContainerInitSupervisorForwardsSignal$")
+		cmd.Env = helperEnv(initSupervisorTestRole, "signal-descendant", initSupervisorTestDir, dir)
+		if err := cmd.Start(); err != nil {
 			os.Exit(132)
+		}
+		waitForPathInHelper(filepath.Join(dir, "descendant-ready"))
+		if err := os.WriteFile(filepath.Join(dir, "payload-ready"), []byte("1"), 0o600); err != nil {
+			os.Exit(133)
 		}
 		<-sigCh
 		if err := os.WriteFile(filepath.Join(dir, "payload-signaled"), []byte("1"), 0o600); err != nil {
-			os.Exit(133)
+			os.Exit(134)
+		}
+		if err := cmd.Wait(); err != nil {
+			os.Exit(135)
 		}
 		return
+	case "signal-descendant":
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGUSR1)
+		defer signal.Stop(sigCh)
+		if err := os.WriteFile(filepath.Join(dir, "descendant-ready"), []byte("1"), 0o600); err != nil {
+			os.Exit(136)
+		}
+		select {
+		case <-sigCh:
+			if err := os.WriteFile(filepath.Join(dir, "descendant-signaled"), []byte("1"), 0o600); err != nil {
+				os.Exit(137)
+			}
+			return
+		case <-time.After(3 * time.Second):
+			os.Exit(138)
+		}
 	default:
-		os.Exit(134)
+		os.Exit(139)
 	}
 }
 
