@@ -114,6 +114,50 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		}
 	}
 
+	portMappings := make([]state.RestartPortMapping, 0, len(cfg.PortMappings))
+	for _, p := range cfg.PortMappings {
+		portMappings = append(portMappings, state.RestartPortMapping{
+			HostPort:      p.HostPort,
+			ContainerPort: p.ContainerPort,
+			Protocol:      p.Protocol,
+		})
+	}
+	volumes := make([]state.RestartVolume, 0, len(cfg.Volumes))
+	for _, v := range cfg.Volumes {
+		volumes = append(volumes, state.RestartVolume{
+			HostPath:      v.HostPath,
+			ContainerPath: v.ContainerPath,
+			ReadOnly:      v.ReadOnly,
+		})
+	}
+	restartSpec := state.RestartSpec{
+		RootFS:        rootfs,
+		Command:       append([]string(nil), runtimeCommand...),
+		Env:           append([]string(nil), runtimeEnv...),
+		WorkDir:       runtimeWorkDir,
+		Hostname:      cfg.Hostname,
+		Overlay:       cfg.Overlay,
+		ReadOnly:      cfg.ReadOnly,
+		Restart:       cfg.Restart,
+		CapDrop:       append([]string(nil), cfg.CapDrop...),
+		Memory:        cfg.Memory,
+		CPUWeight:     cfg.CPUWeight,
+		CPUs:          cfg.CPUs,
+		PidsLimit:     cfg.PidsLimit,
+		Seccomp:       cfg.Seccomp,
+		BridgeNetwork: cfg.BridgeNetwork,
+		PortMappings:  portMappings,
+		Volumes:       volumes,
+		UserNS:        cfg.UserNS,
+		Debug:         cfg.Debug,
+	}
+	if err := st.SaveRestartSpec(id, restartSpec); err != nil {
+		if rollbackErr := st.Delete(id); rollbackErr != nil {
+			err = errors.Join(err, fmt.Errorf("rollback created container state: %w", rollbackErr))
+		}
+		return fail(fmt.Errorf("persist restart spec for container %s: %w", id, err))
+	}
+
 	// Publishing the normalized rootfs, its admitted filesystem identity,
 	// resolved runtime environment/workdir/command, and ID is the admission
 	// commit point. An uncertain state write that returned an error must never
