@@ -8,6 +8,16 @@ import (
 	"minicontainer/internal/state"
 )
 
+func init() {
+	if os.Getenv("MINICONTAINER_INIT") == "1" || os.Getenv("MINICONTAINER_EXEC") == "1" {
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "restart" {
+		cmdRestartSafe(os.Args[2:])
+		os.Exit(0)
+	}
+}
+
 type restartCommandDeps struct {
 	openStore func() (*state.Store, error)
 	stat      func(string) (os.FileInfo, error)
