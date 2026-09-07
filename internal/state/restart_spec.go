@@ -36,6 +36,9 @@ type RestartSpec struct {
 	Restart          string               `json:"restart,omitempty"`
 	CapDrop          []string             `json:"cap_drop,omitempty"`
 	NoNewPrivileges  bool                 `json:"no_new_privileges,omitempty"`
+	ProcessUserSet   bool                 `json:"process_user_set,omitempty"`
+	ProcessUID       uint32               `json:"process_uid,omitempty"`
+	ProcessGID       uint32               `json:"process_gid,omitempty"`
 	Memory           int64                `json:"memory,omitempty"`
 	CPUWeight        int64                `json:"cpu_weight,omitempty"`
 	CPUs             float64              `json:"cpus,omitempty"`

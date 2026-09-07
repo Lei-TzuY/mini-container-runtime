@@ -30,6 +30,14 @@ type ociCapabilitiesConfig struct {
 	Ambient     *[]string `json:"ambient,omitempty"`
 }
 
+type ociProcessUserConfig struct {
+	UID            uint32   `json:"uid"`
+	GID            uint32   `json:"gid"`
+	Umask          *uint32  `json:"umask,omitempty"`
+	AdditionalGids []uint32 `json:"additionalGids,omitempty"`
+	Username       string   `json:"username,omitempty"`
+}
+
 type ociBundleConfig struct {
 	OCIVersion string `json:"ociVersion"`
 	Root       struct {
@@ -41,6 +49,7 @@ type ociBundleConfig struct {
 		Args            []string               `json:"args"`
 		Env             []string               `json:"env,omitempty"`
 		Cwd             string                 `json:"cwd"`
+		User            *ociProcessUserConfig  `json:"user,omitempty"`
 		NoNewPrivileges bool                   `json:"noNewPrivileges,omitempty"`
 		Capabilities    *ociCapabilitiesConfig `json:"capabilities,omitempty"`
 	} `json:"process"`
@@ -112,6 +121,10 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		}
 	}
 
+	processUser, err := translateOCIProcessUser(spec.Process.User)
+	if err != nil {
+		return container.Config{}, err
+	}
 	capDrop, err := translateOCICapabilities(spec.Process.Capabilities)
 	if err != nil {
 		return container.Config{}, err
@@ -123,6 +136,7 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		WorkDir:         spec.Process.Cwd,
 		Hostname:        spec.Hostname,
 		NoNewPrivileges: spec.Process.NoNewPrivileges,
+		ProcessUser:     processUser,
 		CapDrop:         capDrop,
 	}
 	for _, mount := range spec.Mounts {
@@ -164,6 +178,9 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		}
 		cfg.Seccomp = seccomp
 	}
+	if cfg.ProcessUser != nil && cfg.UserNS && (cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0) {
+		return container.Config{}, fmt.Errorf("OCI process.user %d:%d cannot be represented by the runtime's one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+	}
 
 	rootfs := filepath.Clean(filepath.Join(abs, spec.Root.Path))
 	rel, err := filepath.Rel(abs, rootfs)
@@ -172,6 +189,25 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
+}
+
+func translateOCIProcessUser(user *ociProcessUserConfig) (*container.ProcessUser, error) {
+	if user == nil {
+		return nil, nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("OCI process.user requires linux")
+	}
+	if user.Username != "" {
+		return nil, fmt.Errorf("OCI process.user.username is not yet representable by the runtime")
+	}
+	if user.Umask != nil {
+		return nil, fmt.Errorf("OCI process.user.umask is not yet representable by the runtime")
+	}
+	if len(user.AdditionalGids) != 0 {
+		return nil, fmt.Errorf("OCI process.user.additionalGids is not yet representable by the runtime")
+	}
+	return &container.ProcessUser{UID: user.UID, GID: user.GID}, nil
 }
 
 var ociKnownLinuxCapabilities = []string{

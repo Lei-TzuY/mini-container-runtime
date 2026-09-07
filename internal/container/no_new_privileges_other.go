@@ -13,5 +13,8 @@ func RunWithSecurityPolicy(cfg Config) error {
 	if cfg.CgroupNS {
 		return fmt.Errorf("cgroup namespace requires linux")
 	}
+	if cfg.ProcessUser != nil {
+		return fmt.Errorf("process user requires linux")
+	}
 	return Run(cfg)
 }

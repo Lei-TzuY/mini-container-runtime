@@ -153,6 +153,11 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		CgroupNS:        cfg.CgroupNS,
 		Debug:           cfg.Debug,
 	}
+	if cfg.ProcessUser != nil {
+		restartSpec.ProcessUserSet = true
+		restartSpec.ProcessUID = cfg.ProcessUser.UID
+		restartSpec.ProcessGID = cfg.ProcessUser.GID
+	}
 	if err := st.SaveRestartSpec(id, restartSpec); err != nil {
 		if rollbackErr := st.Delete(id); rollbackErr != nil {
 			err = errors.Join(err, fmt.Errorf("rollback created container state: %w", rollbackErr))

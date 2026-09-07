@@ -9,12 +9,17 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-const initSupervisorArg = "__minicontainer-init-supervisor"
+const (
+	initSupervisorArg     = "__minicontainer-init-supervisor"
+	processUIDRuntimeEnv  = "MINICONTAINER_PROCESS_UID"
+	processGIDRuntimeEnv  = "MINICONTAINER_PROCESS_GID"
+)
 
 var initSupervisorForwardSignals = []os.Signal{
 	syscall.SIGHUP,
@@ -68,6 +73,32 @@ func wrapContainerInitPayload() {
 	os.Args = wrapped
 }
 
+func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
+	uidRaw, hasUID := os.LookupEnv(processUIDRuntimeEnv)
+	gidRaw, hasGID := os.LookupEnv(processGIDRuntimeEnv)
+	if !hasUID && !hasGID {
+		return nil, nil
+	}
+	if !hasUID || !hasGID {
+		return nil, fmt.Errorf("incomplete process user runtime markers")
+	}
+	uid, err := strconv.ParseUint(uidRaw, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid process uid runtime marker %q: %w", uidRaw, err)
+	}
+	gid, err := strconv.ParseUint(gidRaw, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid process gid runtime marker %q: %w", gidRaw, err)
+	}
+	if err := os.Unsetenv(processUIDRuntimeEnv); err != nil {
+		return nil, fmt.Errorf("clear process uid runtime marker: %w", err)
+	}
+	if err := os.Unsetenv(processGIDRuntimeEnv); err != nil {
+		return nil, fmt.Errorf("clear process gid runtime marker: %w", err)
+	}
+	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, nil
+}
+
 func runContainerInitSupervisor(command []string) (int, error) {
 	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("payload command is empty")
@@ -84,6 +115,10 @@ func runContainerInitSupervisor(command []string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("resolve payload executable %q: %w", command[0], err)
 	}
+	credential, err := payloadCredentialFromRuntimeEnv()
+	if err != nil {
+		return 0, err
+	}
 
 	forwardedSignals := make(chan os.Signal, 16)
 	signal.Notify(forwardedSignals, initSupervisorForwardSignals...)
@@ -93,7 +128,8 @@ func runContainerInitSupervisor(command []string) (int, error) {
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
 		Sys: &syscall.SysProcAttr{
-			Setpgid: true,
+			Setpgid:    true,
+			Credential: credential,
 		},
 	})
 	if err != nil {
