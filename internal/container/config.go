@@ -20,6 +20,13 @@ type PortMapping struct {
 	Protocol      string // "tcp" or "udp"
 }
 
+// ProcessUser is the numeric identity requested for the payload after privileged
+// namespace, mount, rootfs, and networking setup has completed.
+type ProcessUser struct {
+	UID uint32
+	GID uint32
+}
+
 // Config holds everything our runtime needs to launch one container.
 type Config struct {
 	// ContainerID is the unique ID assigned to the container.
@@ -53,6 +60,10 @@ type Config struct {
 	// NoNewPrivileges asks Linux to set PR_SET_NO_NEW_PRIVS for the container
 	// init generation before payload execution.
 	NoNewPrivileges bool
+
+	// ProcessUser requests the numeric UID/GID used for the final payload. Nil
+	// preserves the runtime's existing identity semantics.
+	ProcessUser *ProcessUser
 
 	// Command is the executable and its arguments to run inside the container.
 	Command []string
