@@ -28,7 +28,7 @@ func writeOCIRlimitBundle(t *testing.T, process string) string {
 }
 
 func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_FSIZE","soft":4096,"hard":8192},{"type":"RLIMIT_STACK","soft":4194304,"hard":8388608}]}`)
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_FSIZE","soft":4096,"hard":8192},{"type":"RLIMIT_STACK","soft":4194304,"hard":8388608},{"type":"RLIMIT_NPROC","soft":64,"hard":128}]}`)
 	cfg, err := loadOCIBundle(bundle)
 	if err != nil {
 		t.Fatalf("load OCI bundle: %v", err)
@@ -39,6 +39,7 @@ func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
 		processRlimitCOREEnv + "=0:0",
 		processRlimitFSIZEEnv + "=4096:8192",
 		processRlimitSTACKEnv + "=4194304:8388608",
+		processRlimitNPROCEnv + "=64:128",
 	}
 	if len(cfg.Env) != len(want) {
 		t.Fatalf("runtime env = %#v, want %#v", cfg.Env, want)
@@ -51,10 +52,10 @@ func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
 }
 
 func TestOCIRlimitRejectsUnsupportedResource(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_NPROC","soft":1,"hard":1}]}`)
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_MEMLOCK","soft":1,"hard":1}]}`)
 	_, err := loadOCIBundle(bundle)
-	if err == nil || !strings.Contains(err.Error(), "RLIMIT_NPROC") {
-		t.Fatalf("load error = %v, want unsupported RLIMIT_NPROC", err)
+	if err == nil || !strings.Contains(err.Error(), "RLIMIT_MEMLOCK") {
+		t.Fatalf("load error = %v, want unsupported RLIMIT_MEMLOCK", err)
 	}
 }
 

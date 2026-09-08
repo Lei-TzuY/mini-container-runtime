@@ -16,6 +16,7 @@ const (
 	processRlimitCOREEnv   = "MINICONTAINER_PROCESS_RLIMIT_CORE"
 	processRlimitFSIZEEnv  = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
 	processRlimitSTACKEnv  = "MINICONTAINER_PROCESS_RLIMIT_STACK"
+	processRlimitNPROCEnv  = "MINICONTAINER_PROCESS_RLIMIT_NPROC"
 )
 
 type processRlimitRuntimePolicy struct {
@@ -29,6 +30,7 @@ var processRlimitRuntimePolicies = []processRlimitRuntimePolicy{
 	{marker: processRlimitCOREEnv, resource: unix.RLIMIT_CORE, name: "RLIMIT_CORE"},
 	{marker: processRlimitFSIZEEnv, resource: unix.RLIMIT_FSIZE, name: "RLIMIT_FSIZE"},
 	{marker: processRlimitSTACKEnv, resource: unix.RLIMIT_STACK, name: "RLIMIT_STACK"},
+	{marker: processRlimitNPROCEnv, resource: unix.RLIMIT_NPROC, name: "RLIMIT_NPROC"},
 }
 
 // applyProcessRlimitRuntimeMarker runs in the re-executed container-init
