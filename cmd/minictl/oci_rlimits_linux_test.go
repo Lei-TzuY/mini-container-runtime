@@ -27,15 +27,25 @@ func writeOCIRlimitBundle(t *testing.T, process string) string {
 	return bundle
 }
 
-func TestOCIRlimitNOFILEBecomesDurableRuntimeMarker(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128}]}`)
+func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_FSIZE","soft":4096,"hard":8192}]}`)
 	cfg, err := loadOCIBundle(bundle)
 	if err != nil {
 		t.Fatalf("load OCI bundle: %v", err)
 	}
-	want := processRlimitNOFILEEnv + "=64:128"
-	if len(cfg.Env) != 2 || cfg.Env[0] != "A=B" || cfg.Env[1] != want {
-		t.Fatalf("runtime env = %#v, want [A=B %s]", cfg.Env, want)
+	want := []string{
+		"A=B",
+		processRlimitNOFILEEnv + "=64:128",
+		processRlimitCOREEnv + "=0:0",
+		processRlimitFSIZEEnv + "=4096:8192",
+	}
+	if len(cfg.Env) != len(want) {
+		t.Fatalf("runtime env = %#v, want %#v", cfg.Env, want)
+	}
+	for i := range want {
+		if cfg.Env[i] != want[i] {
+			t.Fatalf("runtime env[%d] = %q, want %q", i, cfg.Env[i], want[i])
+		}
 	}
 }
 
@@ -48,7 +58,7 @@ func TestOCIRlimitRejectsUnsupportedResource(t *testing.T) {
 }
 
 func TestOCIRlimitRejectsSoftAboveHard(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_NOFILE","soft":129,"hard":128}]}`)
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_FSIZE","soft":129,"hard":128}]}`)
 	_, err := loadOCIBundle(bundle)
 	if err == nil || !strings.Contains(err.Error(), "exceeds hard limit") {
 		t.Fatalf("load error = %v, want soft/hard validation", err)
@@ -56,7 +66,7 @@ func TestOCIRlimitRejectsSoftAboveHard(t *testing.T) {
 }
 
 func TestOCIRlimitRejectsDuplicateResource(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_NOFILE","soft":32,"hard":64}]}`)
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","rlimits":[{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_CORE","soft":0,"hard":0}]}`)
 	_, err := loadOCIBundle(bundle)
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("load error = %v, want duplicate validation", err)
@@ -64,7 +74,7 @@ func TestOCIRlimitRejectsDuplicateResource(t *testing.T) {
 }
 
 func TestOCIRlimitRejectsRuntimeMarkerCollision(t *testing.T) {
-	process := fmt.Sprintf(`{"args":["/bin/true"],"cwd":"/","env":[%q],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128}]}`, processRlimitNOFILEEnv+"=attacker")
+	process := fmt.Sprintf(`{"args":["/bin/true"],"cwd":"/","env":[%q],"rlimits":[{"type":"RLIMIT_CORE","soft":0,"hard":0}]}`, processRlimitCOREEnv+"=attacker")
 	bundle := writeOCIRlimitBundle(t, process)
 	_, err := loadOCIBundle(bundle)
 	if err == nil || !strings.Contains(err.Error(), "conflicts with internal rlimit policy") {
