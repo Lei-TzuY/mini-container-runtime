@@ -16,6 +16,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Format
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'gofmt required for:\n%s\n' "$unformatted"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test
