@@ -14,6 +14,7 @@ const (
 	processRlimitFSIZEEnv  = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
 	processRlimitSTACKEnv  = "MINICONTAINER_PROCESS_RLIMIT_STACK"
 	processRlimitNPROCEnv  = "MINICONTAINER_PROCESS_RLIMIT_NPROC"
+	processOOMScoreAdjEnv  = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
@@ -30,9 +31,9 @@ type ociProcessRlimitConfig struct {
 	Soft uint64 `json:"soft"`
 }
 
-// UnmarshalJSON extends the strict OCI bundle decoder with the bounded rlimit
-// surface the runtime can execute today. Each rlimit policy is encoded as a
-// reserved parent/runtime marker in Process.Env: existing managed-run state
+// UnmarshalJSON extends the strict OCI bundle decoder with bounded process
+// policy surfaces the runtime can execute today. Policies are encoded as
+// reserved parent/runtime markers in Process.Env: existing managed-run state
 // already persists that environment across restart, while container init
 // consumes and removes the markers before launching the payload.
 func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
@@ -42,13 +43,16 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	var rlimitsRaw json.RawMessage
+	var oomScoreAdjRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
 			return err
 		}
 		rlimitsRaw = process["rlimits"]
+		oomScoreAdjRaw = process["oomScoreAdj"]
 		delete(process, "rlimits")
+		delete(process, "oomScoreAdj")
 		cleanProcess, err := json.Marshal(process)
 		if err != nil {
 			return err
@@ -66,6 +70,33 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	if err := dec.Decode((*plainOCIBundleConfig)(c)); err != nil {
 		return err
 	}
+
+	if len(oomScoreAdjRaw) != 0 {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI process.oomScoreAdj requires linux")
+		}
+		if bytes.Equal(bytes.TrimSpace(oomScoreAdjRaw), []byte("null")) {
+			return fmt.Errorf("OCI process.oomScoreAdj must be an integer")
+		}
+		var oomScoreAdj int
+		if err := json.Unmarshal(oomScoreAdjRaw, &oomScoreAdj); err != nil {
+			return fmt.Errorf("decode process.oomScoreAdj: %w", err)
+		}
+		if oomScoreAdj < -1000 || oomScoreAdj > 1000 {
+			return fmt.Errorf("OCI process.oomScoreAdj %d is outside [-1000,1000]", oomScoreAdj)
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == processOOMScoreAdjEnv {
+				return fmt.Errorf("process.env key %q conflicts with internal oom score policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d", processOOMScoreAdjEnv, oomScoreAdj))
+	}
+
 	if len(rlimitsRaw) == 0 {
 		return nil
 	}
