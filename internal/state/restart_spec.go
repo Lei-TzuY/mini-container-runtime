@@ -39,6 +39,7 @@ type RestartSpec struct {
 	ProcessUserSet   bool                 `json:"process_user_set,omitempty"`
 	ProcessUID       uint32               `json:"process_uid,omitempty"`
 	ProcessGID       uint32               `json:"process_gid,omitempty"`
+	ProcessGroups    []uint32             `json:"process_groups,omitempty"`
 	Memory           int64                `json:"memory,omitempty"`
 	CPUWeight        int64                `json:"cpu_weight,omitempty"`
 	CPUs             float64              `json:"cpus,omitempty"`
@@ -112,6 +113,7 @@ func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
 	spec.Command = append([]string(nil), spec.Command...)
 	spec.Env = append([]string(nil), spec.Env...)
 	spec.CapDrop = append([]string(nil), spec.CapDrop...)
+	spec.ProcessGroups = append([]uint32(nil), spec.ProcessGroups...)
 	spec.PortMappings = append([]RestartPortMapping(nil), spec.PortMappings...)
 	spec.Volumes = append([]RestartVolume(nil), spec.Volumes...)
 	return spec, nil
