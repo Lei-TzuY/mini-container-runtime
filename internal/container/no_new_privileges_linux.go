@@ -17,6 +17,7 @@ const (
 	noNewPrivilegesEnv = "MINICONTAINER_NO_NEW_PRIVILEGES"
 	processUIDEnv       = "MINICONTAINER_PROCESS_UID"
 	processGIDEnv       = "MINICONTAINER_PROCESS_GID"
+	processGroupsEnv    = "MINICONTAINER_PROCESS_GROUPS"
 )
 
 var securityPolicyRunMu sync.Mutex
@@ -25,8 +26,13 @@ var securityPolicyRunMu sync.Mutex
 // Linux security/isolation policy into the re-executed init generation without
 // leaking runtime markers into the payload environment.
 func RunWithSecurityPolicy(cfg Config) error {
-	if cfg.ProcessUser != nil && cfg.UserNS && (cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0) {
-		return fmt.Errorf("process user %d:%d cannot be represented by one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+	if cfg.ProcessUser != nil && cfg.UserNS {
+		if cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0 {
+			return fmt.Errorf("process user %d:%d cannot be represented by one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+		}
+		if len(cfg.ProcessUser.Groups) != 0 {
+			return fmt.Errorf("supplementary process groups cannot be represented while setgroups is disabled in the user namespace")
+		}
 	}
 	if cfg.ProcessUser != nil {
 		for _, entry := range cfg.Env {
@@ -34,7 +40,7 @@ func RunWithSecurityPolicy(cfg Config) error {
 			if i := strings.IndexByte(key, '='); i >= 0 {
 				key = key[:i]
 			}
-			if key == processUIDEnv || key == processGIDEnv {
+			if key == processUIDEnv || key == processGIDEnv || key == processGroupsEnv {
 				return fmt.Errorf("payload environment key %q conflicts with internal process user policy", key)
 			}
 		}
@@ -45,7 +51,7 @@ func RunWithSecurityPolicy(cfg Config) error {
 	securityPolicyRunMu.Lock()
 	defer securityPolicyRunMu.Unlock()
 
-	restore := make([]func(), 0, 4)
+	restore := make([]func(), 0, 5)
 	defer func() {
 		for i := len(restore) - 1; i >= 0; i-- {
 			restore[i]()
@@ -81,6 +87,13 @@ func RunWithSecurityPolicy(cfg Config) error {
 		}
 		if err := setMarker(processGIDEnv, strconv.FormatUint(uint64(cfg.ProcessUser.GID), 10)); err != nil {
 			return fmt.Errorf("set process gid runtime marker: %w", err)
+		}
+		groups := make([]string, 0, len(cfg.ProcessUser.Groups))
+		for _, gid := range cfg.ProcessUser.Groups {
+			groups = append(groups, strconv.FormatUint(uint64(gid), 10))
+		}
+		if err := setMarker(processGroupsEnv, strings.Join(groups, ",")); err != nil {
+			return fmt.Errorf("set process groups runtime marker: %w", err)
 		}
 	}
 	return Run(cfg)
