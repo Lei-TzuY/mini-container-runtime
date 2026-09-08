@@ -21,6 +21,7 @@ const (
 	processUIDRuntimeEnv    = "MINICONTAINER_PROCESS_UID"
 	processGIDRuntimeEnv    = "MINICONTAINER_PROCESS_GID"
 	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
+	processUmaskRuntimeEnv  = "MINICONTAINER_PROCESS_UMASK"
 )
 
 var initSupervisorForwardSignals = []os.Signal{
@@ -111,6 +112,25 @@ func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}, nil
 }
 
+func payloadUmaskFromRuntimeEnv() (*uint32, error) {
+	raw, ok := os.LookupEnv(processUmaskRuntimeEnv)
+	if !ok {
+		return nil, nil
+	}
+	if err := os.Unsetenv(processUmaskRuntimeEnv); err != nil {
+		return nil, fmt.Errorf("clear process umask runtime marker: %w", err)
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid process umask runtime marker %q: %w", raw, err)
+	}
+	if value > 0o777 {
+		return nil, fmt.Errorf("invalid process umask runtime marker %q: exceeds 0777", raw)
+	}
+	umask := uint32(value)
+	return &umask, nil
+}
+
 func runContainerInitSupervisor(command []string) (int, error) {
 	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("payload command is empty")
@@ -131,11 +151,19 @@ func runContainerInitSupervisor(command []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	payloadUmask, err := payloadUmaskFromRuntimeEnv()
+	if err != nil {
+		return 0, err
+	}
 
 	forwardedSignals := make(chan os.Signal, 16)
 	signal.Notify(forwardedSignals, initSupervisorForwardSignals...)
 	defer signal.Stop(forwardedSignals)
 
+	oldUmask := -1
+	if payloadUmask != nil {
+		oldUmask = syscall.Umask(int(*payloadUmask))
+	}
 	pid, err := syscall.ForkExec(binary, command, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
@@ -144,6 +172,9 @@ func runContainerInitSupervisor(command []string) (int, error) {
 			Credential: credential,
 		},
 	})
+	if oldUmask >= 0 {
+		syscall.Umask(oldUmask)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("start payload: %w", err)
 	}
