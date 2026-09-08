@@ -26,6 +26,7 @@ type ProcessUser struct {
 	UID    uint32
 	GID    uint32
 	Groups []uint32
+	Umask  *uint32
 }
 
 // Config holds everything our runtime needs to launch one container.
@@ -62,8 +63,9 @@ type Config struct {
 	// init generation before payload execution.
 	NoNewPrivileges bool
 
-	// ProcessUser requests the numeric UID/GID and supplementary groups used for
-	// the final payload. Nil preserves the runtime's existing identity semantics.
+	// ProcessUser requests the numeric UID/GID, supplementary groups, and optional
+	// file-creation mask used for the final payload. Nil preserves the runtime's
+	// existing identity semantics.
 	ProcessUser *ProcessUser
 
 	// Command is the executable and its arguments to run inside the container.
