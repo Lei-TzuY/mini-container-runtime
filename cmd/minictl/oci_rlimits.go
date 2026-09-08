@@ -13,6 +13,7 @@ const (
 	processRlimitCOREEnv   = "MINICONTAINER_PROCESS_RLIMIT_CORE"
 	processRlimitFSIZEEnv  = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
 	processRlimitSTACKEnv  = "MINICONTAINER_PROCESS_RLIMIT_STACK"
+	processRlimitNPROCEnv  = "MINICONTAINER_PROCESS_RLIMIT_NPROC"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
@@ -20,6 +21,7 @@ var processRlimitRuntimeEnv = map[string]string{
 	"RLIMIT_CORE":   processRlimitCOREEnv,
 	"RLIMIT_FSIZE":  processRlimitFSIZEEnv,
 	"RLIMIT_STACK":  processRlimitSTACKEnv,
+	"RLIMIT_NPROC":  processRlimitNPROCEnv,
 }
 
 type ociProcessRlimitConfig struct {
