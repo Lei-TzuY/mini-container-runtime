@@ -57,16 +57,25 @@ func TestLoadOCIBundleRejectsUnmappedProcessUser(t *testing.T) {
 	}
 }
 
+func TestTranslateOCIProcessUserSupportsAdditionalGids(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("OCI process user is Linux-specific")
+	}
+	user, err := translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, AdditionalGids: []uint32{3, 4}})
+	if err != nil {
+		t.Fatalf("translate process user: %v", err)
+	}
+	if user == nil || user.UID != 1 || user.GID != 2 || len(user.Groups) != 2 || user.Groups[0] != 3 || user.Groups[1] != 4 {
+		t.Fatalf("translated process user = %#v, want 1:2 groups [3 4]", user)
+	}
+}
+
 func TestTranslateOCIProcessUserRejectsUnsupportedSemantics(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("OCI process user is Linux-specific")
 	}
-	_, err := translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, AdditionalGids: []uint32{3}})
-	if err == nil || !strings.Contains(err.Error(), "additionalGids") {
-		t.Fatalf("translate error = %v, want additionalGids rejection", err)
-	}
 	umask := uint32(0o022)
-	_, err = translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, Umask: &umask})
+	_, err := translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, Umask: &umask})
 	if err == nil || !strings.Contains(err.Error(), "umask") {
 		t.Fatalf("translate error = %v, want umask rejection", err)
 	}

@@ -157,6 +157,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		restartSpec.ProcessUserSet = true
 		restartSpec.ProcessUID = cfg.ProcessUser.UID
 		restartSpec.ProcessGID = cfg.ProcessUser.GID
+		restartSpec.ProcessGroups = append([]uint32(nil), cfg.ProcessUser.Groups...)
 	}
 	if err := st.SaveRestartSpec(id, restartSpec); err != nil {
 		if rollbackErr := st.Delete(id); rollbackErr != nil {
@@ -165,11 +166,6 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		return fail(fmt.Errorf("persist restart spec for container %s: %w", id, err))
 	}
 
-	// Publishing the normalized rootfs, its admitted filesystem identity,
-	// resolved runtime environment/workdir/command, and ID is the admission
-	// commit point. An uncertain state write that returned an error must never
-	// mutate the runtime config even if a filesystem entry happened to become
-	// visible before that error.
 	cfg.RootFS = rootfs
 	cfg.RootFSIdentity = rootfsIdentity
 	cfg.Env = runtimeEnv
@@ -208,10 +204,6 @@ func normalizeRunAdmissionRootFSWith(rootfs string, deps runRootFSAdmissionDeps)
 		return "", fmt.Errorf("run rootfs %q is not a directory", abs)
 	}
 
-	// Persist and execute the resolved target rather than a symlink-bearing
-	// pathname. Otherwise a symlink retarget after durable admission could make
-	// the runtime execute a different filesystem tree than the one recorded in
-	// lifecycle state.
 	resolved, err := deps.evalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("resolve run rootfs symlinks %q: %w", abs, err)
