@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	initSupervisorArg      = "__minicontainer-init-supervisor"
-	processUIDRuntimeEnv   = "MINICONTAINER_PROCESS_UID"
-	processGIDRuntimeEnv   = "MINICONTAINER_PROCESS_GID"
+	initSupervisorArg       = "__minicontainer-init-supervisor"
+	processUIDRuntimeEnv    = "MINICONTAINER_PROCESS_UID"
+	processGIDRuntimeEnv    = "MINICONTAINER_PROCESS_GID"
 	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
 )
 
@@ -115,6 +115,10 @@ func runContainerInitSupervisor(command []string) (int, error) {
 	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("payload command is empty")
 	}
+
+	// PID 1 already adopts orphaned descendants in its PID namespace. Marking it
+	// as a child subreaper makes that contract explicit and also lets deterministic
+	// integration tests exercise the same behavior without creating a PID namespace.
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 		return 0, fmt.Errorf("enable child subreaper: %w", err)
 	}
@@ -181,6 +185,7 @@ func runContainerInitSupervisor(command []string) (int, error) {
 			return 0, fmt.Errorf("reap child process: %w", err)
 		}
 		if reapedPID != pid {
+			// Reap orphaned descendants and continue supervising the primary payload.
 			continue
 		}
 
