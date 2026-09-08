@@ -206,8 +206,8 @@ func translateOCIProcessUser(user *ociProcessUserConfig) (*container.ProcessUser
 	if user.Username != "" {
 		return nil, fmt.Errorf("OCI process.user.username is not yet representable by the runtime")
 	}
-	if user.Umask != nil {
-		return nil, fmt.Errorf("OCI process.user.umask is not yet representable by the runtime")
+	if user.Umask != nil && *user.Umask > 0o777 {
+		return nil, fmt.Errorf("OCI process.user.umask %#o exceeds 0777", *user.Umask)
 	}
 	seen := make(map[uint32]struct{}, len(user.AdditionalGids))
 	for _, gid := range user.AdditionalGids {
@@ -216,7 +216,12 @@ func translateOCIProcessUser(user *ociProcessUserConfig) (*container.ProcessUser
 		}
 		seen[gid] = struct{}{}
 	}
-	return &container.ProcessUser{UID: user.UID, GID: user.GID, Groups: append([]uint32(nil), user.AdditionalGids...)}, nil
+	translated := &container.ProcessUser{UID: user.UID, GID: user.GID, Groups: append([]uint32(nil), user.AdditionalGids...)}
+	if user.Umask != nil {
+		umask := *user.Umask
+		translated.Umask = &umask
+	}
+	return translated, nil
 }
 
 var ociKnownLinuxCapabilities = []string{

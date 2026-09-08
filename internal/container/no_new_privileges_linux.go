@@ -18,6 +18,7 @@ const (
 	processUIDEnv       = "MINICONTAINER_PROCESS_UID"
 	processGIDEnv       = "MINICONTAINER_PROCESS_GID"
 	processGroupsEnv    = "MINICONTAINER_PROCESS_GROUPS"
+	processUmaskEnv     = "MINICONTAINER_PROCESS_UMASK"
 )
 
 var securityPolicyRunMu sync.Mutex
@@ -40,7 +41,7 @@ func RunWithSecurityPolicy(cfg Config) error {
 			if i := strings.IndexByte(key, '='); i >= 0 {
 				key = key[:i]
 			}
-			if key == processUIDEnv || key == processGIDEnv || key == processGroupsEnv {
+			if key == processUIDEnv || key == processGIDEnv || key == processGroupsEnv || key == processUmaskEnv {
 				return fmt.Errorf("payload environment key %q conflicts with internal process user policy", key)
 			}
 		}
@@ -51,7 +52,7 @@ func RunWithSecurityPolicy(cfg Config) error {
 	securityPolicyRunMu.Lock()
 	defer securityPolicyRunMu.Unlock()
 
-	restore := make([]func(), 0, 5)
+	restore := make([]func(), 0, 6)
 	defer func() {
 		for i := len(restore) - 1; i >= 0; i-- {
 			restore[i]()
@@ -94,6 +95,11 @@ func RunWithSecurityPolicy(cfg Config) error {
 		}
 		if err := setMarker(processGroupsEnv, strings.Join(groups, ",")); err != nil {
 			return fmt.Errorf("set process groups runtime marker: %w", err)
+		}
+		if cfg.ProcessUser.Umask != nil {
+			if err := setMarker(processUmaskEnv, strconv.FormatUint(uint64(*cfg.ProcessUser.Umask), 10)); err != nil {
+				return fmt.Errorf("set process umask runtime marker: %w", err)
+			}
 		}
 	}
 	return Run(cfg)

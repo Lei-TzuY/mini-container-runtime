@@ -125,6 +125,10 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 	}
 	if spec.ProcessUserSet {
 		cfg.ProcessUser = &container.ProcessUser{UID: spec.ProcessUID, GID: spec.ProcessGID, Groups: append([]uint32(nil), spec.ProcessGroups...)}
+		if spec.ProcessUmaskSet {
+			umask := spec.ProcessUmask
+			cfg.ProcessUser.Umask = &umask
+		}
 	}
 	if err := deps.run(cfg); err != nil {
 		return nil, fmt.Errorf("restart container %s: %w", rec.ID, err)

@@ -70,13 +70,27 @@ func TestTranslateOCIProcessUserSupportsAdditionalGids(t *testing.T) {
 	}
 }
 
-func TestTranslateOCIProcessUserRejectsUnsupportedSemantics(t *testing.T) {
+func TestTranslateOCIProcessUserSupportsUmask(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("OCI process user is Linux-specific")
 	}
-	umask := uint32(0o022)
+	umask := uint32(0o027)
+	user, err := translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, Umask: &umask})
+	if err != nil {
+		t.Fatalf("translate process user: %v", err)
+	}
+	if user == nil || user.Umask == nil || *user.Umask != umask {
+		t.Fatalf("translated process user = %#v, want umask %#o", user, umask)
+	}
+}
+
+func TestTranslateOCIProcessUserRejectsInvalidUmask(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("OCI process user is Linux-specific")
+	}
+	umask := uint32(0o1000)
 	_, err := translateOCIProcessUser(&ociProcessUserConfig{UID: 1, GID: 2, Umask: &umask})
 	if err == nil || !strings.Contains(err.Error(), "umask") {
-		t.Fatalf("translate error = %v, want umask rejection", err)
+		t.Fatalf("translate error = %v, want invalid umask rejection", err)
 	}
 }
