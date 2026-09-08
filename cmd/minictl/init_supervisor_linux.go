@@ -10,15 +10,17 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 const (
-	initSupervisorArg     = "__minicontainer-init-supervisor"
-	processUIDRuntimeEnv  = "MINICONTAINER_PROCESS_UID"
-	processGIDRuntimeEnv  = "MINICONTAINER_PROCESS_GID"
+	initSupervisorArg      = "__minicontainer-init-supervisor"
+	processUIDRuntimeEnv   = "MINICONTAINER_PROCESS_UID"
+	processGIDRuntimeEnv   = "MINICONTAINER_PROCESS_GID"
+	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
 )
 
 var initSupervisorForwardSignals = []os.Signal{
@@ -76,10 +78,11 @@ func wrapContainerInitPayload() {
 func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
 	uidRaw, hasUID := os.LookupEnv(processUIDRuntimeEnv)
 	gidRaw, hasGID := os.LookupEnv(processGIDRuntimeEnv)
-	if !hasUID && !hasGID {
+	groupsRaw, hasGroups := os.LookupEnv(processGroupsRuntimeEnv)
+	if !hasUID && !hasGID && !hasGroups {
 		return nil, nil
 	}
-	if !hasUID || !hasGID {
+	if !hasUID || !hasGID || !hasGroups {
 		return nil, fmt.Errorf("incomplete process user runtime markers")
 	}
 	uid, err := strconv.ParseUint(uidRaw, 10, 32)
@@ -90,23 +93,28 @@ func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid process gid runtime marker %q: %w", gidRaw, err)
 	}
-	if err := os.Unsetenv(processUIDRuntimeEnv); err != nil {
-		return nil, fmt.Errorf("clear process uid runtime marker: %w", err)
+	groups := []uint32(nil)
+	if groupsRaw != "" {
+		for _, raw := range strings.Split(groupsRaw, ",") {
+			value, err := strconv.ParseUint(raw, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid process groups runtime marker %q: %w", groupsRaw, err)
+			}
+			groups = append(groups, uint32(value))
+		}
 	}
-	if err := os.Unsetenv(processGIDRuntimeEnv); err != nil {
-		return nil, fmt.Errorf("clear process gid runtime marker: %w", err)
+	for _, key := range []string{processUIDRuntimeEnv, processGIDRuntimeEnv, processGroupsRuntimeEnv} {
+		if err := os.Unsetenv(key); err != nil {
+			return nil, fmt.Errorf("clear process user runtime marker %s: %w", key, err)
+		}
 	}
-	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, nil
+	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}, nil
 }
 
 func runContainerInitSupervisor(command []string) (int, error) {
 	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("payload command is empty")
 	}
-
-	// PID 1 already adopts orphaned descendants in its PID namespace. Marking it
-	// as a child subreaper makes that contract explicit and also lets deterministic
-	// integration tests exercise the same behavior without creating a PID namespace.
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 		return 0, fmt.Errorf("enable child subreaper: %w", err)
 	}
@@ -173,7 +181,6 @@ func runContainerInitSupervisor(command []string) (int, error) {
 			return 0, fmt.Errorf("reap child process: %w", err)
 		}
 		if reapedPID != pid {
-			// Reap orphaned descendants and continue supervising the primary payload.
 			continue
 		}
 
