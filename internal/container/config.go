@@ -29,6 +29,14 @@ type ProcessUser struct {
 	Umask  *uint32
 }
 
+// ProcessRlimit is one Linux resource limit applied by the container init
+// supervisor before launching the payload.
+type ProcessRlimit struct {
+	Type string
+	Soft uint64
+	Hard uint64
+}
+
 // Config holds everything our runtime needs to launch one container.
 type Config struct {
 	// ContainerID is the unique ID assigned to the container.
@@ -67,6 +75,10 @@ type Config struct {
 	// file-creation mask used for the final payload. Nil preserves the runtime's
 	// existing identity semantics.
 	ProcessUser *ProcessUser
+
+	// ProcessRlimits are Linux payload resource limits translated from OCI
+	// process.rlimits. Unsupported resources are rejected during OCI admission.
+	ProcessRlimits []ProcessRlimit
 
 	// Command is the executable and its arguments to run inside the container.
 	Command []string
