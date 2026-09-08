@@ -8,7 +8,17 @@ import (
 	"strings"
 )
 
-const processRlimitNOFILEEnv = "MINICONTAINER_PROCESS_RLIMIT_NOFILE"
+const (
+	processRlimitNOFILEEnv = "MINICONTAINER_PROCESS_RLIMIT_NOFILE"
+	processRlimitCOREEnv   = "MINICONTAINER_PROCESS_RLIMIT_CORE"
+	processRlimitFSIZEEnv  = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
+)
+
+var processRlimitRuntimeEnv = map[string]string{
+	"RLIMIT_NOFILE": processRlimitNOFILEEnv,
+	"RLIMIT_CORE":   processRlimitCOREEnv,
+	"RLIMIT_FSIZE":  processRlimitFSIZEEnv,
+}
 
 type ociProcessRlimitConfig struct {
 	Type string `json:"type"`
@@ -17,10 +27,10 @@ type ociProcessRlimitConfig struct {
 }
 
 // UnmarshalJSON extends the strict OCI bundle decoder with the bounded rlimit
-// surface the runtime can execute today. The rlimit policy is encoded as a
+// surface the runtime can execute today. Each rlimit policy is encoded as a
 // reserved parent/runtime marker in Process.Env: existing managed-run state
 // already persists that environment across restart, while container init
-// consumes and removes the marker before launching the payload.
+// consumes and removes the markers before launching the payload.
 func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	var document map[string]json.RawMessage
 	if err := json.Unmarshal(data, &document); err != nil {
@@ -69,30 +79,31 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	var nofile *ociProcessRlimitConfig
+	seen := make(map[string]struct{}, len(rlimits))
 	for i := range rlimits {
 		limit := &rlimits[i]
-		if limit.Type != "RLIMIT_NOFILE" {
+		marker, ok := processRlimitRuntimeEnv[limit.Type]
+		if !ok {
 			return fmt.Errorf("OCI process.rlimits type %q is not supported", limit.Type)
 		}
-		if nofile != nil {
+		if _, ok := seen[limit.Type]; ok {
 			return fmt.Errorf("duplicate OCI process.rlimits type %q", limit.Type)
 		}
 		if limit.Soft > limit.Hard {
 			return fmt.Errorf("OCI process.rlimits %s soft limit %d exceeds hard limit %d", limit.Type, limit.Soft, limit.Hard)
 		}
-		nofile = limit
-	}
+		seen[limit.Type] = struct{}{}
 
-	for _, entry := range c.Process.Env {
-		key := entry
-		if i := strings.IndexByte(key, '='); i >= 0 {
-			key = key[:i]
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == marker {
+				return fmt.Errorf("process.env key %q conflicts with internal rlimit policy", key)
+			}
 		}
-		if key == processRlimitNOFILEEnv {
-			return fmt.Errorf("process.env key %q conflicts with internal rlimit policy", key)
-		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d:%d", marker, limit.Soft, limit.Hard))
 	}
-	c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d:%d", processRlimitNOFILEEnv, nofile.Soft, nofile.Hard))
 	return nil
 }
