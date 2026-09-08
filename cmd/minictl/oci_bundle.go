@@ -178,8 +178,13 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		}
 		cfg.Seccomp = seccomp
 	}
-	if cfg.ProcessUser != nil && cfg.UserNS && (cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0) {
-		return container.Config{}, fmt.Errorf("OCI process.user %d:%d cannot be represented by the runtime's one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+	if cfg.ProcessUser != nil && cfg.UserNS {
+		if cfg.ProcessUser.UID != 0 || cfg.ProcessUser.GID != 0 {
+			return container.Config{}, fmt.Errorf("OCI process.user %d:%d cannot be represented by the runtime's one-entry user namespace mapping", cfg.ProcessUser.UID, cfg.ProcessUser.GID)
+		}
+		if len(cfg.ProcessUser.Groups) != 0 {
+			return container.Config{}, fmt.Errorf("OCI process.user.additionalGids cannot be represented while the runtime disables setgroups in its user namespace")
+		}
 	}
 
 	rootfs := filepath.Clean(filepath.Join(abs, spec.Root.Path))
@@ -204,10 +209,14 @@ func translateOCIProcessUser(user *ociProcessUserConfig) (*container.ProcessUser
 	if user.Umask != nil {
 		return nil, fmt.Errorf("OCI process.user.umask is not yet representable by the runtime")
 	}
-	if len(user.AdditionalGids) != 0 {
-		return nil, fmt.Errorf("OCI process.user.additionalGids is not yet representable by the runtime")
+	seen := make(map[uint32]struct{}, len(user.AdditionalGids))
+	for _, gid := range user.AdditionalGids {
+		if _, duplicate := seen[gid]; duplicate {
+			return nil, fmt.Errorf("duplicate OCI process.user.additionalGids entry %d", gid)
+		}
+		seen[gid] = struct{}{}
 	}
-	return &container.ProcessUser{UID: user.UID, GID: user.GID}, nil
+	return &container.ProcessUser{UID: user.UID, GID: user.GID, Groups: append([]uint32(nil), user.AdditionalGids...)}, nil
 }
 
 var ociKnownLinuxCapabilities = []string{
