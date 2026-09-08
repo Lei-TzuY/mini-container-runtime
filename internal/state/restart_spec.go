@@ -40,6 +40,8 @@ type RestartSpec struct {
 	ProcessUID       uint32               `json:"process_uid,omitempty"`
 	ProcessGID       uint32               `json:"process_gid,omitempty"`
 	ProcessGroups    []uint32             `json:"process_groups,omitempty"`
+	ProcessUmaskSet  bool                 `json:"process_umask_set,omitempty"`
+	ProcessUmask     uint32               `json:"process_umask,omitempty"`
 	Memory           int64                `json:"memory,omitempty"`
 	CPUWeight        int64                `json:"cpu_weight,omitempty"`
 	CPUs             float64              `json:"cpus,omitempty"`
