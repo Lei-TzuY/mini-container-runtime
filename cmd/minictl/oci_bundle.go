@@ -78,7 +78,8 @@ type ociBundleConfig struct {
 				Limit int64 `json:"limit"`
 			} `json:"pids,omitempty"`
 		} `json:"resources,omitempty"`
-		Seccomp *ociSeccompConfig `json:"seccomp,omitempty"`
+		Seccomp       *ociSeccompConfig `json:"seccomp,omitempty"`
+		ReadonlyPaths []string          `json:"readonlyPaths,omitempty"`
 	} `json:"linux,omitempty"`
 }
 
@@ -191,6 +192,13 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	rel, err := filepath.Rel(abs, rootfs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return container.Config{}, fmt.Errorf("root.path escapes bundle")
+	}
+	if spec.Linux != nil {
+		readonlyVolumes, err := translateOCIReadonlyPaths(rootfs, spec.Linux.ReadonlyPaths)
+		if err != nil {
+			return container.Config{}, err
+		}
+		cfg.Volumes = append(cfg.Volumes, readonlyVolumes...)
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
@@ -355,6 +363,36 @@ func translateOCIBindMount(destination, mountType, source string, options []stri
 		}
 	}
 	return container.Volume{HostPath: filepath.Clean(source), ContainerPath: filepath.Clean(destination), ReadOnly: readonly}, nil
+}
+
+func translateOCIReadonlyPaths(rootfs string, paths []string) ([]container.Volume, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("OCI linux.readonlyPaths requires linux")
+	}
+	seen := make(map[string]struct{}, len(paths))
+	volumes := make([]container.Volume, 0, len(paths))
+	for _, raw := range paths {
+		if raw == "" || !filepath.IsAbs(raw) {
+			return nil, fmt.Errorf("OCI linux.readonlyPaths entry %q must be absolute", raw)
+		}
+		clean := filepath.Clean(raw)
+		if clean == "/" {
+			return nil, fmt.Errorf("OCI linux.readonlyPaths entry %q must be below root; use root.readonly for /", raw)
+		}
+		if clean != raw {
+			return nil, fmt.Errorf("OCI linux.readonlyPaths entry %q must be canonical", raw)
+		}
+		if _, duplicate := seen[clean]; duplicate {
+			return nil, fmt.Errorf("duplicate OCI linux.readonlyPaths entry %q", raw)
+		}
+		seen[clean] = struct{}{}
+		source := filepath.Join(rootfs, strings.TrimPrefix(clean, string(os.PathSeparator)))
+		volumes = append(volumes, container.Volume{HostPath: source, ContainerPath: clean, ReadOnly: true})
+	}
+	return volumes, nil
 }
 
 func applyOCIResources(cfg *container.Config, resources *struct {
