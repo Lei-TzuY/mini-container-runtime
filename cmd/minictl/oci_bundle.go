@@ -80,6 +80,7 @@ type ociBundleConfig struct {
 		} `json:"resources,omitempty"`
 		Seccomp       *ociSeccompConfig `json:"seccomp,omitempty"`
 		ReadonlyPaths []string          `json:"readonlyPaths,omitempty"`
+		MaskedPaths   []string          `json:"maskedPaths,omitempty"`
 	} `json:"linux,omitempty"`
 }
 
@@ -199,6 +200,11 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 			return container.Config{}, err
 		}
 		cfg.Volumes = append(cfg.Volumes, readonlyVolumes...)
+		maskedVolumes, err := translateOCIMaskedPaths(spec.Linux.MaskedPaths)
+		if err != nil {
+			return container.Config{}, err
+		}
+		cfg.Volumes = append(cfg.Volumes, maskedVolumes...)
 	}
 	cfg.RootFS = rootfs
 	return cfg, nil
@@ -391,6 +397,35 @@ func translateOCIReadonlyPaths(rootfs string, paths []string) ([]container.Volum
 		seen[clean] = struct{}{}
 		source := filepath.Join(rootfs, strings.TrimPrefix(clean, string(os.PathSeparator)))
 		volumes = append(volumes, container.Volume{HostPath: source, ContainerPath: clean, ReadOnly: true})
+	}
+	return volumes, nil
+}
+
+func translateOCIMaskedPaths(paths []string) ([]container.Volume, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("OCI linux.maskedPaths requires linux")
+	}
+	seen := make(map[string]struct{}, len(paths))
+	volumes := make([]container.Volume, 0, len(paths))
+	for _, raw := range paths {
+		if raw == "" || !filepath.IsAbs(raw) {
+			return nil, fmt.Errorf("OCI linux.maskedPaths entry %q must be absolute", raw)
+		}
+		clean := filepath.Clean(raw)
+		if clean == "/" {
+			return nil, fmt.Errorf("OCI linux.maskedPaths entry %q must be below root", raw)
+		}
+		if clean != raw {
+			return nil, fmt.Errorf("OCI linux.maskedPaths entry %q must be canonical", raw)
+		}
+		if _, duplicate := seen[clean]; duplicate {
+			return nil, fmt.Errorf("duplicate OCI linux.maskedPaths entry %q", raw)
+		}
+		seen[clean] = struct{}{}
+		volumes = append(volumes, container.Volume{HostPath: "/dev/null", ContainerPath: clean, ReadOnly: true})
 	}
 	return volumes, nil
 }
