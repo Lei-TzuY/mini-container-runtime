@@ -28,7 +28,7 @@ func writeOCIRlimitBundle(t *testing.T, process string) string {
 }
 
 func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
-	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_FSIZE","soft":4096,"hard":8192}]}`)
+	bundle := writeOCIRlimitBundle(t, `{"args":["/bin/true"],"cwd":"/","env":["A=B"],"rlimits":[{"type":"RLIMIT_NOFILE","soft":64,"hard":128},{"type":"RLIMIT_CORE","soft":0,"hard":0},{"type":"RLIMIT_FSIZE","soft":4096,"hard":8192},{"type":"RLIMIT_STACK","soft":4194304,"hard":8388608}]}`)
 	cfg, err := loadOCIBundle(bundle)
 	if err != nil {
 		t.Fatalf("load OCI bundle: %v", err)
@@ -38,6 +38,7 @@ func TestOCIRlimitsBecomeDurableRuntimeMarkers(t *testing.T) {
 		processRlimitNOFILEEnv + "=64:128",
 		processRlimitCOREEnv + "=0:0",
 		processRlimitFSIZEEnv + "=4096:8192",
+		processRlimitSTACKEnv + "=4194304:8388608",
 	}
 	if len(cfg.Env) != len(want) {
 		t.Fatalf("runtime env = %#v, want %#v", cfg.Env, want)
