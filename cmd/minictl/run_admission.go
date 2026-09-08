@@ -158,6 +158,10 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		restartSpec.ProcessUID = cfg.ProcessUser.UID
 		restartSpec.ProcessGID = cfg.ProcessUser.GID
 		restartSpec.ProcessGroups = append([]uint32(nil), cfg.ProcessUser.Groups...)
+		if cfg.ProcessUser.Umask != nil {
+			restartSpec.ProcessUmaskSet = true
+			restartSpec.ProcessUmask = *cfg.ProcessUser.Umask
+		}
 	}
 	if err := st.SaveRestartSpec(id, restartSpec); err != nil {
 		if rollbackErr := st.Delete(id); rollbackErr != nil {
