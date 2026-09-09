@@ -8,16 +8,24 @@ permissions:
 
 jobs:
   gofmt:
+    name: gofmt ${{ matrix.file }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - internal/container/config.go
+          - internal/container/masked_directory_policy_linux.go
+          - internal/container/masked_directory_policy_linux_test.go
+          - internal/container/run.go
+          - internal/state/restart_spec.go
+          - cmd/minictl/oci_bundle_run.go
+          - cmd/minictl/oci_masked_directory_policy.go
+          - cmd/minictl/oci_masked_directory_linux_test.go
+          - cmd/minictl/restart_command.go
+          - cmd/minictl/run_admission.go
     steps:
       - uses: actions/checkout@v4
       - name: Check gofmt
         shell: bash
-        run: |
-          files="$(gofmt -l .)"
-          if [ -n "$files" ]; then
-            while IFS= read -r file; do
-              echo "::error file=$file::gofmt required"
-            done <<< "$files"
-            exit 1
-          fi
+        run: test -z "$(gofmt -l '${{ matrix.file }}')"
