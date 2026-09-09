@@ -1,0 +1,23 @@
+name: Conquest Format Check
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check gofmt
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::gofmt required"
+            done <<< "$files"
+            exit 1
+          fi
