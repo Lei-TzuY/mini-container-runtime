@@ -10,6 +10,23 @@ import (
 // admission reservations become visible to peers in the same atomic registry
 // update that binds the exact child generation.
 func BindHostRegistrationGeneration(networkName, containerID string, pid int, pidStartTime uint64) error {
+	return bindHostRegistrationGeneration(networkName, containerID, pid, pidStartTime, "")
+}
+
+// BindHostRegistrationGenerationAddress atomically publishes the exact bridge
+// address selected for a child generation while binding durable generation
+// ownership. This closes the gap between admission-time DNS reservation and
+// generation-scoped IPAM: peers never observe the placeholder admission address
+// once the generation becomes visible.
+func BindHostRegistrationGenerationAddress(networkName, containerID string, pid int, pidStartTime uint64, ipAddr string) error {
+	canonicalIP, err := canonicalIPAddress(ipAddr)
+	if err != nil {
+		return err
+	}
+	return bindHostRegistrationGeneration(networkName, containerID, pid, pidStartTime, canonicalIP)
+}
+
+func bindHostRegistrationGeneration(networkName, containerID string, pid int, pidStartTime uint64, publishedIP string) error {
 	if err := validateNetworkName(networkName); err != nil {
 		return err
 	}
@@ -57,7 +74,17 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 				return fmt.Errorf("DNS registration for container %q is not generation-aware", containerID)
 			}
 			if entry.GenerationPID == pid && entry.GenerationStartTime == pidStartTime && !entry.AdmissionPending {
-				return nil
+				if publishedIP == "" || entry.IP == publishedIP {
+					return nil
+				}
+				return fmt.Errorf(
+					"DNS registration for container %q generation %d/%d is already published at %s, not %s",
+					containerID,
+					pid,
+					pidStartTime,
+					entry.IP,
+					publishedIP,
+				)
 			}
 			if (entry.GenerationPID != 0 || entry.GenerationStartTime != 0) &&
 				(entry.GenerationPID != pid || entry.GenerationStartTime != pidStartTime) {
@@ -69,6 +96,9 @@ func BindHostRegistrationGeneration(networkName, containerID string, pid int, pi
 				)
 			}
 			updated := append([]HostEntry(nil), entries...)
+			if publishedIP != "" {
+				updated[i].IP = publishedIP
+			}
 			updated[i].GenerationPID = pid
 			updated[i].GenerationStartTime = pidStartTime
 			updated[i].AdmissionPending = false
