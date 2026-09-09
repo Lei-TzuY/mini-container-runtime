@@ -104,6 +104,10 @@ type Config struct {
 	// Volumes is the list of host directories to bind-mount into the container.
 	Volumes []Volume
 
+	// MaskedDirectories lists absolute container paths that must be hidden behind
+	// empty read-only tmpfs mounts before rootfs isolation and payload execution.
+	MaskedDirectories []string
+
 	// UserNS enables user namespace isolation (CLONE_NEWUSER).
 	UserNS bool
 

@@ -26,33 +26,34 @@ type RestartVolume struct {
 // Security, isolation, resource, mount and network settings are persisted with
 // the payload so restart cannot silently weaken the original execution policy.
 type RestartSpec struct {
-	RootFS           string               `json:"rootfs"`
-	Command          []string             `json:"command"`
-	Env              []string             `json:"env,omitempty"`
-	WorkDir          string               `json:"work_dir,omitempty"`
-	Hostname         string               `json:"hostname,omitempty"`
-	Overlay          bool                 `json:"overlay,omitempty"`
-	ReadOnly         bool                 `json:"read_only,omitempty"`
-	Restart          string               `json:"restart,omitempty"`
-	CapDrop          []string             `json:"cap_drop,omitempty"`
-	NoNewPrivileges  bool                 `json:"no_new_privileges,omitempty"`
-	ProcessUserSet   bool                 `json:"process_user_set,omitempty"`
-	ProcessUID       uint32               `json:"process_uid,omitempty"`
-	ProcessGID       uint32               `json:"process_gid,omitempty"`
-	ProcessGroups    []uint32             `json:"process_groups,omitempty"`
-	ProcessUmaskSet  bool                 `json:"process_umask_set,omitempty"`
-	ProcessUmask     uint32               `json:"process_umask,omitempty"`
-	Memory           int64                `json:"memory,omitempty"`
-	CPUWeight        int64                `json:"cpu_weight,omitempty"`
-	CPUs             float64              `json:"cpus,omitempty"`
-	PidsLimit        int64                `json:"pids_limit,omitempty"`
-	Seccomp          bool                 `json:"seccomp,omitempty"`
-	BridgeNetwork    bool                 `json:"bridge_network,omitempty"`
-	PortMappings     []RestartPortMapping `json:"port_mappings,omitempty"`
-	Volumes          []RestartVolume      `json:"volumes,omitempty"`
-	UserNS           bool                 `json:"user_ns"`
-	CgroupNS         bool                 `json:"cgroup_ns,omitempty"`
-	Debug            bool                 `json:"debug,omitempty"`
+	RootFS            string               `json:"rootfs"`
+	Command           []string             `json:"command"`
+	Env               []string             `json:"env,omitempty"`
+	WorkDir           string               `json:"work_dir,omitempty"`
+	Hostname          string               `json:"hostname,omitempty"`
+	Overlay           bool                 `json:"overlay,omitempty"`
+	ReadOnly          bool                 `json:"read_only,omitempty"`
+	Restart           string               `json:"restart,omitempty"`
+	CapDrop           []string             `json:"cap_drop,omitempty"`
+	NoNewPrivileges   bool                 `json:"no_new_privileges,omitempty"`
+	ProcessUserSet    bool                 `json:"process_user_set,omitempty"`
+	ProcessUID        uint32               `json:"process_uid,omitempty"`
+	ProcessGID        uint32               `json:"process_gid,omitempty"`
+	ProcessGroups     []uint32             `json:"process_groups,omitempty"`
+	ProcessUmaskSet   bool                 `json:"process_umask_set,omitempty"`
+	ProcessUmask      uint32               `json:"process_umask,omitempty"`
+	Memory            int64                `json:"memory,omitempty"`
+	CPUWeight         int64                `json:"cpu_weight,omitempty"`
+	CPUs              float64              `json:"cpus,omitempty"`
+	PidsLimit         int64                `json:"pids_limit,omitempty"`
+	Seccomp           bool                 `json:"seccomp,omitempty"`
+	BridgeNetwork     bool                 `json:"bridge_network,omitempty"`
+	PortMappings      []RestartPortMapping `json:"port_mappings,omitempty"`
+	Volumes           []RestartVolume      `json:"volumes,omitempty"`
+	MaskedDirectories []string             `json:"masked_directories,omitempty"`
+	UserNS            bool                 `json:"user_ns"`
+	CgroupNS          bool                 `json:"cgroup_ns,omitempty"`
+	Debug             bool                 `json:"debug,omitempty"`
 }
 
 func restartSpecPath(dir, containerID string) string {
@@ -118,5 +119,6 @@ func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
 	spec.ProcessGroups = append([]uint32(nil), spec.ProcessGroups...)
 	spec.PortMappings = append([]RestartPortMapping(nil), spec.PortMappings...)
 	spec.Volumes = append([]RestartVolume(nil), spec.Volumes...)
+	spec.MaskedDirectories = append([]string(nil), spec.MaskedDirectories...)
 	return spec, nil
 }
