@@ -40,10 +40,13 @@ func rememberRuntimeBridgeConfig(config runtimeBridgeConfig) {
 	runtimeBridgeConfigState.set = true
 }
 
-func currentRuntimeBridgeConfig() (runtimeBridgeConfig, bool) {
+func takeRuntimeBridgeConfig() (runtimeBridgeConfig, bool) {
 	runtimeBridgeConfigState.Lock()
 	defer runtimeBridgeConfigState.Unlock()
-	return runtimeBridgeConfigState.config, runtimeBridgeConfigState.set
+	config, ok := runtimeBridgeConfigState.config, runtimeBridgeConfigState.set
+	runtimeBridgeConfigState.config = runtimeBridgeConfig{}
+	runtimeBridgeConfigState.set = false
+	return config, ok
 }
 
 // releaseBlockedChild commits parent-side runtime setup and carries the bridge
@@ -130,6 +133,8 @@ func awaitParentReady(readPipe *os.File) error {
 	if config.ContainerCIDR == "" || config.Gateway == "" {
 		return fmt.Errorf("runtime bridge config is incomplete")
 	}
-	rememberRuntimeBridgeConfig(config)
+	if os.Getenv(sentinelEnvKey) == "1" {
+		rememberRuntimeBridgeConfig(config)
+	}
 	return nil
 }
