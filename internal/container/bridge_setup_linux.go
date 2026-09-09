@@ -129,11 +129,19 @@ func normalizedProtocol(protocol string) string {
 type loopbackSetup func(debug bool) error
 type bridgeContainerSetup func(containerCIDR, gateway string, debug bool) error
 
+func bridgeConfigForInit(containerCIDR, gateway string) (string, string) {
+	if config, ok := currentRuntimeBridgeConfig(); ok {
+		return config.ContainerCIDR, config.Gateway
+	}
+	return containerCIDR, gateway
+}
+
 // setupBridgeContainer is the final container-side network admission gate used
 // by ContainerInit before mount isolation and payload exec. ContainerInit makes
 // an earlier best-effort loopback attempt for diagnostics; this gate retries the
 // idempotent operation and fails closed if lo still cannot be brought up.
 func setupBridgeContainer(enabled bool, containerCIDR, gateway string, debug bool) error {
+	containerCIDR, gateway = bridgeConfigForInit(containerCIDR, gateway)
 	return setupContainerNetworkWith(
 		enabled,
 		containerCIDR,
@@ -145,9 +153,9 @@ func setupBridgeContainer(enabled bool, containerCIDR, gateway string, debug boo
 }
 
 // setupBridgeContainerWith preserves the focused bridge-only injection surface
-// used by existing tests. Production setupBridgeContainer additionally enforces
-// loopback through setupContainerNetworkWith.
+// used by existing tests while still exercising the runtime handoff source.
 func setupBridgeContainerWith(enabled bool, containerCIDR, gateway string, debug bool, setup bridgeContainerSetup) error {
+	containerCIDR, gateway = bridgeConfigForInit(containerCIDR, gateway)
 	return setupContainerNetworkWith(
 		enabled,
 		containerCIDR,
