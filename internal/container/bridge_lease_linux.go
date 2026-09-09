@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"minicontainer/internal/dns"
 	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
@@ -51,11 +52,22 @@ func allocateRuntimeBridgeLeaseWithProbe(cfg Config, pid int, pidStartTime uint6
 		return "", runtimeBridgeConfig{}, nil, fmt.Errorf("allocate bridge IP for container generation: %w", err)
 	}
 
+	cancelDNSAddress, err := dns.StageHostRegistrationGenerationAddress(defaultBridgeDNSNetwork, cfg.ContainerID, ip)
+	if err != nil {
+		releaseErr := ipam.ReleaseGenerationIP(defaultBridgeDNSNetwork, owner)
+		setupErr := error(fmt.Errorf("stage bridge DNS address for container generation: %w", err))
+		if releaseErr != nil {
+			setupErr = errors.Join(setupErr, fmt.Errorf("release bridge IP after DNS address staging failure: %w", releaseErr))
+		}
+		return "", runtimeBridgeConfig{}, nil, setupErr
+	}
+
 	config := runtimeBridgeConfig{
 		ContainerCIDR: ip + "/24",
 		Gateway:       defaultBridgeGateway,
 	}
 	release := func() error {
+		cancelDNSAddress()
 		if err := ipam.ReleaseGenerationIP(defaultBridgeDNSNetwork, owner); err != nil {
 			return fmt.Errorf("release bridge IP for container generation: %w", err)
 		}
