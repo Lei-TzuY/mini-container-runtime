@@ -11,16 +11,18 @@
 //
 // pivot_root algorithm
 // ────────────────────
-//  1. Bind-mount newRoot on itself → creates a mount-point entry in the
+//  1. Make the inherited mount tree recursively private so container mount
+//     events cannot propagate back through a shared parent mount.
+//  2. Bind-mount newRoot on itself → creates a mount-point entry in the
 //     kernel's mount table, which pivot_root requires.
-//  2. mkdir newRoot/.pivot_old  → parking spot for the old root.
-//  3. pivot_root(newRoot, newRoot/.pivot_old)
+//  3. mkdir newRoot/.pivot_old  → parking spot for the old root.
+//  4. pivot_root(newRoot, newRoot/.pivot_old)
 //       → kernel swaps "/" to newRoot, old "/" is at /.pivot_old.
-//  4. chdir "/"  → update CWD to the new root.
-//  5. umount2("/.pivot_old", MNT_DETACH)
+//  5. chdir "/"  → update CWD to the new root.
+//  6. umount2("/.pivot_old", MNT_DETACH)
 //       → lazy-unmount: detached immediately but stays accessible to
 //         existing open file descriptors until they're all closed.
-//  6. rmdir "/.pivot_old"  → clean up.
+//  7. rmdir "/.pivot_old"  → clean up.
 
 package rootfs
 
@@ -97,7 +99,14 @@ func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr e
 		return fmt.Errorf("pivot_root operations are incomplete")
 	}
 
-	// Step 1: bind-mount newRoot onto itself.
+	// A new mount namespace inherits the parent's propagation topology. Make the
+	// entire tree private before creating runtime mounts; otherwise a shared
+	// parent can receive mount/unmount events from the container namespace.
+	if err := ops.mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make mount namespace recursively private: %w", err)
+	}
+
+	// Step 2: bind-mount newRoot onto itself.
 	//
 	// pivot_root(2) requires newRoot to already be a mount point. A plain
 	// directory is NOT a mount point. Bind-mounting the directory onto itself
@@ -158,7 +167,7 @@ func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr e
 		}
 	}()
 
-	// Step 2: create an exclusively owned temporary directory inside newRoot for
+	// Step 3: create an exclusively owned temporary directory inside newRoot for
 	// the old root. Refuse a pre-existing path instead of borrowing and later
 	// deleting a directory that belongs to the image/user.
 	if err := ops.mkdir(pivotDir, 0o700); err != nil {
@@ -166,7 +175,7 @@ func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr e
 	}
 	pivotDirOwned = true
 
-	// Step 3: invoke pivot_root.
+	// Step 4: invoke pivot_root.
 	//   newRoot  → becomes the new "/"
 	//   pivotDir → old "/" is bind-mounted here (visible as /.pivot_old)
 	if err := ops.pivot(newRoot, pivotDir); err != nil {
@@ -175,14 +184,14 @@ func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr e
 	pivoted = true
 	rootBindMounted = false
 
-	// Step 4: update our CWD to the new root.
+	// Step 5: update our CWD to the new root.
 	// After pivot_root the process's CWD is still conceptually in the old
 	// root (the kernel hasn't changed it automatically).
 	if err := ops.chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
 
-	// Step 5: unmount the old root with MNT_DETACH (lazy unmount).
+	// Step 6: unmount the old root with MNT_DETACH (lazy unmount).
 	// MNT_DETACH detaches the mount immediately from the filesystem tree
 	// while keeping it accessible to any process that already has it open.
 	if err := ops.unmount("/.pivot_old", syscall.MNT_DETACH); err != nil {
@@ -190,7 +199,7 @@ func pivotRootWithOps(newRoot string, debug bool, ops pivotRootOps) (resultErr e
 	}
 	oldRootDetached = true
 
-	// Step 6: remove the now-empty runtime-owned directory. Failure is a runtime
+	// Step 7: remove the now-empty runtime-owned directory. Failure is a runtime
 	// teardown failure: silently continuing would persist a runtime artifact in
 	// a shared rootfs.
 	if err := ops.remove("/.pivot_old"); err != nil {
