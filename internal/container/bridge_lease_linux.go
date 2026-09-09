@@ -3,6 +3,7 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -17,8 +18,15 @@ const (
 )
 
 func allocateRuntimeBridgeLease(cfg Config, pid int, pidStartTime uint64) (string, runtimeBridgeConfig, func() error, error) {
+	return allocateRuntimeBridgeLeaseWithProbe(cfg, pid, pidStartTime, probeProcessGeneration)
+}
+
+func allocateRuntimeBridgeLeaseWithProbe(cfg Config, pid int, pidStartTime uint64, probe processGenerationProbe) (string, runtimeBridgeConfig, func() error, error) {
 	if cfg.ContainerID == "" {
 		return "", runtimeBridgeConfig{}, nil, fmt.Errorf("bridge IP lease requires a container ID")
+	}
+	if probe == nil {
+		return "", runtimeBridgeConfig{}, nil, fmt.Errorf("bridge IP lease process probe is nil")
 	}
 
 	stateDir := cfg.StateDir
@@ -28,6 +36,9 @@ func allocateRuntimeBridgeLease(cfg Config, pid int, pidStartTime uint64) (strin
 	ipam, err := network.OpenIPAM(filepath.Join(stateDir, "ipam"))
 	if err != nil {
 		return "", runtimeBridgeConfig{}, nil, fmt.Errorf("open bridge IPAM: %w", err)
+	}
+	if err := reconcileRuntimeBridgeIPAM(ipam, probe); err != nil {
+		return "", runtimeBridgeConfig{}, nil, err
 	}
 
 	owner := network.BridgeLeaseOwner{
@@ -51,4 +62,31 @@ func allocateRuntimeBridgeLease(cfg Config, pid int, pidStartTime uint64) (strin
 		return nil
 	}
 	return ip, config, release, nil
+}
+
+func reconcileRuntimeBridgeIPAM(ipam *network.IPAM, probe processGenerationProbe) error {
+	if ipam == nil {
+		return fmt.Errorf("bridge IPAM is nil")
+	}
+	if probe == nil {
+		return fmt.Errorf("bridge IP lease process probe is nil")
+	}
+
+	var probeErr error
+	_, err := ipam.ReconcileGenerationIPs(defaultBridgeDNSNetwork, func(owner network.BridgeLeaseOwner) bool {
+		alive, err := probe(owner.PID, owner.PIDStartTime)
+		if err != nil {
+			// Fail closed: an indeterminate process identity must retain its lease.
+			probeErr = errors.Join(probeErr, fmt.Errorf("probe bridge lease owner %s process %d/%d: %w", owner.ContainerID, owner.PID, owner.PIDStartTime, err))
+			return true
+		}
+		return alive
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile bridge IP leases: %w", err)
+	}
+	if probeErr != nil {
+		return fmt.Errorf("reconcile bridge IP lease liveness: %w", probeErr)
+	}
+	return nil
 }
