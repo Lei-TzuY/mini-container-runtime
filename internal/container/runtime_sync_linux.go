@@ -3,54 +3,138 @@
 package container
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 )
 
 const runtimeReadyByte byte = 0xa5
 
-// releaseBlockedChild commits parent-side runtime setup by writing one explicit
-// readiness byte to the child's private sync pipe. Closing the pipe is not a
-// readiness signal: an unexpected parent exit also closes the writer, so the
-// child must never treat EOF as permission to continue.
-//
-// Successful delivery means the child may proceed with container initialization;
-// it does not prove that the payload image has successfully exec'd. Lifecycle
-// start observability is therefore committed later at the init-status CLOEXEC
-// boundary in awaitPayloadExec.
+const maxRuntimeSyncPayload = 4096
+
+type runtimeBridgeConfig struct {
+	ContainerCIDR string `json:"container_cidr"`
+	Gateway       string `json:"gateway"`
+}
+
+var runtimeBridgeConfigState struct {
+	sync.Mutex
+	config runtimeBridgeConfig
+	set    bool
+}
+
+func defaultRuntimeBridgeConfig() runtimeBridgeConfig {
+	return runtimeBridgeConfig{
+		ContainerCIDR: "172.20.0.2/24",
+		Gateway:       "172.20.0.1",
+	}
+}
+
+func rememberRuntimeBridgeConfig(config runtimeBridgeConfig) {
+	runtimeBridgeConfigState.Lock()
+	defer runtimeBridgeConfigState.Unlock()
+	runtimeBridgeConfigState.config = config
+	runtimeBridgeConfigState.set = true
+}
+
+func takeRuntimeBridgeConfig() (runtimeBridgeConfig, bool) {
+	runtimeBridgeConfigState.Lock()
+	defer runtimeBridgeConfigState.Unlock()
+	config, ok := runtimeBridgeConfigState.config, runtimeBridgeConfigState.set
+	runtimeBridgeConfigState.config = runtimeBridgeConfig{}
+	runtimeBridgeConfigState.set = false
+	return config, ok
+}
+
+// releaseBlockedChild commits parent-side runtime setup and carries the bridge
+// addressing selected by the parent to the blocked container init. Keeping the
+// address in this handshake makes host-side veth/DNAT ownership and child-side
+// eth0 configuration share one authority instead of separate hard-coded values.
 func releaseBlockedChild(writePipe *os.File) error {
+	return releaseBlockedChildWithBridge(writePipe, defaultRuntimeBridgeConfig())
+}
+
+func releaseBlockedChildWithBridge(writePipe *os.File, config runtimeBridgeConfig) error {
 	if writePipe == nil {
 		return fmt.Errorf("runtime sync writer is nil")
 	}
-
-	n, err := writePipe.Write([]byte{runtimeReadyByte})
-	if n == 1 {
+	payload, err := json.Marshal(config)
+	if err != nil {
 		_ = writePipe.Close()
-		return nil
+		return fmt.Errorf("marshal runtime bridge config: %w", err)
+	}
+	if len(payload) == 0 || len(payload) > maxRuntimeSyncPayload {
+		_ = writePipe.Close()
+		return fmt.Errorf("runtime bridge config payload size %d is invalid", len(payload))
+	}
+
+	frame := make([]byte, 3+len(payload))
+	frame[0] = runtimeReadyByte
+	binary.BigEndian.PutUint16(frame[1:3], uint16(len(payload)))
+	copy(frame[3:], payload)
+	if _, err := writeAllRuntimeSync(writePipe, frame); err != nil {
+		_ = writePipe.Close()
+		return err
 	}
 	_ = writePipe.Close()
-	if err != nil {
-		return fmt.Errorf("write runtime ready byte: %w", err)
+	return nil
+}
+
+func writeAllRuntimeSync(writePipe *os.File, payload []byte) (int, error) {
+	written := 0
+	for written < len(payload) {
+		n, err := writePipe.Write(payload[written:])
+		written += n
+		if err != nil {
+			return written, fmt.Errorf("write runtime readiness frame: %w", err)
+		}
+		if n == 0 {
+			return written, fmt.Errorf("write runtime readiness frame: %w", io.ErrShortWrite)
+		}
 	}
-	return fmt.Errorf("write runtime ready byte: %w", io.ErrShortWrite)
+	return written, nil
 }
 
 // awaitParentReady blocks the re-executed child until the parent explicitly
 // commits runtime setup. EOF means the parent disappeared or closed the pipe
-// without committing, and therefore fails closed.
+// without committing, and therefore fails closed. A complete bridge config is
+// remembered process-locally for the later container network setup gate.
 func awaitParentReady(readPipe *os.File) error {
 	if readPipe == nil {
 		return fmt.Errorf("runtime sync reader is nil")
 	}
 	defer readPipe.Close()
 
-	var ready [1]byte
-	if _, err := io.ReadFull(readPipe, ready[:]); err != nil {
+	var header [3]byte
+	if _, err := io.ReadFull(readPipe, header[:1]); err != nil {
 		return fmt.Errorf("await parent runtime readiness: %w", err)
 	}
-	if ready[0] != runtimeReadyByte {
-		return fmt.Errorf("invalid runtime ready byte 0x%02x", ready[0])
+	if header[0] != runtimeReadyByte {
+		return fmt.Errorf("invalid runtime ready byte 0x%02x", header[0])
+	}
+	if _, err := io.ReadFull(readPipe, header[1:]); err != nil {
+		return fmt.Errorf("read runtime bridge config length: %w", err)
+	}
+	payloadLen := int(binary.BigEndian.Uint16(header[1:]))
+	if payloadLen <= 0 || payloadLen > maxRuntimeSyncPayload {
+		return fmt.Errorf("runtime bridge config payload size %d is invalid", payloadLen)
+	}
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(readPipe, payload); err != nil {
+		return fmt.Errorf("read runtime bridge config: %w", err)
+	}
+	var config runtimeBridgeConfig
+	if err := json.Unmarshal(payload, &config); err != nil {
+		return fmt.Errorf("decode runtime bridge config: %w", err)
+	}
+	if config.ContainerCIDR == "" || config.Gateway == "" {
+		return fmt.Errorf("runtime bridge config is incomplete")
+	}
+	if os.Getenv(sentinelEnvKey) == "1" {
+		rememberRuntimeBridgeConfig(config)
 	}
 	return nil
 }
