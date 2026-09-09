@@ -34,9 +34,6 @@ func defaultBridgeHostOps(owner string) bridgeHostOps {
 	}
 }
 
-// setupBridgeHost is the compatibility wrapper for callers that do not persist
-// network ownership. Without a durable recovery token it must retain eager
-// rollback semantics on partial setup failure.
 func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool) (func() error, error) {
 	owner, err := network.NewPortForwardingOwner()
 	if err != nil {
@@ -45,13 +42,6 @@ func setupBridgeHost(containerPID int, hostCIDR, containerIP string, mappings []
 	return setupBridgeHostWithOps(containerPID, hostCIDR, containerIP, mappings, debug, defaultBridgeHostOps(owner))
 }
 
-// setupBridgeHostOwned is used only after the managed runtime has durably
-// persisted generation-scoped network ownership. It intentionally does not
-// destroy successfully-created host resources on a later setup failure: the
-// authoritative stopped-generation finalizer consumes that durable ownership
-// only after stopped lifecycle state has committed. The returned cleanup is a
-// no-op for the same reason; legacy run paths may still invoke it before state
-// finalization, but managed teardown authority lives in the durable sidecar.
 func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, owner string, debug bool) (func() error, error) {
 	if owner == "" {
 		return nil, fmt.Errorf("bridge ownership marker is required")
@@ -62,11 +52,6 @@ func setupBridgeHostOwned(containerPID int, hostCIDR, containerIP string, mappin
 	return func() error { return nil }, nil
 }
 
-// setupBridgeHostWithOps establishes all requested host-side bridge networking
-// before the container child is released from its sync pipe. Compatibility
-// callers without durable ownership get eager rollback. Managed callers use the
-// policy helper below with rollbackOnFailure=false so stopped-state durability
-// always precedes destructive recovery.
 func setupBridgeHostWithOps(containerPID int, hostCIDR, containerIP string, mappings []PortMapping, debug bool, ops bridgeHostOps) (func() error, error) {
 	return setupBridgeHostWithOpsPolicy(containerPID, hostCIDR, containerIP, mappings, debug, ops, true)
 }
@@ -130,16 +115,12 @@ type loopbackSetup func(debug bool) error
 type bridgeContainerSetup func(containerCIDR, gateway string, debug bool) error
 
 func bridgeConfigForInit(containerCIDR, gateway string) (string, string) {
-	if config, ok := currentRuntimeBridgeConfig(); ok {
+	if config, ok := takeRuntimeBridgeConfig(); ok {
 		return config.ContainerCIDR, config.Gateway
 	}
 	return containerCIDR, gateway
 }
 
-// setupBridgeContainer is the final container-side network admission gate used
-// by ContainerInit before mount isolation and payload exec. ContainerInit makes
-// an earlier best-effort loopback attempt for diagnostics; this gate retries the
-// idempotent operation and fails closed if lo still cannot be brought up.
 func setupBridgeContainer(enabled bool, containerCIDR, gateway string, debug bool) error {
 	containerCIDR, gateway = bridgeConfigForInit(containerCIDR, gateway)
 	return setupContainerNetworkWith(
@@ -152,8 +133,6 @@ func setupBridgeContainer(enabled bool, containerCIDR, gateway string, debug boo
 	)
 }
 
-// setupBridgeContainerWith preserves the focused bridge-only injection surface
-// used by existing tests while still exercising the runtime handoff source.
 func setupBridgeContainerWith(enabled bool, containerCIDR, gateway string, debug bool, setup bridgeContainerSetup) error {
 	containerCIDR, gateway = bridgeConfigForInit(containerCIDR, gateway)
 	return setupContainerNetworkWith(
