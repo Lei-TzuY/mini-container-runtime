@@ -35,6 +35,9 @@ func runOCIBundleWith(bundle string, deps ociBundleRunDeps) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := promoteOCIMaskedDirectories(bundle, &cfg); err != nil {
+		return "", err
+	}
 	store, rec, err := deps.prepare(&cfg)
 	if err != nil {
 		return "", fmt.Errorf("prepare OCI bundle state: %w", err)
