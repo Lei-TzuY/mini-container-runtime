@@ -165,6 +165,10 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), sentinelEnv)
+	cmd.Env, err = appendMaskedDirectoriesEnv(cmd.Env, cfg.MaskedDirectories)
+	if err != nil {
+		return fmt.Errorf("prepare masked directory policy: %w", err)
+	}
 
 	overlayWorkDir, err := createParentOverlayWorkDir(cfg.Overlay, os.MkdirTemp)
 	if err != nil {
@@ -510,6 +514,19 @@ func ContainerInit(cfg Config) (resultErr error) {
 	for _, v := range cfg.Volumes {
 		if err := mountVolume(v, targetRootFS, cfg.Debug); err != nil {
 			return fmt.Errorf("volume %s:%s: %w", v.HostPath, v.ContainerPath, err)
+		}
+	}
+
+	maskedDirectories, err := consumeMaskedDirectoriesEnv()
+	if err != nil {
+		return err
+	}
+	for _, target := range maskedDirectories {
+		if err := mountMaskedDirectoryInRoot(targetRootFS, target); err != nil {
+			return err
+		}
+		if cfg.Debug {
+			fmt.Printf("[init] masked directory: %s\n", target)
 		}
 	}
 
