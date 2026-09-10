@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"minicontainer/internal/dns"
 	"minicontainer/internal/network"
 )
 
@@ -40,6 +41,12 @@ func TestSetupCustomBridgeGenerationComposesLiveProcessProfileLeaseAndAttachment
 	}
 	const networkName = "app"
 	const owner = "minicontainer:0123456789abcdef0123456789abcdef"
+
+	rollbackAdmission, err := dns.BeginHostRegistrationAttempt(networkName, cfg.ContainerID, cfg.Hostname, "172.28.41.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rollbackAdmission() }()
 
 	inspectCalls := 0
 	inspect := func(name string) (network.BridgeIPv4Profile, error) {
