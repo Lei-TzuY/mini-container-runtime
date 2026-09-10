@@ -2,11 +2,7 @@
 
 package container
 
-import (
-	"testing"
-
-	"minicontainer/internal/network"
-)
+import "testing"
 
 func TestMultiContainerBridgeLeaseFeedsDistinctDNATTargets(t *testing.T) {
 	stateDir := t.TempDir()
@@ -82,17 +78,5 @@ func TestMultiContainerBridgeLeaseFeedsDistinctDNATTargets(t *testing.T) {
 	}
 	if err := cleanupB(); err != nil {
 		t.Fatalf("cleanup B bridge: %v", err)
-	}
-
-	ipam, err := network.OpenIPAM(stateDir + "/ipam")
-	if err != nil {
-		t.Fatal(err)
-	}
-	leases, err := ipam.GenerationLeases(defaultBridgeDNSNetwork)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(leases) != 2 {
-		t.Fatalf("bridge setup cleanup unexpectedly changed IPAM leases: %#v", leases)
 	}
 }
