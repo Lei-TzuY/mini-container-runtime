@@ -88,12 +88,14 @@ func TestAttachVethHostToOwnedBridgeKernel(t *testing.T) {
 	if err == nil {
 		return
 	}
+	lowerOut := strings.ToLower(string(out))
+	lowerErr := strings.ToLower(err.Error())
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.ExitStatus() == 2 && strings.Contains(string(out), "operation not permitted") {
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.ExitStatus() == 2 && strings.Contains(lowerOut, "operation not permitted") {
 			t.Skipf("kernel/user namespace does not permit bridge integration test: %s", strings.TrimSpace(string(out)))
 		}
 	}
-	if strings.Contains(err.Error(), "operation not permitted") {
+	if strings.Contains(lowerErr, "operation not permitted") {
 		t.Skipf("kernel/user namespace creation unavailable: %v", err)
 	}
 	t.Fatalf("kernel bridge attachment regression failed: %v\n%s", err, out)
