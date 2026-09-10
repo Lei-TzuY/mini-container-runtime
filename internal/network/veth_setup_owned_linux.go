@@ -49,6 +49,12 @@ func SetupVethHostOwned(containerPID int, hostCIDR string, debug bool) error {
 // SetupVethHostGenerationOwned creates a generation-named veth carrying owner in
 // its kernel ifalias. The durable owner/name pair can therefore be persisted
 // before creation without making a failed name collision unsafe to reconcile.
+//
+// The peer intentionally keeps the historical fixed name until it crosses into
+// the child network namespace, where container init renames it to eth0. That
+// creates a host-netns collision window when independent runtimes start at the
+// same time, so managed setup serializes creation through peer handoff with a
+// cross-process flock.
 func SetupVethHostGenerationOwned(owner, hostName string, containerPID int, hostCIDR string, debug bool) error {
 	if err := validateGenerationNetworkOwner(owner); err != nil {
 		return fmt.Errorf("validate veth owner: %w", err)
@@ -59,7 +65,9 @@ func SetupVethHostGenerationOwned(owner, hostName string, containerPID int, host
 	if expected := VethHostIfaceOwned(owner); hostName != expected {
 		return fmt.Errorf("owned veth name %q does not match generation owner (want %q)", hostName, expected)
 	}
-	return setupVethHostNamedWithOps(hostName, containerPID, hostCIDR, debug, defaultVethHostSetupOpsForOwner(owner, hostName))
+	return withVethPeerHandoffLock(func() error {
+		return setupVethHostNamedWithOps(hostName, containerPID, hostCIDR, debug, defaultVethHostSetupOpsForOwner(owner, hostName))
+	})
 }
 
 func setupVethHostOwnedWithOps(containerPID int, hostCIDR string, debug bool, ops vethHostSetupOps) error {
