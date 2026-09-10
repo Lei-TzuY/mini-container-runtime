@@ -70,7 +70,7 @@ func TestVethPeerHandoffLockSerializesProcesses(t *testing.T) {
 		t.Fatalf("set second ready pipe nonblocking: %v", err)
 	}
 	var b [1]byte
-	_, err = secondReadyR.Read(b[:])
+	_, err = unix.Read(int(secondReadyR.Fd()), b[:])
 	if err == nil {
 		t.Fatal("second process acquired veth peer handoff lock while first process still held it")
 	}
