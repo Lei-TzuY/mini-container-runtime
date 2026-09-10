@@ -2,7 +2,10 @@
 
 package container
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
 
 func TestBridgeLeaseCrashRecoveryPreservesOtherLiveContainer(t *testing.T) {
 	stateDir := t.TempDir()
@@ -50,5 +53,82 @@ func TestBridgeLeaseCrashRecoveryPreservesOtherLiveContainer(t *testing.T) {
 	defer func() { _ = releaseBAgain() }()
 	if ipBAgain != ipB {
 		t.Fatalf("live container B moved from %q to %q during A crash recovery", ipB, ipBAgain)
+	}
+}
+
+func TestBridgeLeaseCrashRecoveryUsesRealProcessGenerations(t *testing.T) {
+	stateDir := t.TempDir()
+	startBlockedProcess := func() (*exec.Cmd, func()) {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", "read _")
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd, func() {
+			_ = stdin.Close()
+			_ = cmd.Wait()
+		}
+	}
+
+	cmdA, stopA := startBlockedProcess()
+	cmdB, stopB := startBlockedProcess()
+	defer stopB()
+
+	startA, err := ProcessStartTime(cmdA.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startB, err := ProcessStartTime(cmdB.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgA := Config{ContainerID: "real-a", StateDir: stateDir}
+	cfgB := Config{ContainerID: "real-b", StateDir: stateDir}
+	ipA, _, _, err := allocateRuntimeBridgeLease(cfgA, cmdA.Process.Pid, startA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipB, _, releaseB, err := allocateRuntimeBridgeLease(cfgB, cmdB.Process.Pid, startB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = releaseB() }()
+	if ipA == ipB {
+		t.Fatalf("live process generations received duplicate bridge IP %q", ipA)
+	}
+
+	if err := cmdA.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	stopA()
+
+	cmdC, stopC := startBlockedProcess()
+	defer stopC()
+	startC, err := ProcessStartTime(cmdC.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgC := Config{ContainerID: "real-a-restart", StateDir: stateDir}
+	ipC, _, releaseC, err := allocateRuntimeBridgeLease(cfgC, cmdC.Process.Pid, startC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = releaseC() }()
+	if ipC != ipA {
+		t.Fatalf("replacement process got %q, want crashed generation address %q", ipC, ipA)
+	}
+
+	ipBAgain, _, releaseBAgain, err := allocateRuntimeBridgeLease(cfgB, cmdB.Process.Pid, startB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = releaseBAgain() }()
+	if ipBAgain != ipB {
+		t.Fatalf("surviving real process moved from %q to %q during peer crash recovery", ipB, ipBAgain)
 	}
 }
