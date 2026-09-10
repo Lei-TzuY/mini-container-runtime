@@ -3,11 +3,9 @@
 package network
 
 import (
-	"errors"
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -66,19 +64,13 @@ func TestVethPeerHandoffLockSerializesProcesses(t *testing.T) {
 	_ = secondStartedW.Close()
 	readLockSignal(t, secondStartedR, "second started")
 
-	if err := unix.SetNonblock(int(secondReadyR.Fd()), true); err != nil {
-		t.Fatalf("set second ready pipe nonblocking: %v", err)
+	pollFDs := []unix.PollFd{{Fd: int32(secondReadyR.Fd()), Events: unix.POLLIN}}
+	ready, err := unix.Poll(pollFDs, 0)
+	if err != nil {
+		t.Fatalf("poll second acquisition while first holds lock: %v", err)
 	}
-	var b [1]byte
-	_, err = unix.Read(int(secondReadyR.Fd()), b[:])
-	if err == nil {
+	if ready != 0 || pollFDs[0].Revents != 0 {
 		t.Fatal("second process acquired veth peer handoff lock while first process still held it")
-	}
-	if !errors.Is(err, syscall.EAGAIN) && !errors.Is(err, syscall.EWOULDBLOCK) {
-		t.Fatalf("probe second acquisition while first holds lock: %v", err)
-	}
-	if err := unix.SetNonblock(int(secondReadyR.Fd()), false); err != nil {
-		t.Fatalf("restore blocking second ready pipe: %v", err)
 	}
 
 	if _, err := firstReleaseW.Write([]byte{1}); err != nil {
