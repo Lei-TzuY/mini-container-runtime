@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   integrate:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,30 +61,7 @@ jobs:
           marker = 'func TestCmdRunLeavesGenerationLifecycleToRuntime(t *testing.T) {'
           if text.count(marker) != 1:
               raise SystemExit('test anchor mismatch')
-          regression = r'''func TestParseRunConfigCustomNetworkImpliesBridge(t *testing.T) {
-\tcfg, err := parseRunConfig([]string{"--network", "frontend", "./rootfs", "/bin/true"})
-\tif err != nil {
-\t\tt.Fatalf("parseRunConfig returned error: %v", err)
-\t}
-\tif !cfg.BridgeNetwork {
-\t\tt.Fatal("BridgeNetwork = false, want true when --network is set")
-\t}
-\tif cfg.NetworkName != "frontend" {
-\t\tt.Fatalf("NetworkName = %q, want frontend", cfg.NetworkName)
-\t}
-}
-
-func TestParseRunConfigRejectsBlankCustomNetwork(t *testing.T) {
-\t_, err := parseRunConfig([]string{"--network", "   ", "./rootfs"})
-\tif err == nil {
-\t\tt.Fatal("parseRunConfig accepted blank --network")
-\t}
-\tif !strings.Contains(err.Error(), "--network must not be blank") {
-\t\tt.Fatalf("error = %q, want blank-network diagnostic", err)
-\t}
-}
-
-'''
+          regression = '''func TestParseRunConfigCustomNetworkImpliesBridge(t *testing.T) {\n\tcfg, err := parseRunConfig([]string{"--network", "frontend", "./rootfs", "/bin/true"})\n\tif err != nil {\n\t\tt.Fatalf("parseRunConfig returned error: %v", err)\n\t}\n\tif !cfg.BridgeNetwork {\n\t\tt.Fatal("BridgeNetwork = false, want true when --network is set")\n\t}\n\tif cfg.NetworkName != "frontend" {\n\t\tt.Fatalf("NetworkName = %q, want frontend", cfg.NetworkName)\n\t}\n}\n\nfunc TestParseRunConfigRejectsBlankCustomNetwork(t *testing.T) {\n\t_, err := parseRunConfig([]string{"--network", "   ", "./rootfs"})\n\tif err == nil {\n\t\tt.Fatal("parseRunConfig accepted blank --network")\n\t}\n\tif !strings.Contains(err.Error(), "--network must not be blank") {\n\t\tt.Fatalf("error = %q, want blank-network diagnostic", err)\n\t}\n}\n\n'''
           text = text.replace(marker, regression + marker)
           test.write_text(text)
           PY
