@@ -13,6 +13,13 @@ type Volume struct {
 	ReadOnly      bool
 }
 
+// TmpfsMount describes one kernel-backed tmpfs mount inside the container.
+// Options use OCI/Linux mount option spelling and are validated before mount.
+type TmpfsMount struct {
+	ContainerPath string
+	Options       []string
+}
+
 // PortMapping describes a host-to-container port forwarding rule.
 type PortMapping struct {
 	HostPort      int
@@ -107,6 +114,10 @@ type Config struct {
 
 	// Volumes is the list of host directories to bind-mount into the container.
 	Volumes []Volume
+
+	// TmpfsMounts is the list of kernel-backed tmpfs filesystems to mount inside
+	// the container before rootfs isolation and payload execution.
+	TmpfsMounts []TmpfsMount
 
 	// MaskedDirectories lists absolute container paths that must be hidden behind
 	// empty read-only tmpfs mounts before rootfs isolation and payload execution.
