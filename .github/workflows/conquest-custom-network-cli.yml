@@ -1,0 +1,104 @@
+name: Conquest Custom Network CLI
+
+on:
+  push:
+    branches:
+      - conquest/custom-network-cli
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: conquest/custom-network-cli
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Patch CLI and regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('cmd/minictl/main.go')
+          text = main.read_text()
+
+          old = '''  --bridge                Enable veth pair networking.\n  --seccomp               Install BPF syscall block-list.\n'''
+          new = '''  --bridge                Enable veth pair networking.\n  --network <name>        Attach to a named custom bridge network (implies --bridge).\n  --seccomp               Install BPF syscall block-list.\n'''
+          if text.count(old) != 1:
+              raise SystemExit('usage anchor mismatch')
+          text = text.replace(old, new)
+
+          old = '''\tbridge := fs.Bool("bridge", false, "enable veth pair networking")\n\tseccomp := fs.Bool("seccomp", false, "install seccomp BPF syscall block-list filter")\n'''
+          new = '''\tbridge := fs.Bool("bridge", false, "enable veth pair networking")\n\tnetworkName := fs.String("network", "", "attach to a named custom bridge network (implies --bridge)")\n\tseccomp := fs.Bool("seccomp", false, "install seccomp BPF syscall block-list filter")\n'''
+          if text.count(old) != 1:
+              raise SystemExit('flag anchor mismatch')
+          text = text.replace(old, new)
+
+          old = '''\tname := strings.TrimSpace(*hostname)\n\tif name == "" {\n\t\tname = defaultHostname\n\t}\n\n\tports := make([]container.PortMapping, 0, len(rawPorts))\n'''
+          new = '''\tname := strings.TrimSpace(*hostname)\n\tif name == "" {\n\t\tname = defaultHostname\n\t}\n\n\tselectedNetwork := strings.TrimSpace(*networkName)\n\tif *networkName != "" && selectedNetwork == "" {\n\t\treturn container.Config{}, fmt.Errorf("--network must not be blank")\n\t}\n\n\tports := make([]container.PortMapping, 0, len(rawPorts))\n'''
+          if text.count(old) != 1:
+              raise SystemExit('validation anchor mismatch')
+          text = text.replace(old, new)
+
+          old = '''\t\tBridgeNetwork: *bridge,\n\t\tSeccomp:       *seccomp,\n'''
+          new = '''\t\tBridgeNetwork: *bridge || selectedNetwork != "",\n\t\tNetworkName:   selectedNetwork,\n\t\tSeccomp:       *seccomp,\n'''
+          if text.count(old) != 1:
+              raise SystemExit('config anchor mismatch')
+          text = text.replace(old, new)
+          main.write_text(text)
+
+          test = Path('cmd/minictl/main_test.go')
+          text = test.read_text()
+          marker = 'func TestCmdRunLeavesGenerationLifecycleToRuntime(t *testing.T) {'
+          if text.count(marker) != 1:
+              raise SystemExit('test anchor mismatch')
+          regression = r'''func TestParseRunConfigCustomNetworkImpliesBridge(t *testing.T) {
+\tcfg, err := parseRunConfig([]string{"--network", "frontend", "./rootfs", "/bin/true"})
+\tif err != nil {
+\t\tt.Fatalf("parseRunConfig returned error: %v", err)
+\t}
+\tif !cfg.BridgeNetwork {
+\t\tt.Fatal("BridgeNetwork = false, want true when --network is set")
+\t}
+\tif cfg.NetworkName != "frontend" {
+\t\tt.Fatalf("NetworkName = %q, want frontend", cfg.NetworkName)
+\t}
+}
+
+func TestParseRunConfigRejectsBlankCustomNetwork(t *testing.T) {
+\t_, err := parseRunConfig([]string{"--network", "   ", "./rootfs"})
+\tif err == nil {
+\t\tt.Fatal("parseRunConfig accepted blank --network")
+\t}
+\tif !strings.Contains(err.Error(), "--network must not be blank") {
+\t\tt.Fatalf("error = %q, want blank-network diagnostic", err)
+\t}
+}
+
+'''
+          text = text.replace(marker, regression + marker)
+          test.write_text(text)
+          PY
+
+          gofmt -w cmd/minictl/main.go cmd/minictl/main_test.go
+          go vet ./...
+          go test ./...
+
+      - name: Commit validated integration
+        shell: bash
+        run: |
+          rm .github/workflows/conquest-custom-network-cli.yml
+          git config user.name "LeiZ"
+          git config user.email "52287354+Lei-TzuY@users.noreply.github.com"
+          git add cmd/minictl/main.go cmd/minictl/main_test.go .github/workflows/conquest-custom-network-cli.yml
+          git commit -m "feat(network): expose custom network selection in run CLI"
+          git push origin HEAD:conquest/custom-network-cli
