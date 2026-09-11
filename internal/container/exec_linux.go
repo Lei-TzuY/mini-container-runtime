@@ -1,15 +1,5 @@
 //go:build linux
 
-// internal/container/exec_linux.go
-//
-// `minictl exec` — Enter an Existing Container
-// ─────────────────────────────────────────────
-// setns(CLONE_NEWPID) changes only the PID namespace used for subsequently
-// created children; it does not move the calling process itself. Therefore the
-// exec-init helper must join namespaces first and then spawn the payload as a
-// child. Directly calling execve after PID setns would leave the payload in the
-// caller's original PID namespace.
-
 package container
 
 import (
@@ -89,9 +79,10 @@ func Exec(cfg ExecConfig) error {
 	if err != nil {
 		return err
 	}
-	// Bind observability to the same verified process generation that the exec
-	// bootstrap will enter. Direct/internal Exec callers without a staged CLI
-	// event remain unaffected because the binder is a no-op when nothing is staged.
+	environment, err := persistedExecEnvironment(cfg.ContainerPID, cfg.RootFS)
+	if err != nil {
+		return err
+	}
 	if err := events.BindPendingExecAttribution(cfg.ContainerPID, expectedStartTime, cfg.Command); err != nil {
 		return fmt.Errorf("bind exec lifecycle attribution: %w", err)
 	}
@@ -107,7 +98,7 @@ func Exec(cfg ExecConfig) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime), execWorkDirKey+"="+workDir)
+	cmd.Env = append(environment, execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime), execWorkDirKey+"="+workDir)
 	if err := runExecInitCommand(cmd); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
@@ -122,6 +113,7 @@ func persistedExecStartTime(containerPID int, rootFS string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open container state for exec identity: %w", err)
 	}
+	defer store.Close()
 	records, err := store.List()
 	if err != nil {
 		return 0, fmt.Errorf("list container state for exec identity: %w", err)
@@ -152,15 +144,15 @@ func persistedExecStartTime(containerPID int, rootFS string) (uint64, error) {
 	return match.PIDStartTime, nil
 }
 
-func persistedExecWorkDir(containerPID int, rootFS string) (string, error) {
+func persistedExecSpec(containerPID int, rootFS, purpose string) (state.RestartSpec, error) {
 	store, err := state.Open(state.DefaultDir())
 	if err != nil {
-		return "", fmt.Errorf("open container state for exec workdir: %w", err)
+		return state.RestartSpec{}, fmt.Errorf("open container state for exec %s: %w", purpose, err)
 	}
 	defer store.Close()
 	records, err := store.List()
 	if err != nil {
-		return "", fmt.Errorf("list container state for exec workdir: %w", err)
+		return state.RestartSpec{}, fmt.Errorf("list container state for exec %s: %w", purpose, err)
 	}
 	var match *state.Container
 	for _, rec := range records {
@@ -168,28 +160,65 @@ func persistedExecWorkDir(containerPID int, rootFS string) (string, error) {
 			continue
 		}
 		if match != nil {
-			return "", fmt.Errorf("ambiguous persisted exec workdir for PID %d", containerPID)
+			return state.RestartSpec{}, fmt.Errorf("ambiguous persisted exec %s for PID %d", purpose, containerPID)
 		}
 		match = rec
 	}
 	if match == nil {
-		return "", fmt.Errorf("no running container state matches exec PID %d and rootfs %q", containerPID, rootFS)
+		return state.RestartSpec{}, fmt.Errorf("no running container state matches exec PID %d and rootfs %q", containerPID, rootFS)
 	}
 	spec, err := store.RestartSpec(match.ID)
+	if err != nil {
+		return state.RestartSpec{}, fmt.Errorf("load container %s exec %s: %w", match.ID, purpose, err)
+	}
+	return spec, nil
+}
+
+func persistedExecWorkDir(containerPID int, rootFS string) (string, error) {
+	spec, err := persistedExecSpec(containerPID, rootFS, "workdir")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "/", nil
 		}
-		return "", fmt.Errorf("load container %s exec workdir: %w", match.ID, err)
+		return "", err
 	}
 	workDir := spec.WorkDir
 	if workDir == "" {
 		return "/", nil
 	}
 	if !filepath.IsAbs(workDir) {
-		return "", fmt.Errorf("container %s persisted exec workdir %q is not absolute", match.ID, workDir)
+		return "", fmt.Errorf("persisted exec workdir %q is not absolute", workDir)
 	}
 	return filepath.Clean(workDir), nil
+}
+
+func persistedExecEnvironment(containerPID int, rootFS string) ([]string, error) {
+	spec, err := persistedExecSpec(containerPID, rootFS, "environment")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.Environ(), nil
+		}
+		return nil, err
+	}
+	return mergeEnvironment(os.Environ(), spec.Env), nil
+}
+
+func mergeEnvironment(base, overrides []string) []string {
+	out := make([]string, 0, len(base)+len(overrides))
+	index := make(map[string]int, len(base)+len(overrides))
+	for _, entry := range append(append([]string(nil), base...), overrides...) {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name == "" {
+			continue
+		}
+		if i, exists := index[name]; exists {
+			out[i] = entry
+			continue
+		}
+		index[name] = len(out)
+		out = append(out, entry)
+	}
+	return out
 }
 
 func requireExecTargetAlive(targets *execTargets, phase string) error {
@@ -213,7 +242,6 @@ func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, 
 	if expectedStartTime == 0 {
 		return nil, fmt.Errorf("missing persisted PID start time for exec target %d", containerPID)
 	}
-
 	process, err := OpenProcessHandle(containerPID, expectedStartTime)
 	if err != nil {
 		return nil, fmt.Errorf("exec target PID %d does not match persisted identity %d: %w", containerPID, expectedStartTime, err)
@@ -226,24 +254,16 @@ func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, 
 	if err := requireExecTargetAlive(targets, "before namespace capture"); err != nil {
 		return fail(err)
 	}
-
 	rootPath := fmt.Sprintf("/proc/%d/root", containerPID)
 	rootFD, err := unix.Open(rootPath, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return fail(fmt.Errorf("open %s: %w", rootPath, err))
 	}
 	targets.rootFD = rootFD
-
 	nsSpecs := []struct {
 		name string
 		flag int
-	}{
-		{"net", unix.CLONE_NEWNET},
-		{"ipc", unix.CLONE_NEWIPC},
-		{"uts", unix.CLONE_NEWUTS},
-		{"pid", unix.CLONE_NEWPID},
-		{"mnt", unix.CLONE_NEWNS},
-	}
+	}{{"net", unix.CLONE_NEWNET}, {"ipc", unix.CLONE_NEWIPC}, {"uts", unix.CLONE_NEWUTS}, {"pid", unix.CLONE_NEWPID}, {"mnt", unix.CLONE_NEWNS}}
 	for _, spec := range nsSpecs {
 		nsPath := fmt.Sprintf("/proc/%d/ns/%s", containerPID, spec.name)
 		fd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
@@ -255,11 +275,6 @@ func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, 
 		}
 		targets.ns = append(targets.ns, execNamespaceTarget{name: spec.name, flag: spec.flag, fd: fd})
 	}
-
-	// The pidfd proves liveness of the exact process generation while the final
-	// start-time check proves that every pathname-based /proc capture above still
-	// referred to the same numeric PID. Both are required: a pidfd alone cannot
-	// bind later /proc/<pid> pathname opens to the original process after reuse.
 	endStartTime, err := ProcessStartTime(containerPID)
 	if err != nil {
 		return fail(fmt.Errorf("recheck exec target identity for PID %d: %w", containerPID, err))
@@ -291,7 +306,6 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 		return err
 	}
 	defer startWriter.Close()
-
 	runtime.LockOSThread()
 	if err := prepareExecThread(); err != nil {
 		return err
@@ -304,7 +318,6 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 		return err
 	}
 	defer targets.close()
-
 	for _, ns := range targets.ns {
 		if err := unix.Setns(ns.fd, ns.flag); err != nil {
 			return fmt.Errorf("setns(%s): %w", ns.name, err)
@@ -325,10 +338,6 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if err := enterWorkDir(workDir); err != nil {
 		return fmt.Errorf("enter exec workdir: %w", err)
 	}
-
-	// setns and chroot can take long enough for the target init to exit. A
-	// stopped generation must not admit a new exec payload merely because its
-	// namespace/root descriptors were captured while it was still alive.
 	if err := requireExecTargetAlive(targets, "immediately before payload spawn"); err != nil {
 		return err
 	}
