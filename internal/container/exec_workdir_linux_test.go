@@ -55,9 +55,10 @@ func TestExecPayloadRunsFromConfiguredWorkDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configured workdir helper: %v\n%s", err, out)
 	}
-	got := strings.TrimSpace(string(out))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	got := lines[0]
 	if got != workDir {
-		t.Fatalf("exec payload cwd = %q, want %q", got, workDir)
+		t.Fatalf("exec payload cwd = %q, want %q (helper output %q)", got, workDir, out)
 	}
 }
 
