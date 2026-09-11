@@ -96,6 +96,13 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 			ReadOnly:      v.ReadOnly,
 		})
 	}
+	tmpfsMounts := make([]container.TmpfsMount, 0, len(spec.TmpfsMounts))
+	for _, mount := range spec.TmpfsMounts {
+		tmpfsMounts = append(tmpfsMounts, container.TmpfsMount{
+			ContainerPath: mount.ContainerPath,
+			Options:       append([]string(nil), mount.Options...),
+		})
+	}
 
 	cfg := container.Config{
 		ContainerID:       rec.ID,
@@ -120,6 +127,7 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		NetworkName:       spec.NetworkName,
 		PortMappings:      portMappings,
 		Volumes:           volumes,
+		TmpfsMounts:       tmpfsMounts,
 		MaskedDirectories: append([]string(nil), spec.MaskedDirectories...),
 		UserNS:            spec.UserNS,
 		CgroupNS:          spec.CgroupNS,
