@@ -53,6 +53,7 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 		PidsLimit:       16,
 		Seccomp:         true,
 		BridgeNetwork:   true,
+		NetworkName:     "frontend",
 		PortMappings: []state.RestartPortMapping{{
 			HostPort: 18080, ContainerPort: 8080, Protocol: "tcp",
 		}},
@@ -99,6 +100,9 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	}
 	if gotCfg.Overlay != wantSpec.Overlay || gotCfg.ReadOnly != wantSpec.ReadOnly || gotCfg.Restart != wantSpec.Restart || gotCfg.Seccomp != wantSpec.Seccomp || gotCfg.NoNewPrivileges != wantSpec.NoNewPrivileges || gotCfg.BridgeNetwork != wantSpec.BridgeNetwork || gotCfg.Debug != wantSpec.Debug {
 		t.Fatalf("restart config isolation policy = %#v", gotCfg)
+	}
+	if gotCfg.NetworkName != wantSpec.NetworkName {
+		t.Fatalf("restart config network name = %q, want %q", gotCfg.NetworkName, wantSpec.NetworkName)
 	}
 	if gotCfg.Memory != wantSpec.Memory || gotCfg.CPUWeight != wantSpec.CPUWeight || gotCfg.CPUs != wantSpec.CPUs || gotCfg.PidsLimit != wantSpec.PidsLimit {
 		t.Fatalf("restart config resource policy = %#v", gotCfg)
