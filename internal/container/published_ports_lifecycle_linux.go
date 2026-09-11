@@ -8,6 +8,7 @@ import (
 
 	"minicontainer/internal/dns"
 	"minicontainer/internal/events"
+	"minicontainer/internal/network"
 	"minicontainer/internal/state"
 )
 
@@ -15,18 +16,20 @@ const defaultBridgeDNSNetwork = "default"
 const defaultBridgeContainerIP = "172.20.0.2"
 
 type networkAdmissionDeps struct {
-	validateDNSRootFS func(rootfsPath, networkName string) error
-	beginDNSAttempt   func(networkName, containerID, hostname, ipAddr string) (func() error, error)
-	registerDNSHost   func(networkName, containerID, hostname, ipAddr string) error
-	unregisterDNSHost func(networkName, containerID string) error
+	validateDNSRootFS    func(rootfsPath, networkName string) error
+	beginDNSAttempt      func(networkName, containerID, hostname, ipAddr string) (func() error, error)
+	registerDNSHost      func(networkName, containerID, hostname, ipAddr string) error
+	unregisterDNSHost    func(networkName, containerID string) error
+	inspectBridgeProfile func(networkName string) (network.BridgeIPv4Profile, error)
 }
 
 func defaultNetworkAdmissionDeps() networkAdmissionDeps {
 	return networkAdmissionDeps{
-		validateDNSRootFS: dns.InjectHostsIntoRootFS,
-		beginDNSAttempt:   dns.BeginHostRegistrationAttempt,
-		registerDNSHost:   dns.RegisterHost,
-		unregisterDNSHost: dns.UnregisterHostOwned,
+		validateDNSRootFS:    dns.InjectHostsIntoRootFS,
+		beginDNSAttempt:      dns.BeginHostRegistrationAttempt,
+		registerDNSHost:      dns.RegisterHost,
+		unregisterDNSHost:    dns.UnregisterHostOwned,
+		inspectBridgeProfile: network.InspectBridgeIPv4Owned,
 	}
 }
 
@@ -139,6 +142,9 @@ func beginNetworkAttemptAdmission(cfg Config, lifecycleStore *state.Store) (func
 // cannot consume a newer identical registration from the same registrar. Legacy
 // injected register/unregister callbacks remain supported for focused tests.
 func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, deps networkAdmissionDeps) (func() error, error) {
+	if cfg.NetworkName != "" && !cfg.BridgeNetwork {
+		return nil, &runtimeSetupError{err: fmt.Errorf("custom network %q requires bridge networking", cfg.NetworkName)}
+	}
 	if len(cfg.PortMappings) > 0 && !cfg.BridgeNetwork {
 		return nil, &runtimeSetupError{err: fmt.Errorf("published ports require bridge networking")}
 	}
@@ -160,12 +166,27 @@ func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, d
 	if deps.validateDNSRootFS == nil || (deps.beginDNSAttempt == nil && (deps.registerDNSHost == nil || deps.unregisterDNSHost == nil)) {
 		return nil, &runtimeSetupError{err: fmt.Errorf("bridge DNS admission dependencies are incomplete")}
 	}
-	if err := deps.validateDNSRootFS(cfg.RootFS, defaultBridgeDNSNetwork); err != nil {
+
+	dnsNetwork := defaultBridgeDNSNetwork
+	admissionIP := defaultBridgeContainerIP
+	if cfg.NetworkName != "" {
+		if deps.inspectBridgeProfile == nil {
+			return nil, &runtimeSetupError{err: fmt.Errorf("custom bridge profile inspector is nil")}
+		}
+		profile, err := deps.inspectBridgeProfile(cfg.NetworkName)
+		if err != nil {
+			return nil, &runtimeSetupError{err: fmt.Errorf("inspect custom bridge network %s: %w", cfg.NetworkName, err)}
+		}
+		dnsNetwork = cfg.NetworkName
+		admissionIP = profile.Gateway
+	}
+
+	if err := deps.validateDNSRootFS(cfg.RootFS, dnsNetwork); err != nil {
 		return nil, &runtimeSetupError{err: fmt.Errorf("validate bridge DNS rootfs: %w", err)}
 	}
 
 	if deps.beginDNSAttempt != nil {
-		dnsRollback, err := deps.beginDNSAttempt(defaultBridgeDNSNetwork, cfg.ContainerID, cfg.Hostname, defaultBridgeContainerIP)
+		dnsRollback, err := deps.beginDNSAttempt(dnsNetwork, cfg.ContainerID, cfg.Hostname, admissionIP)
 		if err != nil {
 			return nil, &runtimeSetupError{err: fmt.Errorf("register bridge DNS host: %w", err)}
 		}
@@ -180,11 +201,11 @@ func beginNetworkAttemptAdmissionWith(cfg Config, lifecycleStore *state.Store, d
 		}, nil
 	}
 
-	if err := deps.registerDNSHost(defaultBridgeDNSNetwork, cfg.ContainerID, cfg.Hostname, defaultBridgeContainerIP); err != nil {
+	if err := deps.registerDNSHost(dnsNetwork, cfg.ContainerID, cfg.Hostname, admissionIP); err != nil {
 		return nil, &runtimeSetupError{err: fmt.Errorf("register bridge DNS host: %w", err)}
 	}
 	rollback := func() error {
-		if err := deps.unregisterDNSHost(defaultBridgeDNSNetwork, cfg.ContainerID); err != nil {
+		if err := deps.unregisterDNSHost(dnsNetwork, cfg.ContainerID); err != nil {
 			return fmt.Errorf("unregister bridge DNS host: %w", err)
 		}
 		return nil
