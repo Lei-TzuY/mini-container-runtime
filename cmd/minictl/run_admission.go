@@ -147,6 +147,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		PidsLimit:         cfg.PidsLimit,
 		Seccomp:           cfg.Seccomp,
 		BridgeNetwork:     cfg.BridgeNetwork,
+		NetworkName:       cfg.NetworkName,
 		PortMappings:      portMappings,
 		Volumes:           volumes,
 		MaskedDirectories: append([]string(nil), cfg.MaskedDirectories...),
