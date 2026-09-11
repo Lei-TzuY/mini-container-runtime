@@ -142,11 +142,22 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		CapDrop:         capDrop,
 	}
 	for _, mount := range spec.Mounts {
-		volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)
-		if err != nil {
-			return container.Config{}, err
+		switch mount.Type {
+		case "bind":
+			volume, err := translateOCIBindMount(mount.Destination, mount.Type, mount.Source, mount.Options)
+			if err != nil {
+				return container.Config{}, err
+			}
+			cfg.Volumes = append(cfg.Volumes, volume)
+		case "tmpfs":
+			tmpfsMount, err := translateOCITmpfsMount(mount.Destination, mount.Source, mount.Options)
+			if err != nil {
+				return container.Config{}, err
+			}
+			cfg.TmpfsMounts = append(cfg.TmpfsMounts, tmpfsMount)
+		default:
+			return container.Config{}, fmt.Errorf("unsupported OCI mount type %q", mount.Type)
 		}
-		cfg.Volumes = append(cfg.Volumes, volume)
 	}
 	if spec.Linux != nil {
 		seenNamespaces := make(map[string]struct{}, len(spec.Linux.Namespaces))
@@ -369,6 +380,23 @@ func translateOCIBindMount(destination, mountType, source string, options []stri
 		}
 	}
 	return container.Volume{HostPath: filepath.Clean(source), ContainerPath: filepath.Clean(destination), ReadOnly: readonly}, nil
+}
+
+func translateOCITmpfsMount(destination, source string, options []string) (container.TmpfsMount, error) {
+	if runtime.GOOS != "linux" {
+		return container.TmpfsMount{}, fmt.Errorf("OCI tmpfs mounts require linux")
+	}
+	if source != "" && source != "tmpfs" {
+		return container.TmpfsMount{}, fmt.Errorf("OCI tmpfs mount source %q must be empty or tmpfs", source)
+	}
+	if !filepath.IsAbs(destination) || filepath.Clean(destination) == "/" {
+		return container.TmpfsMount{}, fmt.Errorf("OCI tmpfs mount destination %q must be an absolute path below root", destination)
+	}
+	clean := filepath.Clean(destination)
+	if clean != destination {
+		return container.TmpfsMount{}, fmt.Errorf("OCI tmpfs mount destination %q must be canonical", destination)
+	}
+	return container.TmpfsMount{ContainerPath: clean, Options: append([]string(nil), options...)}, nil
 }
 
 func translateOCIReadonlyPaths(rootfs string, paths []string) ([]container.Volume, error) {
