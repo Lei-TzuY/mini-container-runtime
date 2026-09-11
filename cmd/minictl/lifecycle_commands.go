@@ -13,9 +13,9 @@ import (
 )
 
 type stopCommandOptions struct {
-	containerID   string
-	timeout       time.Duration
-	signal        string
+	containerID    string
+	timeout        time.Duration
+	signal         string
 	signalExplicit bool
 }
 
