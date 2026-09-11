@@ -48,6 +48,7 @@ type RestartSpec struct {
 	PidsLimit         int64                `json:"pids_limit,omitempty"`
 	Seccomp           bool                 `json:"seccomp,omitempty"`
 	BridgeNetwork     bool                 `json:"bridge_network,omitempty"`
+	NetworkName       string               `json:"network_name,omitempty"`
 	PortMappings      []RestartPortMapping `json:"port_mappings,omitempty"`
 	Volumes           []RestartVolume      `json:"volumes,omitempty"`
 	MaskedDirectories []string             `json:"masked_directories,omitempty"`
