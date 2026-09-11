@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"minicontainer/internal/events"
@@ -182,12 +183,81 @@ func cleanupExecPayloadProcessGroup(pgid int) error {
 	return nil
 }
 
+func execPayloadSecurityPolicy(env []string) ([]string, *syscall.Credential, *uint32, error) {
+	clean := make([]string, 0, len(env))
+	markers := make(map[string]string, 4)
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			clean = append(clean, entry)
+			continue
+		}
+		switch name {
+		case processUIDEnv, processGIDEnv, processGroupsEnv, processUmaskEnv:
+			markers[name] = value
+		default:
+			clean = append(clean, entry)
+		}
+	}
+
+	uidRaw, hasUID := markers[processUIDEnv]
+	gidRaw, hasGID := markers[processGIDEnv]
+	groupsRaw, hasGroups := markers[processGroupsEnv]
+	var credential *syscall.Credential
+	if hasUID || hasGID || hasGroups {
+		if !hasUID || !hasGID || !hasGroups {
+			return nil, nil, nil, fmt.Errorf("incomplete exec process user runtime markers")
+		}
+		uid, err := strconv.ParseUint(uidRaw, 10, 32)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid exec process uid runtime marker %q: %w", uidRaw, err)
+		}
+		gid, err := strconv.ParseUint(gidRaw, 10, 32)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid exec process gid runtime marker %q: %w", gidRaw, err)
+		}
+		var groups []uint32
+		if groupsRaw != "" {
+			for _, raw := range strings.Split(groupsRaw, ",") {
+				value, err := strconv.ParseUint(raw, 10, 32)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("invalid exec process groups runtime marker %q: %w", groupsRaw, err)
+				}
+				groups = append(groups, uint32(value))
+			}
+		}
+		credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
+	}
+
+	var umask *uint32
+	if raw, ok := markers[processUmaskEnv]; ok {
+		value, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid exec process umask runtime marker %q: %w", raw, err)
+		}
+		if value > 0o777 {
+			return nil, nil, nil, fmt.Errorf("invalid exec process umask runtime marker %q: exceeds 0777", raw)
+		}
+		parsed := uint32(value)
+		umask = &parsed
+	}
+	return clean, credential, umask, nil
+}
+
 func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdout, stderr io.Writer, startWriter *os.File) error {
 	if len(command) == 0 || command[0] == "" {
 		if startWriter != nil {
 			_ = startWriter.Close()
 		}
 		return fmt.Errorf("exec command is empty")
+	}
+
+	payloadEnv, credential, payloadUmask, err := execPayloadSecurityPolicy(env)
+	if err != nil {
+		if startWriter != nil {
+			_ = startWriter.Close()
+		}
+		return err
 	}
 
 	// ExecInit remains alive after setns(CLONE_NEWPID) because it must spawn the
@@ -200,15 +270,23 @@ func runExecPayloadWithStartSignal(command, env []string, stdin io.Reader, stdou
 	defer signal.Stop(forwardedSignals)
 
 	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = env
+	cmd.Env = payloadEnv
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	// Keep each exec workload in a dedicated process group. Lifecycle signals
 	// delivered to exec-init apply to the workload, not only its leader; group
 	// delivery prevents descendants from surviving a handled leader signal.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: credential}
+	oldUmask := -1
+	if payloadUmask != nil {
+		oldUmask = syscall.Umask(int(*payloadUmask))
+	}
+	err = cmd.Start()
+	if oldUmask >= 0 {
+		syscall.Umask(oldUmask)
+	}
+	if err != nil {
 		if startWriter != nil {
 			_ = startWriter.Close()
 		}
