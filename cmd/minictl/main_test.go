@@ -150,6 +150,29 @@ func TestParseRunConfig(t *testing.T) {
 	}
 }
 
+func TestParseRunConfigCustomNetworkImpliesBridge(t *testing.T) {
+	cfg, err := parseRunConfig([]string{"--network", "frontend", "./rootfs", "/bin/true"})
+	if err != nil {
+		t.Fatalf("parseRunConfig returned error: %v", err)
+	}
+	if !cfg.BridgeNetwork {
+		t.Fatal("BridgeNetwork = false, want true when --network is set")
+	}
+	if cfg.NetworkName != "frontend" {
+		t.Fatalf("NetworkName = %q, want frontend", cfg.NetworkName)
+	}
+}
+
+func TestParseRunConfigRejectsBlankCustomNetwork(t *testing.T) {
+	_, err := parseRunConfig([]string{"--network", "   ", "./rootfs"})
+	if err == nil {
+		t.Fatal("parseRunConfig accepted blank --network")
+	}
+	if !strings.Contains(err.Error(), "--network must not be blank") {
+		t.Fatalf("error = %q, want blank-network diagnostic", err)
+	}
+}
+
 func TestCmdRunLeavesGenerationLifecycleToRuntime(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
