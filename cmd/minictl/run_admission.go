@@ -130,6 +130,13 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 			ReadOnly:      v.ReadOnly,
 		})
 	}
+	tmpfsMounts := make([]state.RestartTmpfsMount, 0, len(cfg.TmpfsMounts))
+	for _, mount := range cfg.TmpfsMounts {
+		tmpfsMounts = append(tmpfsMounts, state.RestartTmpfsMount{
+			ContainerPath: mount.ContainerPath,
+			Options:       append([]string(nil), mount.Options...),
+		})
+	}
 	restartSpec := state.RestartSpec{
 		RootFS:            rootfs,
 		Command:           append([]string(nil), runtimeCommand...),
@@ -150,6 +157,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		NetworkName:       cfg.NetworkName,
 		PortMappings:      portMappings,
 		Volumes:           volumes,
+		TmpfsMounts:       tmpfsMounts,
 		MaskedDirectories: append([]string(nil), cfg.MaskedDirectories...),
 		UserNS:            cfg.UserNS,
 		CgroupNS:          cfg.CgroupNS,
