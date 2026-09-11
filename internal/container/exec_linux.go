@@ -200,7 +200,26 @@ func persistedExecEnvironment(containerPID int, rootFS string) ([]string, error)
 		}
 		return nil, err
 	}
-	return mergeEnvironment(os.Environ(), spec.Env), nil
+	env := mergeEnvironment(os.Environ(), spec.Env)
+	if !spec.ProcessUserSet {
+		return env, nil
+	}
+	groups := make([]string, 0, len(spec.ProcessGroups))
+	for _, gid := range spec.ProcessGroups {
+		groups = append(groups, strconv.FormatUint(uint64(gid), 10))
+	}
+	markers := []string{
+		processUIDEnv + "=" + strconv.FormatUint(uint64(spec.ProcessUID), 10),
+		processGIDEnv + "=" + strconv.FormatUint(uint64(spec.ProcessGID), 10),
+		processGroupsEnv + "=" + strings.Join(groups, ","),
+	}
+	if spec.ProcessUmaskSet {
+		if spec.ProcessUmask > 0o777 {
+			return nil, fmt.Errorf("persisted exec process umask %#o exceeds 0777", spec.ProcessUmask)
+		}
+		markers = append(markers, processUmaskEnv+"="+strconv.FormatUint(uint64(spec.ProcessUmask), 10))
+	}
+	return mergeEnvironment(env, markers), nil
 }
 
 func mergeEnvironment(base, overrides []string) []string {
