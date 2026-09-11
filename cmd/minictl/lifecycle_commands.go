@@ -9,12 +9,14 @@ import (
 
 	"minicontainer/internal/container"
 	"minicontainer/internal/events"
+	"minicontainer/internal/state"
 )
 
 type stopCommandOptions struct {
-	containerID string
-	timeout     time.Duration
-	signal      string
+	containerID   string
+	timeout       time.Duration
+	signal        string
+	signalExplicit bool
 }
 
 func parseStopCommandArgs(args []string) (stopCommandOptions, error) {
@@ -25,8 +27,8 @@ func parseStopCommandArgs(args []string) (stopCommandOptions, error) {
 	var signal string
 	fs.IntVar(&timeoutSec, "t", 10, "seconds to wait for stop before killing")
 	fs.IntVar(&timeoutSec, "timeout", 10, "seconds to wait for stop before killing")
-	fs.StringVar(&signal, "s", "SIGTERM", "graceful signal to send before timeout")
-	fs.StringVar(&signal, "signal", "SIGTERM", "graceful signal to send before timeout")
+	fs.StringVar(&signal, "s", "", "override graceful signal to send before timeout")
+	fs.StringVar(&signal, "signal", "", "override graceful signal to send before timeout")
 	if err := fs.Parse(args); err != nil {
 		return stopCommandOptions{}, err
 	}
@@ -37,17 +39,26 @@ func parseStopCommandArgs(args []string) (stopCommandOptions, error) {
 	if int64(timeoutSec) > maxSeconds {
 		return stopCommandOptions{}, fmt.Errorf("stop timeout is too large")
 	}
-	if _, err := container.ParseSignal(signal); err != nil {
-		return stopCommandOptions{}, err
+	signalExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "s" || f.Name == "signal" {
+			signalExplicit = true
+		}
+	})
+	if signalExplicit {
+		if _, err := container.ParseSignal(signal); err != nil {
+			return stopCommandOptions{}, err
+		}
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
 		return stopCommandOptions{}, fmt.Errorf("expected exactly one container id")
 	}
 	return stopCommandOptions{
-		containerID: rest[0],
-		timeout:     time.Duration(timeoutSec) * time.Second,
-		signal:      signal,
+		containerID:    rest[0],
+		timeout:        time.Duration(timeoutSec) * time.Second,
+		signal:         signal,
+		signalExplicit: signalExplicit,
 	}, nil
 }
 
@@ -76,6 +87,13 @@ func parseKillCommandArgs(args []string) (killCommandOptions, error) {
 	return killCommandOptions{containerID: rest[0], signal: signal}, nil
 }
 
+func stopContainerForOptions(store *state.Store, opts stopCommandOptions) (*state.Container, error) {
+	if opts.signalExplicit {
+		return container.StopContainerWithSignal(store, opts.containerID, opts.signal, opts.timeout)
+	}
+	return container.StopContainer(store, opts.containerID, opts.timeout)
+}
+
 func cmdStopSafe(args []string) {
 	opts, err := parseStopCommandArgs(args)
 	if err != nil {
@@ -89,12 +107,16 @@ func cmdStopSafe(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	rec, err := container.StopContainerWithSignal(store, opts.containerID, opts.signal, opts.timeout)
+	rec, err := stopContainerForOptions(store, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stop error: %v\n", err)
 		os.Exit(1)
 	}
-	_ = events.Publish(events.EventStop, rec.ID, rec.RootFS, fmt.Sprintf("stopped container process identity with %s", opts.signal))
+	stopDetail := "stopped container process identity with configured stop signal"
+	if opts.signalExplicit {
+		stopDetail = fmt.Sprintf("stopped container process identity with %s", opts.signal)
+	}
+	_ = events.Publish(events.EventStop, rec.ID, rec.RootFS, stopDetail)
 	fmt.Printf("%s\n", shortContainerID(rec.ID))
 }
 
