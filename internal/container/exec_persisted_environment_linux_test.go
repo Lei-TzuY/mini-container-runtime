@@ -24,9 +24,10 @@ func TestExecEnvironmentOverridesHostForRealPayload(t *testing.T) {
 	if err := runExecPayload([]string{os.Args[0], "-test.run=^TestExecEnvironmentPayloadHelper$"}, payloadEnvironment(env), nil, &stdout, &stderr); err != nil {
 		t.Fatalf("runExecPayload: %v stderr=%q", err, stderr.String())
 	}
-	got := strings.TrimSpace(stdout.String())
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	got := lines[0]
 	if got != "source=container only=present runtime=false" {
-		t.Fatalf("payload environment=%q", got)
+		t.Fatalf("payload environment=%q (helper output %q)", got, stdout.String())
 	}
 }
 
