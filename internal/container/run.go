@@ -169,6 +169,10 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("prepare masked directory policy: %w", err)
 	}
+	cmd.Env, err = appendTmpfsMountsEnv(cmd.Env, cfg.TmpfsMounts)
+	if err != nil {
+		return fmt.Errorf("prepare tmpfs mount policy: %w", err)
+	}
 
 	overlayWorkDir, err := createParentOverlayWorkDir(cfg.Overlay, os.MkdirTemp)
 	if err != nil {
@@ -560,6 +564,16 @@ func ContainerInit(cfg Config) (resultErr error) {
 	for _, v := range cfg.Volumes {
 		if err := mountVolume(v, targetRootFS, cfg.Debug); err != nil {
 			return fmt.Errorf("volume %s:%s: %w", v.HostPath, v.ContainerPath, err)
+		}
+	}
+
+	tmpfsMounts, err := consumeTmpfsMountsEnv()
+	if err != nil {
+		return err
+	}
+	for _, mount := range tmpfsMounts {
+		if err := mountTmpfsMount(mount, targetRootFS, cfg.Debug); err != nil {
+			return fmt.Errorf("tmpfs %s: %w", mount.ContainerPath, err)
 		}
 	}
 
