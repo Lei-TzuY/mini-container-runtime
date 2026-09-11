@@ -98,6 +98,10 @@ type Config struct {
 	// BridgeNetwork enables veth pair networking.
 	BridgeNetwork bool
 
+	// NetworkName selects a user-created custom bridge network. Empty preserves
+	// the default bridge when BridgeNetwork is enabled.
+	NetworkName string
+
 	// PortMappings is the list of published host-to-container ports.
 	PortMappings []PortMapping
 
