@@ -276,7 +276,6 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		fmt.Fprintf(os.Stderr, "[parent] warning: cgroup setup failed: %v\n", cgroupErr)
 	}
 
-	hostCIDR := defaultBridgeHostCIDR
 	bridgeConfig := defaultRuntimeBridgeConfig()
 
 	var bridgeCleanup func() error
@@ -289,62 +288,90 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, &runtimeStateError{err: fmt.Errorf("bridge networking requires managed lifecycle state")})
 		}
 
-		containerIP, selectedBridgeConfig, releaseBridgeLease, err := allocateRuntimeBridgeLease(cfg, childPID, childStartTime)
-		if err != nil {
-			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, err)
-		}
-		bridgeConfig = selectedBridgeConfig
-
-		persistedNetworkOwnership := networkOwnershipForGeneration(networkOwner, childPID, childStartTime, containerIP, cfg.PortMappings)
-		if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
-			setupErr := error(&runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)})
-			if cleanupErr := releaseBridgeLease(); cleanupErr != nil {
-				setupErr = errors.Join(setupErr, cleanupErr)
-			}
-			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
-		}
-
-		baseBridgeCleanup, err := setupBridgeHostOwned(childPID, hostCIDR, containerIP, cfg.PortMappings, networkOwner, cfg.Debug)
-		if err != nil {
-			setupErr := error(fmt.Errorf("configure required bridge network: %w", err))
-			if cleanupErr := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); cleanupErr != nil {
-				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted network resources after bridge setup failure: %w", cleanupErr))
-			}
-			if cleanupErr := releaseBridgeLease(); cleanupErr != nil {
-				setupErr = errors.Join(setupErr, cleanupErr)
-			}
-			return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
-		}
-
-		bridgeCleanup = func() error {
-			var cleanupErr error
-			if baseBridgeCleanup != nil {
-				cleanupErr = baseBridgeCleanup()
-			}
-			if err := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); err != nil {
-				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reconcile persisted network cleanup: %w", err))
-			}
-			if err := releaseBridgeLease(); err != nil {
-				cleanupErr = errors.Join(cleanupErr, err)
-			}
-			return cleanupErr
-		}
-
-		if err := dns.BindHostRegistrationGeneration(defaultBridgeDNSNetwork, cfg.ContainerID, childPID, childStartTime); err != nil {
-			setupErr := error(fmt.Errorf("bind bridge DNS registration to child generation: %w", err))
-			if cleanupErr := bridgeCleanup(); cleanupErr != nil {
-				setupErr = errors.Join(setupErr, fmt.Errorf("cleanup bridge network after DNS generation bind failure: %w", cleanupErr))
-			}
-			bridgeCleanup = nil
-			return abortRuntimeSetupFailure(
-				cmd,
-				writePipe,
-				lifecycleStore,
-				cfg.ContainerID,
+		if cfg.NetworkName != "" {
+			_, selectedBridgeConfig, customBridgeCleanup, err := setupCustomBridgeGenerationDurable(
+				cfg,
 				childPID,
 				childStartTime,
-				setupErr,
+				networkOwner,
+				cfg.NetworkName,
+				cfg.Debug,
+				func(containerIP string) (func() error, error) {
+					persistedNetworkOwnership := networkOwnershipForGeneration(networkOwner, childPID, childStartTime, containerIP, cfg.PortMappings)
+					if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
+						return nil, &runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)}
+					}
+					return func() error {
+						if err := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); err != nil {
+							return fmt.Errorf("reconcile persisted network cleanup: %w", err)
+						}
+						return nil
+					}, nil
+				},
 			)
+			if err != nil {
+				return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, err)
+			}
+			bridgeConfig = selectedBridgeConfig
+			bridgeCleanup = customBridgeCleanup
+		} else {
+			containerIP, selectedBridgeConfig, releaseBridgeLease, err := allocateRuntimeBridgeLease(cfg, childPID, childStartTime)
+			if err != nil {
+				return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, err)
+			}
+			bridgeConfig = selectedBridgeConfig
+
+			persistedNetworkOwnership := networkOwnershipForGeneration(networkOwner, childPID, childStartTime, containerIP, cfg.PortMappings)
+			if err := lifecycleStore.MarkNetworkOwnedIfIdentity(cfg.ContainerID, persistedNetworkOwnership); err != nil {
+				setupErr := error(&runtimeStateError{err: fmt.Errorf("persist network ownership for container %s: %w", cfg.ContainerID, err)})
+				if cleanupErr := releaseBridgeLease(); cleanupErr != nil {
+					setupErr = errors.Join(setupErr, cleanupErr)
+				}
+				return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
+			}
+
+			baseBridgeCleanup, err := setupBridgeHostOwned(childPID, defaultBridgeHostCIDR, containerIP, cfg.PortMappings, networkOwner, cfg.Debug)
+			if err != nil {
+				setupErr := error(fmt.Errorf("configure required bridge network: %w", err))
+				if cleanupErr := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); cleanupErr != nil {
+					setupErr = errors.Join(setupErr, fmt.Errorf("cleanup persisted network resources after bridge setup failure: %w", cleanupErr))
+				}
+				if cleanupErr := releaseBridgeLease(); cleanupErr != nil {
+					setupErr = errors.Join(setupErr, cleanupErr)
+				}
+				return abortRuntimeSetupFailure(cmd, writePipe, lifecycleStore, cfg.ContainerID, childPID, childStartTime, setupErr)
+			}
+
+			bridgeCleanup = func() error {
+				var cleanupErr error
+				if baseBridgeCleanup != nil {
+					cleanupErr = baseBridgeCleanup()
+				}
+				if err := cleanupNetworkOwnership(lifecycleStore, cfg.ContainerID, persistedNetworkOwnership, cfg.Debug); err != nil {
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reconcile persisted network cleanup: %w", err))
+				}
+				if err := releaseBridgeLease(); err != nil {
+					cleanupErr = errors.Join(cleanupErr, err)
+				}
+				return cleanupErr
+			}
+
+			if err := dns.BindHostRegistrationGeneration(defaultBridgeDNSNetwork, cfg.ContainerID, childPID, childStartTime); err != nil {
+				setupErr := error(fmt.Errorf("bind bridge DNS registration to child generation: %w", err))
+				if cleanupErr := bridgeCleanup(); cleanupErr != nil {
+					setupErr = errors.Join(setupErr, fmt.Errorf("cleanup bridge network after DNS generation bind failure: %w", cleanupErr))
+				}
+				bridgeCleanup = nil
+				return abortRuntimeSetupFailure(
+					cmd,
+					writePipe,
+					lifecycleStore,
+					cfg.ContainerID,
+					childPID,
+					childStartTime,
+					setupErr,
+				)
+			}
 		}
 	}
 
