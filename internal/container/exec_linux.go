@@ -38,6 +38,7 @@ const (
 	execSentinelKey  = "MINICONTAINER_EXEC"
 	execSentinelEnv  = execSentinelKey + "=1"
 	execStartTimeKey = "MINICONTAINER_EXEC_START_TIME"
+	execWorkDirKey   = "MINICONTAINER_EXEC_WORKDIR"
 )
 
 type execNamespaceTarget struct {
@@ -84,6 +85,10 @@ func Exec(cfg ExecConfig) error {
 	if err != nil {
 		return err
 	}
+	workDir, err := persistedExecWorkDir(cfg.ContainerPID, cfg.RootFS)
+	if err != nil {
+		return err
+	}
 	// Bind observability to the same verified process generation that the exec
 	// bootstrap will enter. Direct/internal Exec callers without a staged CLI
 	// event remain unaffected because the binder is a no-op when nothing is staged.
@@ -102,7 +107,7 @@ func Exec(cfg ExecConfig) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime))
+	cmd.Env = append(os.Environ(), execSentinelEnv, fmt.Sprintf("%s=%d", execStartTimeKey, expectedStartTime), execWorkDirKey+"="+workDir)
 	if err := runExecInitCommand(cmd); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
@@ -145,6 +150,46 @@ func persistedExecStartTime(containerPID int, rootFS string) (uint64, error) {
 		return 0, fmt.Errorf("container %s PID %d was reused: persisted start time %d, current %d", match.ID, containerPID, match.PIDStartTime, actual)
 	}
 	return match.PIDStartTime, nil
+}
+
+func persistedExecWorkDir(containerPID int, rootFS string) (string, error) {
+	store, err := state.Open(state.DefaultDir())
+	if err != nil {
+		return "", fmt.Errorf("open container state for exec workdir: %w", err)
+	}
+	defer store.Close()
+	records, err := store.List()
+	if err != nil {
+		return "", fmt.Errorf("list container state for exec workdir: %w", err)
+	}
+	var match *state.Container
+	for _, rec := range records {
+		if rec.PID != containerPID || rec.RootFS != rootFS || rec.Status != state.StatusRunning {
+			continue
+		}
+		if match != nil {
+			return "", fmt.Errorf("ambiguous persisted exec workdir for PID %d", containerPID)
+		}
+		match = rec
+	}
+	if match == nil {
+		return "", fmt.Errorf("no running container state matches exec PID %d and rootfs %q", containerPID, rootFS)
+	}
+	spec, err := store.RestartSpec(match.ID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "/", nil
+		}
+		return "", fmt.Errorf("load container %s exec workdir: %w", match.ID, err)
+	}
+	workDir := spec.WorkDir
+	if workDir == "" {
+		return "/", nil
+	}
+	if !filepath.IsAbs(workDir) {
+		return "", fmt.Errorf("container %s persisted exec workdir %q is not absolute", match.ID, workDir)
+	}
+	return filepath.Clean(workDir), nil
 }
 
 func requireExecTargetAlive(targets *execTargets, phase string) error {
@@ -237,6 +282,10 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if err != nil || expectedStartTime == 0 {
 		return fmt.Errorf("invalid internal exec target identity %q", expectedRaw)
 	}
+	workDir, err := execWorkDirFromEnv()
+	if err != nil {
+		return err
+	}
 	startWriter, err := execPayloadStartWriterFromEnv()
 	if err != nil {
 		return err
@@ -273,6 +322,9 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
+	if err := enterWorkDir(workDir); err != nil {
+		return fmt.Errorf("enter exec workdir: %w", err)
+	}
 
 	// setns and chroot can take long enough for the target init to exit. A
 	// stopped generation must not admit a new exec payload merely because its
@@ -293,6 +345,17 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	return fmt.Errorf("start exec payload: %w", err)
 }
 
+func execWorkDirFromEnv() (string, error) {
+	workDir := os.Getenv(execWorkDirKey)
+	if workDir == "" {
+		return "/", nil
+	}
+	if !filepath.IsAbs(workDir) {
+		return "", fmt.Errorf("invalid internal exec workdir %q: must be absolute", workDir)
+	}
+	return filepath.Clean(workDir), nil
+}
+
 func runExecPayload(command, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return runExecPayloadWithStartSignal(command, env, stdin, stdout, stderr, nil)
 }
@@ -302,6 +365,7 @@ func payloadEnvironment(env []string) []string {
 	for _, entry := range env {
 		if strings.HasPrefix(entry, execSentinelKey+"=") ||
 			strings.HasPrefix(entry, execStartTimeKey+"=") ||
+			strings.HasPrefix(entry, execWorkDirKey+"=") ||
 			strings.HasPrefix(entry, execStartedFDKey+"=") ||
 			strings.HasPrefix(entry, "MINICONTAINER_INIT=") {
 			continue
