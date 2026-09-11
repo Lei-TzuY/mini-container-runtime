@@ -85,6 +85,7 @@ Run flags:
   --pids-limit <n>        Maximum process/thread count. 0 disables it.
   --no-user-ns            Disable user namespace; requires root / sudo.
   --bridge                Enable veth pair networking.
+  --network <name>        Attach to a named custom bridge network (implies --bridge).
   --seccomp               Install BPF syscall block-list.
   -v, --volume <spec>     Bind mount: host:container[:ro] or volume_name:container[:ro].
 
@@ -1476,6 +1477,7 @@ func parseRunConfig(args []string) (container.Config, error) {
 	cpus := fs.Float64("cpus", 0.0, "hard fractional CPU limit (e.g. 0.5 = 50% CPU, 2.0 = 2 CPUs)")
 	noUserNS := fs.Bool("no-user-ns", false, "disable user namespace; requires root")
 	bridge := fs.Bool("bridge", false, "enable veth pair networking")
+	networkName := fs.String("network", "", "attach to a named custom bridge network (implies --bridge)")
 	seccomp := fs.Bool("seccomp", false, "install seccomp BPF syscall block-list filter")
 	hostname := fs.String("hostname", defaultHostname, "container hostname")
 	var workDir string
@@ -1528,6 +1530,11 @@ func parseRunConfig(args []string) (container.Config, error) {
 		name = defaultHostname
 	}
 
+	selectedNetwork := strings.TrimSpace(*networkName)
+	if *networkName != "" && selectedNetwork == "" {
+		return container.Config{}, fmt.Errorf("--network must not be blank")
+	}
+
 	ports := make([]container.PortMapping, 0, len(rawPorts))
 	for _, spec := range rawPorts {
 		pm, err := parsePortSpec(spec)
@@ -1562,7 +1569,8 @@ func parseRunConfig(args []string) (container.Config, error) {
 		PidsLimit:     *pidsLimit,
 		Volumes:       volumes,
 		PortMappings:  ports,
-		BridgeNetwork: *bridge,
+		BridgeNetwork: *bridge || selectedNetwork != "",
+		NetworkName:   selectedNetwork,
 		Seccomp:       *seccomp,
 		UserNS:        !*noUserNS,
 		Debug:         os.Getenv("MINICONTAINER_DEBUG") == "1",
