@@ -5,10 +5,13 @@ package container
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const execWorkDirHelperKey = "MINICONTAINER_TEST_EXEC_WORKDIR_HELPER"
 
 func TestExecWorkDirFromEnvDefaultsValidatesAndCleans(t *testing.T) {
 	t.Setenv(execWorkDirKey, "")
@@ -45,27 +48,31 @@ func TestPayloadEnvironmentStripsExecWorkDirSentinel(t *testing.T) {
 }
 
 func TestExecPayloadRunsFromConfiguredWorkDir(t *testing.T) {
-	original, err := os.Getwd()
+	workDir := filepath.Join(t.TempDir(), "app", "current")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecPayloadConfiguredWorkDirHelper$")
+	cmd.Env = append(os.Environ(), execWorkDirHelperKey+"=1", execWorkDirKey+"="+workDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("configured workdir helper: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != workDir {
+		t.Fatalf("exec payload cwd = %q, want %q", got, workDir)
+	}
+}
+
+func TestExecPayloadConfiguredWorkDirHelper(t *testing.T) {
+	if os.Getenv(execWorkDirHelperKey) != "1" {
+		return
+	}
+	workDir, err := execWorkDirFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := os.Chdir(original); err != nil {
-			t.Errorf("restore cwd: %v", err)
-		}
-	}()
-
-	workDir := filepath.Join(t.TempDir(), "app", "current")
 	if err := enterWorkDir(workDir); err != nil {
 		t.Fatalf("enter configured workdir: %v", err)
 	}
-
-	var stdout bytes.Buffer
-	if err := runExecPayload([]string{"/bin/pwd"}, os.Environ(), nil, &stdout, &bytes.Buffer{}); err != nil {
+	if err := runExecPayload([]string{"/bin/pwd"}, os.Environ(), nil, os.Stdout, &bytes.Buffer{}); err != nil {
 		t.Fatalf("run real exec payload: %v", err)
-	}
-	got := strings.TrimSpace(stdout.String())
-	if got != workDir {
-		t.Fatalf("exec payload cwd = %q, want %q", got, workDir)
 	}
 }
