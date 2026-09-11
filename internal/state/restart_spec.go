@@ -21,6 +21,12 @@ type RestartVolume struct {
 	ReadOnly      bool   `json:"read_only,omitempty"`
 }
 
+// RestartTmpfsMount is the durable form of one kernel-backed tmpfs mount.
+type RestartTmpfsMount struct {
+	ContainerPath string   `json:"container_path"`
+	Options       []string `json:"options,omitempty"`
+}
+
 // RestartSpec is the durable execution input required to relaunch a stopped
 // container without reconstructing runtime behavior from new CLI arguments.
 // Security, isolation, resource, mount and network settings are persisted with
@@ -51,6 +57,7 @@ type RestartSpec struct {
 	NetworkName       string               `json:"network_name,omitempty"`
 	PortMappings      []RestartPortMapping `json:"port_mappings,omitempty"`
 	Volumes           []RestartVolume      `json:"volumes,omitempty"`
+	TmpfsMounts       []RestartTmpfsMount  `json:"tmpfs_mounts,omitempty"`
 	MaskedDirectories []string             `json:"masked_directories,omitempty"`
 	UserNS            bool                 `json:"user_ns"`
 	CgroupNS          bool                 `json:"cgroup_ns,omitempty"`
@@ -120,6 +127,21 @@ func (s *Store) RestartSpec(containerID string) (RestartSpec, error) {
 	spec.ProcessGroups = append([]uint32(nil), spec.ProcessGroups...)
 	spec.PortMappings = append([]RestartPortMapping(nil), spec.PortMappings...)
 	spec.Volumes = append([]RestartVolume(nil), spec.Volumes...)
+	spec.TmpfsMounts = cloneRestartTmpfsMounts(spec.TmpfsMounts)
 	spec.MaskedDirectories = append([]string(nil), spec.MaskedDirectories...)
 	return spec, nil
+}
+
+func cloneRestartTmpfsMounts(mounts []RestartTmpfsMount) []RestartTmpfsMount {
+	if mounts == nil {
+		return nil
+	}
+	cloned := make([]RestartTmpfsMount, len(mounts))
+	for i, mount := range mounts {
+		cloned[i] = RestartTmpfsMount{
+			ContainerPath: mount.ContainerPath,
+			Options:       append([]string(nil), mount.Options...),
+		}
+	}
+	return cloned
 }
