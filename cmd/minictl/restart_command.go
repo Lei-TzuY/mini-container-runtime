@@ -117,6 +117,7 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		PidsLimit:         spec.PidsLimit,
 		Seccomp:           spec.Seccomp,
 		BridgeNetwork:     spec.BridgeNetwork,
+		NetworkName:       spec.NetworkName,
 		PortMappings:      portMappings,
 		Volumes:           volumes,
 		MaskedDirectories: append([]string(nil), spec.MaskedDirectories...),
