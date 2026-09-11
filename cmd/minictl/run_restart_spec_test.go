@@ -29,6 +29,7 @@ func TestPrepareManagedRunStatePersistsResolvedRestartSpec(t *testing.T) {
 		PidsLimit:       32,
 		Seccomp:         true,
 		BridgeNetwork:   true,
+		NetworkName:     "frontend",
 		PortMappings: []container.PortMapping{{
 			HostPort: 8080, ContainerPort: 80, Protocol: "tcp",
 		}},
@@ -70,6 +71,7 @@ func TestPrepareManagedRunStatePersistsResolvedRestartSpec(t *testing.T) {
 		PidsLimit:       cfg.PidsLimit,
 		Seccomp:         cfg.Seccomp,
 		BridgeNetwork:   cfg.BridgeNetwork,
+		NetworkName:     cfg.NetworkName,
 		PortMappings: []state.RestartPortMapping{{
 			HostPort: 8080, ContainerPort: 80, Protocol: "tcp",
 		}},
