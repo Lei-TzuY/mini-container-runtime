@@ -29,17 +29,14 @@ func TestExecProcessUserPayloadHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat helper file: %v", err)
 	}
-	fmt.Printf("%d:%d:%#o:%s\n", os.Getuid(), os.Getgid(), info.Mode().Perm(), os.Getenv(processUIDEnv))
+	fmt.Printf("%#o:%s\n", info.Mode().Perm(), os.Getenv(processUmaskEnv))
 }
 
-func TestRunExecPayloadAppliesProcessUserAndUmaskWithoutLeakingMarkers(t *testing.T) {
+func TestRunExecPayloadAppliesUmaskWithoutLeakingMarker(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "created")
 	env := append(os.Environ(),
 		execProcessUserHelperEnv+"=1",
 		"MINICONTAINER_TEST_EXEC_PROCESS_USER_FILE="+target,
-		processUIDEnv+"="+strconv.Itoa(os.Getuid()),
-		processGIDEnv+"="+strconv.Itoa(os.Getgid()),
-		processGroupsEnv+"=",
 		processUmaskEnv+"="+strconv.FormatUint(uint64(0o027), 10),
 	)
 	var stdout, stderr bytes.Buffer
@@ -48,9 +45,30 @@ func TestRunExecPayloadAppliesProcessUserAndUmaskWithoutLeakingMarkers(t *testin
 	}
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	got := lines[0]
-	want := fmt.Sprintf("%d:%d:0640:", os.Getuid(), os.Getgid())
-	if got != want {
-		t.Fatalf("payload identity/mode/marker = %q, want %q", got, want)
+	if got != "0640:" {
+		t.Fatalf("payload mode/marker = %q, want %q", got, "0640:")
+	}
+}
+
+func TestExecPayloadSecurityPolicyBuildsCredentialAndStripsMarkers(t *testing.T) {
+	env, credential, umask, err := execPayloadSecurityPolicy([]string{
+		"VISIBLE=inside",
+		processUIDEnv + "=123",
+		processGIDEnv + "=456",
+		processGroupsEnv + "=7,8",
+		processUmaskEnv + "=23",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential == nil || credential.Uid != 123 || credential.Gid != 456 || len(credential.Groups) != 2 || credential.Groups[0] != 7 || credential.Groups[1] != 8 {
+		t.Fatalf("credential = %#v", credential)
+	}
+	if umask == nil || *umask != 0o027 {
+		t.Fatalf("umask = %#v, want 0027", umask)
+	}
+	if len(env) != 1 || env[0] != "VISIBLE=inside" {
+		t.Fatalf("payload environment = %#v, runtime markers leaked", env)
 	}
 }
 
