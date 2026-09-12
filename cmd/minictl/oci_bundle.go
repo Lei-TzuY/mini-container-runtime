@@ -155,6 +155,10 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 				return container.Config{}, err
 			}
 			cfg.TmpfsMounts = append(cfg.TmpfsMounts, tmpfsMount)
+		case "proc":
+			if err := validateOCIProcMount(mount.Destination, mount.Source, mount.Options); err != nil {
+				return container.Config{}, err
+			}
 		default:
 			return container.Config{}, fmt.Errorf("unsupported OCI mount type %q", mount.Type)
 		}
@@ -397,6 +401,31 @@ func translateOCITmpfsMount(destination, source string, options []string) (conta
 		return container.TmpfsMount{}, fmt.Errorf("OCI tmpfs mount destination %q must be canonical", destination)
 	}
 	return container.TmpfsMount{ContainerPath: clean, Options: append([]string(nil), options...)}, nil
+}
+
+func validateOCIProcMount(destination, source string, options []string) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("OCI proc mounts require linux")
+	}
+	if source != "" && source != "proc" {
+		return fmt.Errorf("OCI proc mount source %q must be empty or proc", source)
+	}
+	if destination != "/proc" {
+		return fmt.Errorf("OCI proc mount destination %q is not representable; runtime proc is mounted at /proc", destination)
+	}
+	seen := make(map[string]struct{}, len(options))
+	for _, option := range options {
+		if _, duplicate := seen[option]; duplicate {
+			return fmt.Errorf("duplicate OCI proc mount option %q", option)
+		}
+		seen[option] = struct{}{}
+		switch option {
+		case "rw", "suid", "exec", "dev":
+		default:
+			return fmt.Errorf("OCI proc mount option %q is not representable by the runtime's current /proc mount semantics", option)
+		}
+	}
+	return nil
 }
 
 func translateOCIReadonlyPaths(rootfs string, paths []string) ([]container.Volume, error) {
