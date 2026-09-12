@@ -145,6 +145,7 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		CapDrop:         capDrop,
 	}
 	procMountSeen := false
+	sysfsMountSeen := false
 	for _, mount := range spec.Mounts {
 		switch mount.Type {
 		case "bind":
@@ -169,6 +170,14 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 			}
 			if len(mount.Options) > 0 {
 				cfg.Env = append(cfg.Env, container.RuntimeProcMountOptionsEnvKey+"="+strings.Join(mount.Options, ","))
+			}
+		case "sysfs":
+			if sysfsMountSeen {
+				return container.Config{}, fmt.Errorf("duplicate OCI sysfs mount")
+			}
+			sysfsMountSeen = true
+			if err := validateOCISysfsMount(mount.Destination, mount.Source, mount.Options); err != nil {
+				return container.Config{}, err
 			}
 		default:
 			return container.Config{}, fmt.Errorf("unsupported OCI mount type %q", mount.Type)
