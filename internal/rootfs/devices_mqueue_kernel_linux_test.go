@@ -42,18 +42,14 @@ func TestPrivateMqueueMountKernel(t *testing.T) {
 		}
 		defer syscall.Unmount(dev, syscall.MNT_DETACH)
 
-		mqueue := filepath.Join(dev, "mqueue")
-		if err := os.MkdirAll(mqueue, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC)
-		if err := syscall.Mount("mqueue", mqueue, "mqueue", flags, ""); err != nil {
+		if err := mountPrivateMqueue(dev, defaultDeviceMountOps()); err != nil {
 			if isRootfsNamespacePermissionError(err) {
 				fmt.Fprintf(os.Stderr, "namespace permission denied: mqueue mount: %v\n", err)
 				os.Exit(2)
 			}
 			t.Fatal(err)
 		}
+		mqueue := filepath.Join(dev, "mqueue")
 		defer syscall.Unmount(mqueue, syscall.MNT_DETACH)
 
 		data, err := os.ReadFile("/proc/self/mountinfo")
