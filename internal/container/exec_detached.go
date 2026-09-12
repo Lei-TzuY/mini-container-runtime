@@ -4,38 +4,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 
 	"minicontainer/internal/state"
 )
 
-var trustedNSenterDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
-
-func resolveTrustedExecutable(name string, dirs []string) (string, error) {
-	if name == "" || filepath.Base(name) != name {
-		return "", fmt.Errorf("invalid executable name %q", name)
-	}
-	for _, dir := range dirs {
-		candidate := filepath.Join(dir, name)
-		info, err := os.Lstat(candidate)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", fmt.Errorf("inspect trusted executable %s: %w", candidate, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-			continue
-		}
-		return candidate, nil
-	}
-	return "", fmt.Errorf("trusted executable %q not found", name)
+func newManagedDetachedExecCommand(executable, containerID string, command []string) *exec.Cmd {
+	args := append([]string{"exec", containerID}, command...)
+	cmd := exec.Command(executable, args...)
+	cmd.Env = os.Environ()
+	configureDetachedExecCommand(cmd)
+	return cmd
 }
 
-// ExecDetached spawns a background sub-process inside container namespaces without holding terminal session.
+// ExecDetached starts a background exec through the same managed minictl exec
+// lifecycle as foreground exec. The child re-resolves and reconciles container
+// state before entering the normal exec path, so detached workloads retain the
+// same cgroup, process-policy, workdir, environment, and namespace semantics.
 func ExecDetached(st *state.Store, containerID string, command []string) (int, error) {
-	if len(command) == 0 {
+	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("command is empty")
 	}
 
@@ -43,23 +30,23 @@ func ExecDetached(st *state.Store, containerID string, command []string) (int, e
 	if err != nil {
 		return 0, fmt.Errorf("resolve container: %w", err)
 	}
-
 	if c.Status != state.StatusRunning {
-		return 0, fmt.Errorf("container %s is not running", c.ID[:8])
+		return 0, fmt.Errorf("container %s is not running", c.ID[:min(8, len(c.ID))])
 	}
 
 	if runtime.GOOS != "linux" {
 		return 12345, nil
 	}
 
-	nsenterPath, err := resolveTrustedExecutable("nsenter", trustedNSenterDirs)
+	self, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("resolve nsenter: %w", err)
+		return 0, fmt.Errorf("resolve runtime executable: %w", err)
 	}
-	cmd := exec.Command(nsenterPath, append([]string{"-t", fmt.Sprintf("%d", c.PID), "-m", "-u", "-i", "-n", "-p", "--"}, command...)...)
+	cmd := newManagedDetachedExecCommand(self, c.ID, command)
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start detached exec: %w", err)
+		return 0, fmt.Errorf("start managed detached exec: %w", err)
 	}
-
-	return cmd.Process.Pid, nil
+	pid := cmd.Process.Pid
+	go func() { _ = cmd.Wait() }()
+	return pid, nil
 }
