@@ -11,11 +11,12 @@ import (
 
 const processOOMScoreAdjEnv = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
 
-// OCI process.oomScoreAdj belongs to the container process. Apply it in the
-// re-executed container-init generation so the PID 1 supervisor and payload
-// inherit the kernel policy, then remove the internal marker before exec.
+// OCI process.oomScoreAdj belongs to the workload process tree. Apply it in
+// re-executed container-init and exec generations so their supervisors and
+// payloads inherit the same kernel policy, then remove the internal marker
+// before exec.
 func init() {
-	if os.Getenv(sentinelEnvKey) != "1" {
+	if os.Getenv(sentinelEnvKey) != "1" && os.Getenv(execSentinelKey) != "1" {
 		return
 	}
 	raw, ok := os.LookupEnv(processOOMScoreAdjEnv)
