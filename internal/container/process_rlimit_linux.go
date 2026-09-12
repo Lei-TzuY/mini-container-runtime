@@ -33,12 +33,12 @@ var processRlimitRuntimePolicies = []processRlimitRuntimePolicy{
 	{marker: processRlimitNPROCEnv, resource: unix.RLIMIT_NPROC, name: "RLIMIT_NPROC"},
 }
 
-// applyProcessRlimitRuntimeMarker runs in the re-executed container-init
-// generation. OCI process rlimits belong to that container process; the
-// internal PID 1 supervisor and its payload therefore inherit the same kernel
+// applyProcessRlimitRuntimeMarker runs in re-executed container-init and exec
+// generations. OCI process rlimits belong to the workload process tree; the
+// internal supervisors and their payloads therefore inherit the same kernel
 // limits. Markers are removed before the payload environment is constructed.
 func init() {
-	if os.Getenv(sentinelEnvKey) != "1" {
+	if os.Getenv(sentinelEnvKey) != "1" && os.Getenv(execSentinelKey) != "1" {
 		return
 	}
 	for _, policy := range processRlimitRuntimePolicies {
