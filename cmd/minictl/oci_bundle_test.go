@@ -65,7 +65,7 @@ func TestLoadOCIBundleRejectsUnsupportedOrUnsafeSemantics(t *testing.T) {
 		{"terminal", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"terminal":true,"args":["/bin/true"],"cwd":"/"}}`, "terminal is not supported"},
 		{"namespace path", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"linux":{"namespaces":[{"type":"pid","path":"/proc/1/ns/pid"}]}}`, "joining existing pid namespace"},
 		{"unknown field", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mystery":true}`, "unknown field"},
-		{"unsupported mount type", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc"}]}`, "unsupported OCI mount type"},
+		{"unsupported mount type", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/sys","type":"sysfs","source":"sysfs"}]}`, "unsupported OCI mount type"},
 		{"relative bind source", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/data","type":"bind","source":"data"}]}`, "must be absolute"},
 		{"root bind destination", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/","type":"bind","source":"/srv/data"}]}`, "absolute path below root"},
 		{"unsupported bind option", `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/data","type":"bind","source":"/srv/data","options":["nosuid"]}]}`, "unsupported OCI bind mount option"},
