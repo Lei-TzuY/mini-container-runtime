@@ -3,6 +3,7 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,6 +72,9 @@ func TestProcMountFlagsKernel(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return
+	}
+	if errors.Is(err, syscall.EPERM) {
+		t.Skipf("kernel/user namespace startup is unavailable: %v", err)
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 && strings.Contains(strings.ToLower(string(out)), "operation not permitted") {
 		t.Skipf("kernel/user namespace does not permit proc mount integration test: %s", strings.TrimSpace(string(out)))
