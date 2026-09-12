@@ -62,10 +62,3 @@ func parseDetachedExecArgs(args []string) (bool, string, []string, error) {
 	}
 	return true, args[1], append([]string(nil), args[2:]...), nil
 }
-
-func shortContainerID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
