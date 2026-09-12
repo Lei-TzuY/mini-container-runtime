@@ -71,6 +71,17 @@ func secureEnsureDeviceDir(path string, mode os.FileMode) error {
 	return nil
 }
 
+func mountPrivateMqueue(devPath string, ops deviceMountOps) error {
+	mqueuePath := filepath.Join(devPath, "mqueue")
+	if err := ops.ensureDir(mqueuePath, 0o755); err != nil {
+		return fmt.Errorf("prepare /dev/mqueue: %w", err)
+	}
+	if err := ops.mount("mqueue", mqueuePath, "mqueue", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mount private /dev/mqueue: %w", err)
+	}
+	return nil
+}
+
 // preparePrivateDevices replaces any pre-pivot /dev mount with a private
 // device filesystem. Only a small character-device allowlist is bind-mounted
 // from the host; disks, GPUs, kmsg, fuse, and other host devices are not
@@ -135,6 +146,10 @@ func preparePrivateDevicesWithOps(newRoot string, debug bool, ops deviceMountOps
 	}
 	if err := ops.mount("tmpfs", shmPath, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "mode=1777,size="+privateDevTmpfsSize); err != nil {
 		return fmt.Errorf("mount private /dev/shm: %w", err)
+	}
+
+	if err := mountPrivateMqueue(devPath, ops); err != nil {
+		return err
 	}
 
 	for link, target := range map[string]string{
