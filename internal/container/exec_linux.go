@@ -282,7 +282,7 @@ func openExecTargets(containerPID int, expectedStartTime uint64) (*execTargets, 
 	nsSpecs := []struct {
 		name string
 		flag int
-	}{{"net", unix.CLONE_NEWNET}, {"ipc", unix.CLONE_NEWIPC}, {"uts", unix.CLONE_NEWUTS}, {"pid", unix.CLONE_NEWPID}, {"mnt", unix.CLONE_NEWNS}}
+	}{{"net", unix.CLONE_NEWNET}, {"ipc", unix.CLONE_NEWIPC}, {"uts", unix.CLONE_NEWUTS}, {"cgroup", unix.CLONE_NEWCGROUP}, {"pid", unix.CLONE_NEWPID}, {"mnt", unix.CLONE_NEWNS}}
 	for _, spec := range nsSpecs {
 		nsPath := fmt.Sprintf("/proc/%d/ns/%s", containerPID, spec.name)
 		fd, err := unix.Open(nsPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)

@@ -35,7 +35,7 @@ func TestOpenExecTargetsCurrentProcess(t *testing.T) {
 	startTime, err := ProcessStartTime(os.Getpid()); if err != nil { t.Fatalf("current process start time: %v", err) }
 	targets, err := openExecTargets(os.Getpid(), startTime); if err != nil { t.Fatalf("open current process exec targets: %v", err) }; defer targets.close()
 	if targets.rootFD < 0 || targets.startTime != startTime { t.Fatalf("invalid target capture: rootFD=%d start=%d", targets.rootFD, targets.startTime) }
-	want := []string{"net", "ipc", "uts", "pid", "mnt"}; if len(targets.ns) != len(want) { t.Fatalf("namespace count=%d", len(targets.ns)) }
+	want := []string{"net", "ipc", "uts", "cgroup", "pid", "mnt"}; if len(targets.ns) != len(want) { t.Fatalf("namespace count=%d", len(targets.ns)) }
 	for i, ns := range targets.ns { if ns.name != want[i] || ns.fd < 0 { t.Fatalf("namespace[%d]=%+v, want %q with open fd", i, ns, want[i]) } }
 }
 
