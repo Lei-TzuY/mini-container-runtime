@@ -4,6 +4,7 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestOCIBundleProcMountReachesManagedRun(t *testing.T) {
-	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/sh","-c","test -r /proc/self/stat"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc"}],"linux":{"namespaces":[{"type":"pid"},{"type":"mount"}]}}`)
+	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/sh","-c","test -r /proc/self/stat"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["rw","nosuid","noexec","nodev"]}],"linux":{"namespaces":[{"type":"pid"},{"type":"mount"}]}}`)
 	stateDir := t.TempDir()
 	var ran bool
 	_, err := runOCIBundleWith(bundle, ociBundleRunDeps{
@@ -26,6 +27,16 @@ func TestOCIBundleProcMountReachesManagedRun(t *testing.T) {
 		},
 		run: func(cfg container.Config) error {
 			ran = true
+			var policy string
+			for _, entry := range cfg.Env {
+				if strings.HasPrefix(entry, container.RuntimeProcMountOptionsEnvKey+"=") {
+					policy = entry
+					break
+				}
+			}
+			if policy != container.RuntimeProcMountOptionsEnvKey+"=rw,nosuid,noexec,nodev" {
+				t.Fatalf("proc mount policy env=%q", policy)
+			}
 			return exec.Command("/bin/sh", "-c", "test -r /proc/self/stat").Run()
 		},
 		settle: func(st *state.Store, id string, runErr error, _ time.Time) (*state.Container, error) {
@@ -42,11 +53,38 @@ func TestOCIBundleProcMountReachesManagedRun(t *testing.T) {
 	if !ran {
 		t.Fatal("managed runner was not reached")
 	}
+
+	st, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	spec, err := st.RestartSpec("oci-proc-process")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted bool
+	for _, entry := range spec.Env {
+		if entry == container.RuntimeProcMountOptionsEnvKey+"=rw,nosuid,noexec,nodev" {
+			persisted = true
+			break
+		}
+	}
+	if !persisted {
+		t.Fatalf("restart spec did not preserve proc mount policy: %v", spec.Env)
+	}
 }
 
 func TestOCIProcMountRejectsUnenforcedOptions(t *testing.T) {
-	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid"]}]}`)
+	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/"},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["relatime"]}]}`)
 	if _, err := loadOCIBundle(bundle); err == nil {
-		t.Fatal("expected proc mount with unenforced option to fail closed")
+		t.Fatal("expected proc mount with unsupported option to fail closed")
+	}
+}
+
+func TestOCIProcMountRejectsReservedPolicyEnvironment(t *testing.T) {
+	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/true"],"cwd":"/","env":["MINICONTAINER_INTERNAL_PROC_MOUNT_OPTIONS=nodev"]}}`)
+	if _, err := loadOCIBundle(bundle); err == nil {
+		t.Fatal("expected reserved proc policy environment to fail closed")
 	}
 }

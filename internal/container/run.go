@@ -473,6 +473,12 @@ func ContainerInit(cfg Config) (resultErr error) {
 		fmt.Println("[init] received runtime ready signal from parent")
 	}
 
+	payloadEnv, procMountFlags, err := extractProcMountPolicy(cfg.Env)
+	if err != nil {
+		return fmt.Errorf("proc mount policy: %w", err)
+	}
+	cfg.Env = payloadEnv
+
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make mount namespace private: %w", err)
 	}
@@ -520,7 +526,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.MkdirAll(procPath, 0755); err != nil {
 		return fmt.Errorf("mkdir proc: %w", err)
 	}
-	if err := syscall.Mount("proc", procPath, "proc", 0, ""); err != nil {
+	if err := syscall.Mount("proc", procPath, "proc", procMountFlags, ""); err != nil {
 		return fmt.Errorf("mount proc: %w", err)
 	}
 	if cfg.Debug {
