@@ -113,7 +113,7 @@ func TestPreparePrivateDevicesUsesAllowlistOnly(t *testing.T) {
 		t.Fatalf("created device targets=%v", created)
 	}
 
-	var sawDevpts, sawShm bool
+	var sawDevpts, sawShm, sawMqueue bool
 	for _, mount := range mounts {
 		if mount.fstype == "devpts" {
 			sawDevpts = mount.target == filepath.Join(dev, "pts") && strings.Contains(mount.data, "newinstance")
@@ -121,12 +121,19 @@ func TestPreparePrivateDevicesUsesAllowlistOnly(t *testing.T) {
 		if mount.source == "tmpfs" && mount.target == filepath.Join(dev, "shm") {
 			sawShm = mount.flags&syscall.MS_NODEV != 0 && strings.Contains(mount.data, "mode=1777")
 		}
+		if mount.source == "mqueue" && mount.fstype == "mqueue" && mount.target == filepath.Join(dev, "mqueue") {
+			wantFlags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC)
+			sawMqueue = mount.flags&wantFlags == wantFlags
+		}
 	}
 	if !sawDevpts {
 		t.Fatal("private devpts mount missing")
 	}
 	if !sawShm {
 		t.Fatal("private /dev/shm mount missing or insufficiently restricted")
+	}
+	if !sawMqueue {
+		t.Fatal("private /dev/mqueue mount missing or insufficiently restricted")
 	}
 
 	wantLinks := map[string]string{
@@ -143,6 +150,26 @@ func TestPreparePrivateDevicesUsesAllowlistOnly(t *testing.T) {
 		if links[path] != target {
 			t.Fatalf("link %s -> %q, want %q", path, links[path], target)
 		}
+	}
+}
+
+func TestPreparePrivateDevicesFailsClosedOnMqueueFailure(t *testing.T) {
+	var mounts []recordedMount
+	var unmounts, created, validated []string
+	links := make(map[string]string)
+	ops := permissiveDeviceOps(t, &mounts, &unmounts, &created, links, &validated)
+	cause := syscall.EPERM
+	ops.mount = func(source, target, fstype string, flags uintptr, data string) error {
+		mounts = append(mounts, recordedMount{source: source, target: target, fstype: fstype, flags: flags, data: data})
+		if fstype == "mqueue" {
+			return cause
+		}
+		return nil
+	}
+
+	err := preparePrivateDevicesWithOps("/container/root", false, ops)
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "mount private /dev/mqueue") {
+		t.Fatalf("mqueue error=%v, want fail-closed EPERM", err)
 	}
 }
 
