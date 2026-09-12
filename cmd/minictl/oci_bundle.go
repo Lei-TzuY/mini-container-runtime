@@ -121,6 +121,9 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		if i := strings.IndexByte(e, '='); i <= 0 {
 			return container.Config{}, fmt.Errorf("invalid process.env entry %q", e)
 		}
+		if strings.HasPrefix(e, container.RuntimeProcMountOptionsEnvKey+"=") {
+			return container.Config{}, fmt.Errorf("process.env entry %q uses a runtime-reserved key", e)
+		}
 	}
 
 	processUser, err := translateOCIProcessUser(spec.Process.User)
@@ -141,6 +144,7 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 		ProcessUser:     processUser,
 		CapDrop:         capDrop,
 	}
+	procMountSeen := false
 	for _, mount := range spec.Mounts {
 		switch mount.Type {
 		case "bind":
@@ -156,8 +160,15 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 			}
 			cfg.TmpfsMounts = append(cfg.TmpfsMounts, tmpfsMount)
 		case "proc":
+			if procMountSeen {
+				return container.Config{}, fmt.Errorf("duplicate OCI proc mount")
+			}
+			procMountSeen = true
 			if err := validateOCIProcMount(mount.Destination, mount.Source, mount.Options); err != nil {
 				return container.Config{}, err
+			}
+			if len(mount.Options) > 0 {
+				cfg.Env = append(cfg.Env, container.RuntimeProcMountOptionsEnvKey+"="+strings.Join(mount.Options, ","))
 			}
 		default:
 			return container.Config{}, fmt.Errorf("unsupported OCI mount type %q", mount.Type)
@@ -420,9 +431,9 @@ func validateOCIProcMount(destination, source string, options []string) error {
 		}
 		seen[option] = struct{}{}
 		switch option {
-		case "rw", "suid", "exec", "dev":
+		case "ro", "rw", "suid", "nosuid", "exec", "noexec", "dev", "nodev":
 		default:
-			return fmt.Errorf("OCI proc mount option %q is not representable by the runtime's current /proc mount semantics", option)
+			return fmt.Errorf("OCI proc mount option %q is not representable by the runtime's /proc mount semantics", option)
 		}
 	}
 	return nil
