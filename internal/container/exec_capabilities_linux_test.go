@@ -3,8 +3,10 @@
 package container
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"syscall"
 	"testing"
 )
 
@@ -21,6 +23,13 @@ func TestApplyExecCapabilityDropsKernelPolicy(t *testing.T) {
 			t.Skipf("%s is already absent from the subprocess bounding set", capability)
 		}
 		if err := applyExecCapabilityDrops([]string{capability}); err != nil {
+			// PR_CAPBSET_DROP requires CAP_SETPCAP. Hosted CI runners commonly run
+			// tests without that capability; keep the kernel regression active on
+			// capable Linux environments without turning a missing host privilege
+			// into a product failure.
+			if errors.Is(err, syscall.EPERM) {
+				t.Skipf("kernel denied PR_CAPBSET_DROP without CAP_SETPCAP: %v", err)
+			}
 			t.Fatal(err)
 		}
 		after, err := capabilityInBoundingSet(capValue)
