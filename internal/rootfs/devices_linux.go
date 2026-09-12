@@ -137,6 +137,14 @@ func preparePrivateDevicesWithOps(newRoot string, debug bool, ops deviceMountOps
 		return fmt.Errorf("mount private /dev/shm: %w", err)
 	}
 
+	mqueuePath := filepath.Join(devPath, "mqueue")
+	if err := ops.ensureDir(mqueuePath, 0o755); err != nil {
+		return fmt.Errorf("prepare /dev/mqueue: %w", err)
+	}
+	if err := ops.mount("mqueue", mqueuePath, "mqueue", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mount private /dev/mqueue: %w", err)
+	}
+
 	for link, target := range map[string]string{
 		"fd":     "/proc/self/fd",
 		"stdin":  "/proc/self/fd/0",
