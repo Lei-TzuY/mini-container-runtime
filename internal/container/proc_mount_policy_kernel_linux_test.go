@@ -25,15 +25,15 @@ func TestProcMountFlagsKernel(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-			if err == syscall.EPERM {
-				fmt.Fprintln(os.Stderr, "operation not permitted: private mount namespace")
+			if isNamespacePermissionError(err) {
+				fmt.Fprintf(os.Stderr, "namespace permission denied: private mount namespace: %v\n", err)
 				os.Exit(2)
 			}
 			t.Fatal(err)
 		}
 		if err := syscall.Mount("proc", target, "proc", flags, ""); err != nil {
-			if err == syscall.EPERM {
-				fmt.Fprintln(os.Stderr, "operation not permitted: proc mount")
+			if isNamespacePermissionError(err) {
+				fmt.Fprintf(os.Stderr, "namespace permission denied: proc mount: %v\n", err)
 				os.Exit(2)
 			}
 			t.Fatal(err)
@@ -73,11 +73,15 @@ func TestProcMountFlagsKernel(t *testing.T) {
 	if err == nil {
 		return
 	}
-	if errors.Is(err, syscall.EPERM) {
+	if isNamespacePermissionError(err) {
 		t.Skipf("kernel/user namespace startup is unavailable: %v", err)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 && strings.Contains(strings.ToLower(string(out)), "operation not permitted") {
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 && strings.Contains(strings.ToLower(string(out)), "namespace permission denied") {
 		t.Skipf("kernel/user namespace does not permit proc mount integration test: %s", strings.TrimSpace(string(out)))
 	}
 	t.Fatalf("proc mount kernel integration failed: %v: %s", err, strings.TrimSpace(string(out)))
+}
+
+func isNamespacePermissionError(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
 }
