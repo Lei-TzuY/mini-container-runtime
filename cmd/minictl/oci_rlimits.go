@@ -20,6 +20,8 @@ const (
 	processOOMScoreAdjEnv   = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
 	processIOPriorityEnv    = "MINICONTAINER_PROCESS_IO_PRIORITY"
 	processSchedulerEnv     = "MINICONTAINER_PROCESS_SCHEDULER"
+	processCPUSetCPUsEnv    = "MINICONTAINER_CGROUP_CPUSET_CPUS"
+	processCPUSetMemsEnv    = "MINICONTAINER_CGROUP_CPUSET_MEMS"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
@@ -69,6 +71,8 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	var oomScoreAdjRaw json.RawMessage
 	var ioPriorityRaw json.RawMessage
 	var schedulerRaw json.RawMessage
+	var cpusetCPUsRaw json.RawMessage
+	var cpusetMemsRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
@@ -88,6 +92,43 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 		}
 		document["process"] = cleanProcess
 	}
+	if linuxRaw, ok := document["linux"]; ok && !bytes.Equal(bytes.TrimSpace(linuxRaw), []byte("null")) {
+		var linux map[string]json.RawMessage
+		if err := json.Unmarshal(linuxRaw, &linux); err != nil {
+			return err
+		}
+		if resourcesRaw, ok := linux["resources"]; ok && !bytes.Equal(bytes.TrimSpace(resourcesRaw), []byte("null")) {
+			var resources map[string]json.RawMessage
+			if err := json.Unmarshal(resourcesRaw, &resources); err != nil {
+				return err
+			}
+			if cpuRaw, ok := resources["cpu"]; ok && !bytes.Equal(bytes.TrimSpace(cpuRaw), []byte("null")) {
+				var cpu map[string]json.RawMessage
+				if err := json.Unmarshal(cpuRaw, &cpu); err != nil {
+					return err
+				}
+				cpusetCPUsRaw = cpu["cpus"]
+				cpusetMemsRaw = cpu["mems"]
+				delete(cpu, "cpus")
+				delete(cpu, "mems")
+				cleanCPU, err := json.Marshal(cpu)
+				if err != nil {
+					return err
+				}
+				resources["cpu"] = cleanCPU
+			}
+			cleanResources, err := json.Marshal(resources)
+			if err != nil {
+				return err
+			}
+			linux["resources"] = cleanResources
+		}
+		cleanLinux, err := json.Marshal(linux)
+		if err != nil {
+			return err
+		}
+		document["linux"] = cleanLinux
+	}
 
 	cleanDocument, err := json.Marshal(document)
 	if err != nil {
@@ -97,6 +138,43 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(cleanDocument))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode((*plainOCIBundleConfig)(c)); err != nil {
+		return err
+	}
+
+	appendCPUSetMarker := func(raw json.RawMessage, field, marker string) error {
+		if len(raw) == 0 {
+			return nil
+		}
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI linux.resources.cpu.%s requires linux", field)
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return fmt.Errorf("OCI linux.resources.cpu.%s must be a non-empty string", field)
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("decode linux.resources.cpu.%s: %w", field, err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("OCI linux.resources.cpu.%s must be a non-empty single-line cpuset expression", field)
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == marker {
+				return fmt.Errorf("process.env key %q conflicts with internal cpuset policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, marker+"="+value)
+		return nil
+	}
+	if err := appendCPUSetMarker(cpusetCPUsRaw, "cpus", processCPUSetCPUsEnv); err != nil {
+		return err
+	}
+	if err := appendCPUSetMarker(cpusetMemsRaw, "mems", processCPUSetMemsEnv); err != nil {
 		return err
 	}
 
