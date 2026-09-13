@@ -142,6 +142,9 @@ func abortRuntimeSetupFailureWithAbort(
 			&runtimeStateError{err: fmt.Errorf("persist stopped state after runtime setup failure for container %s: %w", containerID, stateErr)},
 		)
 		if !changed {
+			// The child is gone, but the durable lifecycle record still does not
+			// prove that. Preserve captured cgroups and all ownership sidecars so
+			// reconciliation retains a complete retry proof.
 			return resultErr
 		}
 	}
