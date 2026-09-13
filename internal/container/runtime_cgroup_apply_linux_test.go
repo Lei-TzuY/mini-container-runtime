@@ -64,6 +64,54 @@ func TestApplyCgroupPersistsOwnershipBeforeHostMutation(t *testing.T) {
 	}
 }
 
+func TestApplyCgroupUsesDurableCPUSetPolicy(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const (
+		id    = "ctr-cgroup-cpuset"
+		pid   = 4343
+		start = uint64(101)
+	)
+	if err := st.Save(&state.Container{
+		ID: id, Status: state.StatusCreated, RootFS: "/tmp/rootfs",
+		Command: []string{"true"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveRestartSpec(id, state.RestartSpec{
+		RootFS: "/tmp/rootfs", Command: []string{"true"}, CPUSetCPUs: "0-2", CPUSetMems: "0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkRunning(id, pid, start, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	name, err := cgroups.NameForContainerProcess(id, pid, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := applyCgroupWithDurableOwnership(st, id, pid, start, cgroups.Config{Name: name}, false, func(gotPID int, gotCfg cgroups.Config, _ bool) error {
+		if gotPID != pid {
+			t.Fatalf("apply pid=%d want %d", gotPID, pid)
+		}
+		if gotCfg.CPUSetCPUs != "0-2" || gotCfg.CPUSetMems != "0" {
+			t.Fatalf("durable cpuset policy lost before cgroup apply: %+v", gotCfg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("durable cpuset cgroup policy was not applied")
+	}
+}
+
 func TestApplyCgroupFailureKeepsOwnershipForRecovery(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
