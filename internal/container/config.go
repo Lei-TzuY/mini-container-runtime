@@ -94,6 +94,10 @@ type Config struct {
 	// OCI linux.resources.memory.reservation maps to this value.
 	MemoryHigh int64
 
+	// MemorySwap is the OCI-style combined memory+swap ceiling in bytes. -1 means
+	// unlimited swap; cgroup v2 converts a positive total to memory.swap.max.
+	MemorySwap int64
+
 	// CPUWeight is the cgroup v2 CPU weight in the range 1..10000.
 	CPUWeight int64
 
