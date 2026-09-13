@@ -18,6 +18,7 @@ const (
 	processRlimitASEnv      = "MINICONTAINER_PROCESS_RLIMIT_AS"
 	processRlimitDATAEnv    = "MINICONTAINER_PROCESS_RLIMIT_DATA"
 	processOOMScoreAdjEnv   = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
+	processIOPriorityEnv    = "MINICONTAINER_PROCESS_IO_PRIORITY"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
@@ -37,6 +38,11 @@ type ociProcessRlimitConfig struct {
 	Soft uint64 `json:"soft"`
 }
 
+type ociProcessIOPriorityConfig struct {
+	Class    string `json:"class"`
+	Priority *int   `json:"priority"`
+}
+
 // UnmarshalJSON extends the strict OCI bundle decoder with bounded process
 // policy surfaces the runtime can execute today. Policies are encoded as
 // reserved parent/runtime markers in Process.Env: existing managed-run state
@@ -50,6 +56,7 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 
 	var rlimitsRaw json.RawMessage
 	var oomScoreAdjRaw json.RawMessage
+	var ioPriorityRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
@@ -57,8 +64,10 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 		}
 		rlimitsRaw = process["rlimits"]
 		oomScoreAdjRaw = process["oomScoreAdj"]
+		ioPriorityRaw = process["ioPriority"]
 		delete(process, "rlimits")
 		delete(process, "oomScoreAdj")
+		delete(process, "ioPriority")
 		cleanProcess, err := json.Marshal(process)
 		if err != nil {
 			return err
@@ -101,6 +110,42 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d", processOOMScoreAdjEnv, oomScoreAdj))
+	}
+
+	if len(ioPriorityRaw) != 0 {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI process.ioPriority requires linux")
+		}
+		if bytes.Equal(bytes.TrimSpace(ioPriorityRaw), []byte("null")) {
+			return fmt.Errorf("OCI process.ioPriority must be an object")
+		}
+		var ioPriority ociProcessIOPriorityConfig
+		dec = json.NewDecoder(bytes.NewReader(ioPriorityRaw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&ioPriority); err != nil {
+			return fmt.Errorf("decode process.ioPriority: %w", err)
+		}
+		switch ioPriority.Class {
+		case "IOPRIO_CLASS_RT", "IOPRIO_CLASS_BE", "IOPRIO_CLASS_IDLE":
+		default:
+			return fmt.Errorf("OCI process.ioPriority class %q is not supported", ioPriority.Class)
+		}
+		if ioPriority.Priority == nil {
+			return fmt.Errorf("OCI process.ioPriority.priority is required")
+		}
+		if *ioPriority.Priority < 0 || *ioPriority.Priority > 7 {
+			return fmt.Errorf("OCI process.ioPriority priority %d is outside [0,7]", *ioPriority.Priority)
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == processIOPriorityEnv {
+				return fmt.Errorf("process.env key %q conflicts with internal io priority policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%s:%d", processIOPriorityEnv, ioPriority.Class, *ioPriority.Priority))
 	}
 
 	if len(rlimitsRaw) == 0 {
