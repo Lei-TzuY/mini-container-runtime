@@ -49,6 +49,7 @@ type RestartSpec struct {
 	ProcessUmaskSet   bool                 `json:"process_umask_set,omitempty"`
 	ProcessUmask      uint32               `json:"process_umask,omitempty"`
 	Memory            int64                `json:"memory,omitempty"`
+	MemoryHigh        int64                `json:"memory_high,omitempty"`
 	CPUWeight         int64                `json:"cpu_weight,omitempty"`
 	CPUs              float64              `json:"cpus,omitempty"`
 	CPUSetCPUs        string               `json:"cpuset_cpus,omitempty"`
