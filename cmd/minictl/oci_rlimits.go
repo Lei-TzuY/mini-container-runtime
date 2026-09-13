@@ -9,20 +9,22 @@ import (
 )
 
 const (
-	processRlimitNOFILEEnv = "MINICONTAINER_PROCESS_RLIMIT_NOFILE"
-	processRlimitCOREEnv   = "MINICONTAINER_PROCESS_RLIMIT_CORE"
-	processRlimitFSIZEEnv  = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
-	processRlimitSTACKEnv  = "MINICONTAINER_PROCESS_RLIMIT_STACK"
-	processRlimitNPROCEnv  = "MINICONTAINER_PROCESS_RLIMIT_NPROC"
-	processOOMScoreAdjEnv  = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
+	processRlimitNOFILEEnv  = "MINICONTAINER_PROCESS_RLIMIT_NOFILE"
+	processRlimitCOREEnv    = "MINICONTAINER_PROCESS_RLIMIT_CORE"
+	processRlimitFSIZEEnv   = "MINICONTAINER_PROCESS_RLIMIT_FSIZE"
+	processRlimitSTACKEnv   = "MINICONTAINER_PROCESS_RLIMIT_STACK"
+	processRlimitNPROCEnv   = "MINICONTAINER_PROCESS_RLIMIT_NPROC"
+	processRlimitMEMLOCKEnv = "MINICONTAINER_PROCESS_RLIMIT_MEMLOCK"
+	processOOMScoreAdjEnv   = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
-	"RLIMIT_NOFILE": processRlimitNOFILEEnv,
-	"RLIMIT_CORE":   processRlimitCOREEnv,
-	"RLIMIT_FSIZE":  processRlimitFSIZEEnv,
-	"RLIMIT_STACK":  processRlimitSTACKEnv,
-	"RLIMIT_NPROC":  processRlimitNPROCEnv,
+	"RLIMIT_NOFILE":  processRlimitNOFILEEnv,
+	"RLIMIT_CORE":    processRlimitCOREEnv,
+	"RLIMIT_FSIZE":   processRlimitFSIZEEnv,
+	"RLIMIT_STACK":   processRlimitSTACKEnv,
+	"RLIMIT_NPROC":   processRlimitNPROCEnv,
+	"RLIMIT_MEMLOCK": processRlimitMEMLOCKEnv,
 }
 
 type ociProcessRlimitConfig struct {
