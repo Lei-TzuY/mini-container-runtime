@@ -121,6 +121,8 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		Memory:            spec.Memory,
 		CPUWeight:         spec.CPUWeight,
 		CPUs:              spec.CPUs,
+		CPUSetCPUs:        spec.CPUSetCPUs,
+		CPUSetMems:        spec.CPUSetMems,
 		PidsLimit:         spec.PidsLimit,
 		Seccomp:           spec.Seccomp,
 		BridgeNetwork:     spec.BridgeNetwork,

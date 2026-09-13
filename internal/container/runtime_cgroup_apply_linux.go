@@ -3,7 +3,9 @@
 package container
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"minicontainer/internal/cgroups"
 	"minicontainer/internal/state"
@@ -29,6 +31,18 @@ func applyCgroupWithDurableOwnership(
 		return false, &runtimeSetupError{err: fmt.Errorf("cgroup apply operation is nil")}
 	}
 	if st != nil {
+		spec, err := st.RestartSpec(containerID)
+		switch {
+		case err == nil:
+			cfg.CPUSetCPUs = spec.CPUSetCPUs
+			cfg.CPUSetMems = spec.CPUSetMems
+		case errors.Is(err, os.ErrNotExist):
+			// Older/direct managed callers may not have a durable restart spec.
+			// Preserve their existing cgroup semantics while refusing to hide any
+			// other state corruption or read failure.
+		default:
+			return false, &runtimeStateError{err: fmt.Errorf("load durable resource policy before cgroup apply for container %s: %w", containerID, err)}
+		}
 		if err := st.MarkCgroupOwnedIfIdentity(containerID, pid, pidStartTime, cfg.Name); err != nil {
 			return false, &runtimeStateError{err: fmt.Errorf("persist cgroup ownership before apply for container %s: %w", containerID, err)}
 		}

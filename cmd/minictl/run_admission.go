@@ -38,6 +38,14 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if cfg.ContainerID != "" {
 		return nil, nil, fmt.Errorf("run config already has container ID %q", cfg.ContainerID)
 	}
+	cleanEnv, cpuSetCPUs, cpuSetMems, err := extractOCICPUSetPolicy(cfg.Env)
+	if err != nil {
+		return nil, nil, fmt.Errorf("consume OCI cpuset policy: %w", err)
+	}
+	cfg.Env = cleanEnv
+	cfg.CPUSetCPUs = cpuSetCPUs
+	cfg.CPUSetMems = cpuSetMems
+
 	rootfs, err := normalizeRunAdmissionRootFS(cfg.RootFS)
 	if err != nil {
 		return nil, nil, err
@@ -151,6 +159,8 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		Memory:            cfg.Memory,
 		CPUWeight:         cfg.CPUWeight,
 		CPUs:              cfg.CPUs,
+		CPUSetCPUs:        cfg.CPUSetCPUs,
+		CPUSetMems:        cfg.CPUSetMems,
 		PidsLimit:         cfg.PidsLimit,
 		Seccomp:           cfg.Seccomp,
 		BridgeNetwork:     cfg.BridgeNetwork,

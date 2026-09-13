@@ -8,11 +8,13 @@ package cgroups
 import "fmt"
 
 type Config struct {
-	Name      string
-	MemoryMax int64
-	CPUWeight int64
-	CPUs      float64
-	PidsMax   int64
+	Name       string
+	MemoryMax  int64
+	CPUWeight  int64
+	CPUs       float64
+	CPUSetCPUs string
+	CPUSetMems string
+	PidsMax    int64
 }
 
 type Stats struct {
