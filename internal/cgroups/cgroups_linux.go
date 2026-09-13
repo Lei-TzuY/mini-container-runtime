@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const cgroupV2Root = "/sys/fs/cgroup"
@@ -30,6 +31,10 @@ type Config struct {
 	// CPUs is the fractional CPU quota (e.g. 0.5 = 50% of 1 CPU, 2.0 = 2 CPUs).
 	CPUs float64
 
+	// CPUSetCPUs and CPUSetMems pin execution to cgroup v2 CPU/NUMA sets.
+	CPUSetCPUs string
+	CPUSetMems string
+
 	// PidsMax is the maximum number of processes (threads) inside the cgroup.
 	PidsMax int64
 }
@@ -45,12 +50,17 @@ func Apply(pid int, cfg Config, debug bool) error {
 	if err := validateResourceValues(cfg.MemoryMax, cfg.CPUWeight, cfg.CPUs, cfg.PidsMax); err != nil {
 		return err
 	}
+	cfg.CPUSetCPUs = strings.TrimSpace(cfg.CPUSetCPUs)
+	cfg.CPUSetMems = strings.TrimSpace(cfg.CPUSetMems)
 
 	if isV2() {
 		if debug {
 			fmt.Println("[cgroup] using cgroup v2 (unified hierarchy)")
 		}
 		return applyV2(pid, cfg, debug)
+	}
+	if cfg.CPUSetCPUs != "" || cfg.CPUSetMems != "" {
+		return fmt.Errorf("cpuset resource controls require cgroup v2")
 	}
 	if debug {
 		fmt.Println("[cgroup] using cgroup v1 (legacy hierarchy)")
@@ -90,9 +100,6 @@ func isV2() bool {
 func applyV2(pid int, cfg Config, debug bool) error {
 	cgPath := filepath.Join(cgroupV2Root, cfg.Name)
 
-	// A PID-derived cgroup name can collide with stale state after PID reuse.
-	// Reusing an existing cgroup would make its prior membership/configuration
-	// part of a new container, so fail closed instead of MkdirAll-ing through it.
 	if err := os.Mkdir(cgPath, 0755); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("cgroup %s already exists; refusing to reuse stale cgroup", cgPath)
@@ -133,11 +140,6 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 		if err := write("memory.max", strconv.FormatInt(cfg.MemoryMax, 10)); err != nil {
 			return err
 		}
-
-		// memory.swap.max is not present on every kernel/controller setup. Zero
-		// swap is a strengthening of MemoryMax rather than a separately requested
-		// limit: absence is tolerated, but any error writing an existing knob is
-		// surfaced instead of silently pretending it succeeded.
 		swapPath := filepath.Join(cgPath, "memory.swap.max")
 		if _, err := os.Stat(swapPath); err == nil {
 			if err := write("memory.swap.max", "0"); err != nil {
@@ -154,12 +156,24 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 		}
 	}
 
-	// Hard CPU quota (e.g. 0.5 CPUs = 50000 100000).
 	if cfg.CPUs > 0 {
-		periodUs := int64(100000) // 100ms default period
+		periodUs := int64(100000)
 		quotaUs := int64(cfg.CPUs * float64(periodUs))
 		val := fmt.Sprintf("%d %d", quotaUs, periodUs)
 		if err := write("cpu.max", val); err != nil {
+			return err
+		}
+	}
+
+	// Pinning is configured before process admission so a failed cpuset write can
+	// never leave the payload attached to a partially configured cgroup.
+	if cfg.CPUSetMems != "" {
+		if err := write("cpuset.mems", cfg.CPUSetMems); err != nil {
+			return err
+		}
+	}
+	if cfg.CPUSetCPUs != "" {
+		if err := write("cpuset.cpus", cfg.CPUSetCPUs); err != nil {
 			return err
 		}
 	}
@@ -170,8 +184,6 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 		}
 	}
 
-	// Attach last. If any requested limit above failed, cgroup.procs remains
-	// untouched and the caller can safely clean up the empty cgroup directory.
 	if err := write("cgroup.procs", strconv.Itoa(pid)); err != nil {
 		return err
 	}
