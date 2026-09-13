@@ -120,6 +120,7 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		Env:               append([]string(nil), spec.Env...),
 		Memory:            spec.Memory,
 		MemoryHigh:        spec.MemoryHigh,
+		MemorySwap:        spec.MemorySwap,
 		CPUWeight:         spec.CPUWeight,
 		CPUs:              spec.CPUs,
 		CPUSetCPUs:        spec.CPUSetCPUs,
