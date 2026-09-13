@@ -58,6 +58,8 @@ func processSchedulerPolicy(name string) (uint32, bool) {
 		return unix.SCHED_NORMAL, true
 	case "SCHED_BATCH":
 		return unix.SCHED_BATCH, true
+	case "SCHED_IDLE":
+		return unix.SCHED_IDLE, true
 	default:
 		return 0, false
 	}

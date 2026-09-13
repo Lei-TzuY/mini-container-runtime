@@ -176,7 +176,7 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("decode process.scheduler: %w", err)
 		}
 		switch scheduler.Policy {
-		case "SCHED_OTHER", "SCHED_BATCH":
+		case "SCHED_OTHER", "SCHED_BATCH", "SCHED_IDLE":
 		default:
 			return fmt.Errorf("OCI process.scheduler policy %q is not supported", scheduler.Policy)
 		}
