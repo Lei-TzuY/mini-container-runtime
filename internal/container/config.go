@@ -96,6 +96,11 @@ type Config struct {
 	// CPUs is the hard fractional CPU limit (e.g. 0.5 = 50% CPU, 2.0 = 2 CPUs).
 	CPUs float64
 
+	// CPUSetCPUs and CPUSetMems are OCI/cgroup v2 cpuset expressions that pin the
+	// container generation to explicit CPUs and NUMA memory nodes.
+	CPUSetCPUs string
+	CPUSetMems string
+
 	// PidsLimit is the maximum number of processes inside the container.
 	PidsLimit int64
 
