@@ -73,6 +73,7 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	var schedulerRaw json.RawMessage
 	var cpusetCPUsRaw json.RawMessage
 	var cpusetMemsRaw json.RawMessage
+	var memoryReservationRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
@@ -101,6 +102,19 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 			var resources map[string]json.RawMessage
 			if err := json.Unmarshal(resourcesRaw, &resources); err != nil {
 				return err
+			}
+			if memoryRaw, ok := resources["memory"]; ok && !bytes.Equal(bytes.TrimSpace(memoryRaw), []byte("null")) {
+				var memory map[string]json.RawMessage
+				if err := json.Unmarshal(memoryRaw, &memory); err != nil {
+					return err
+				}
+				memoryReservationRaw = memory["reservation"]
+				delete(memory, "reservation")
+				cleanMemory, err := json.Marshal(memory)
+				if err != nil {
+					return err
+				}
+				resources["memory"] = cleanMemory
 			}
 			if cpuRaw, ok := resources["cpu"]; ok && !bytes.Equal(bytes.TrimSpace(cpuRaw), []byte("null")) {
 				var cpu map[string]json.RawMessage
@@ -139,6 +153,32 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode((*plainOCIBundleConfig)(c)); err != nil {
 		return err
+	}
+
+	if len(memoryReservationRaw) != 0 {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI linux.resources.memory.reservation requires linux")
+		}
+		if bytes.Equal(bytes.TrimSpace(memoryReservationRaw), []byte("null")) {
+			return fmt.Errorf("OCI linux.resources.memory.reservation must be greater than zero")
+		}
+		var reservation int64
+		if err := json.Unmarshal(memoryReservationRaw, &reservation); err != nil {
+			return fmt.Errorf("decode linux.resources.memory.reservation: %w", err)
+		}
+		if reservation <= 0 {
+			return fmt.Errorf("linux.resources.memory.reservation must be greater than zero")
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == processMemoryHighEnv {
+				return fmt.Errorf("process.env key %q conflicts with internal memory reservation policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d", processMemoryHighEnv, reservation))
 	}
 
 	appendCPUSetMarker := func(raw json.RawMessage, field, marker string) error {

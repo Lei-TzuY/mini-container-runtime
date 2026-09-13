@@ -31,16 +31,18 @@ func TestConfigureV2WritesLimitsBeforeAttach(t *testing.T) {
 	dir := t.TempDir()
 	procs := fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
 	memory := fakeCgroupFile(t, dir, "memory.max", "max")
+	high := fakeCgroupFile(t, dir, "memory.high", "max")
 	swap := fakeCgroupFile(t, dir, "memory.swap.max", "max")
 	weight := fakeCgroupFile(t, dir, "cpu.weight", "100")
 	cpuMax := fakeCgroupFile(t, dir, "cpu.max", "max 100000")
 	pids := fakeCgroupFile(t, dir, "pids.max", "max")
 
 	cfg := Config{
-		MemoryMax: 256 * 1024 * 1024,
-		CPUWeight: 750,
-		CPUs:      1.5,
-		PidsMax:   64,
+		MemoryMax:  256 * 1024 * 1024,
+		MemoryHigh: 128 * 1024 * 1024,
+		CPUWeight:  750,
+		CPUs:       1.5,
+		PidsMax:    64,
 	}
 	if err := configureV2(dir, 4321, cfg, false); err != nil {
 		t.Fatalf("configureV2: %v", err)
@@ -48,6 +50,7 @@ func TestConfigureV2WritesLimitsBeforeAttach(t *testing.T) {
 
 	checks := map[string]string{
 		memory: "268435456",
+		high:   "134217728",
 		swap:   "0",
 		weight: "750",
 		cpuMax: "150000 100000",
@@ -58,6 +61,22 @@ func TestConfigureV2WritesLimitsBeforeAttach(t *testing.T) {
 		if got := readFakeCgroupFile(t, path); got != want {
 			t.Fatalf("%s = %q, want %q", filepath.Base(path), got, want)
 		}
+	}
+}
+
+func TestConfigureV2MemoryHighFailureDoesNotAttachProcess(t *testing.T) {
+	dir := t.TempDir()
+	procs := fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
+	if err := os.Mkdir(filepath.Join(dir, "memory.high"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := configureV2(dir, 4321, Config{MemoryHigh: 4096}, false)
+	if err == nil || !strings.Contains(err.Error(), "memory.high") {
+		t.Fatalf("configureV2 error=%v, want memory.high failure", err)
+	}
+	if got := readFakeCgroupFile(t, procs); got != "unattached" {
+		t.Fatalf("process attached despite failed memory.high: cgroup.procs=%q", got)
 	}
 }
 

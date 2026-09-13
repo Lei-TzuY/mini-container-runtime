@@ -25,6 +25,10 @@ type Config struct {
 	// MemoryMax is the hard memory limit in bytes. 0 means unlimited.
 	MemoryMax int64
 
+	// MemoryHigh is the cgroup v2 soft memory throttle threshold in bytes.
+	// 0 leaves memory.high unchanged.
+	MemoryHigh int64
+
 	// CPUWeight is the relative CPU scheduling weight in the range 1–10000.
 	CPUWeight int64
 
@@ -50,6 +54,9 @@ func Apply(pid int, cfg Config, debug bool) error {
 	if err := validateResourceValues(cfg.MemoryMax, cfg.CPUWeight, cfg.CPUs, cfg.PidsMax); err != nil {
 		return err
 	}
+	if cfg.MemoryHigh < 0 {
+		return fmt.Errorf("memory high must be non-negative")
+	}
 	cfg.CPUSetCPUs = strings.TrimSpace(cfg.CPUSetCPUs)
 	cfg.CPUSetMems = strings.TrimSpace(cfg.CPUSetMems)
 
@@ -58,6 +65,9 @@ func Apply(pid int, cfg Config, debug bool) error {
 			fmt.Println("[cgroup] using cgroup v2 (unified hierarchy)")
 		}
 		return applyV2(pid, cfg, debug)
+	}
+	if cfg.MemoryHigh > 0 {
+		return fmt.Errorf("memory high resource control requires cgroup v2")
 	}
 	if cfg.CPUSetCPUs != "" || cfg.CPUSetMems != "" {
 		return fmt.Errorf("cpuset resource controls require cgroup v2")
@@ -147,6 +157,12 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("inspect %s: %w", swapPath, err)
+		}
+	}
+
+	if cfg.MemoryHigh > 0 {
+		if err := write("memory.high", strconv.FormatInt(cfg.MemoryHigh, 10)); err != nil {
+			return err
 		}
 	}
 

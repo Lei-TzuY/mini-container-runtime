@@ -10,6 +10,7 @@ import "fmt"
 type Config struct {
 	Name       string
 	MemoryMax  int64
+	MemoryHigh int64
 	CPUWeight  int64
 	CPUs       float64
 	CPUSetCPUs string

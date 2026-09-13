@@ -42,7 +42,7 @@ func isRuntimeControlError(err error) bool {
 }
 
 func resourceLimitsRequested(cfg Config) bool {
-	return cfg.Memory != 0 || cfg.CPUWeight != 0 || cfg.CPUs != 0 || cfg.PidsLimit != 0 || strings.TrimSpace(cfg.CPUSetCPUs) != "" || strings.TrimSpace(cfg.CPUSetMems) != ""
+	return cfg.Memory != 0 || cfg.MemoryHigh != 0 || cfg.CPUWeight != 0 || cfg.CPUs != 0 || cfg.PidsLimit != 0 || strings.TrimSpace(cfg.CPUSetCPUs) != "" || strings.TrimSpace(cfg.CPUSetMems) != ""
 }
 
 func runtimeCgroupName(containerID string, childPID int, childStartTime uint64, managed bool) (string, error) {

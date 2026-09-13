@@ -112,6 +112,55 @@ func TestApplyCgroupUsesDurableCPUSetPolicy(t *testing.T) {
 	}
 }
 
+func TestApplyCgroupUsesDurableMemoryHighPolicy(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const (
+		id         = "ctr-cgroup-memory-high"
+		pid        = 4444
+		start      = uint64(102)
+		memoryHigh = int64(64 * 1024 * 1024)
+	)
+	if err := st.Save(&state.Container{
+		ID: id, Status: state.StatusCreated, RootFS: "/tmp/rootfs",
+		Command: []string{"true"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveRestartSpec(id, state.RestartSpec{
+		RootFS: "/tmp/rootfs", Command: []string{"true"}, MemoryHigh: memoryHigh,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkRunning(id, pid, start, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	name, err := cgroups.NameForContainerProcess(id, pid, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := applyCgroupWithDurableOwnership(st, id, pid, start, cgroups.Config{Name: name}, false, func(gotPID int, gotCfg cgroups.Config, _ bool) error {
+		if gotPID != pid {
+			t.Fatalf("apply pid=%d want %d", gotPID, pid)
+		}
+		if gotCfg.MemoryHigh != memoryHigh {
+			t.Fatalf("durable memory.high policy lost before cgroup apply: got %d want %d", gotCfg.MemoryHigh, memoryHigh)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("durable memory.high cgroup policy was not applied")
+	}
+}
+
 func TestApplyCgroupFailureKeepsOwnershipForRecovery(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {

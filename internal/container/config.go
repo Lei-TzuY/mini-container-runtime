@@ -87,8 +87,12 @@ type Config struct {
 	// Env is a list of environment variables (e.g. "KEY=VALUE") to inject.
 	Env []string
 
-	// Memory is the memory limit in bytes enforced via cgroups.
+	// Memory is the hard memory limit in bytes enforced via cgroups.
 	Memory int64
+
+	// MemoryHigh is the cgroup v2 soft memory throttle threshold in bytes.
+	// OCI linux.resources.memory.reservation maps to this value.
+	MemoryHigh int64
 
 	// CPUWeight is the cgroup v2 CPU weight in the range 1..10000.
 	CPUWeight int64
