@@ -29,6 +29,11 @@ type Config struct {
 	// 0 leaves memory.high unchanged.
 	MemoryHigh int64
 
+	// MemorySwap is the OCI memory+swap total in bytes. 0 preserves the
+	// runtime default of disabling swap when MemoryMax is set; -1 means
+	// unlimited swap. Positive values must be at least MemoryMax.
+	MemorySwap int64
+
 	// CPUWeight is the relative CPU scheduling weight in the range 1–10000.
 	CPUWeight int64
 
@@ -57,6 +62,15 @@ func Apply(pid int, cfg Config, debug bool) error {
 	if cfg.MemoryHigh < 0 {
 		return fmt.Errorf("memory high must be non-negative")
 	}
+	if cfg.MemorySwap < -1 {
+		return fmt.Errorf("memory swap total must be -1, zero, or positive")
+	}
+	if cfg.MemorySwap != 0 && cfg.MemoryMax <= 0 {
+		return fmt.Errorf("memory swap total requires a positive memory max")
+	}
+	if cfg.MemorySwap > 0 && cfg.MemorySwap < cfg.MemoryMax {
+		return fmt.Errorf("memory swap total %d is below memory max %d", cfg.MemorySwap, cfg.MemoryMax)
+	}
 	cfg.CPUSetCPUs = strings.TrimSpace(cfg.CPUSetCPUs)
 	cfg.CPUSetMems = strings.TrimSpace(cfg.CPUSetMems)
 
@@ -68,6 +82,9 @@ func Apply(pid int, cfg Config, debug bool) error {
 	}
 	if cfg.MemoryHigh > 0 {
 		return fmt.Errorf("memory high resource control requires cgroup v2")
+	}
+	if cfg.MemorySwap != 0 {
+		return fmt.Errorf("memory swap resource control requires cgroup v2")
 	}
 	if cfg.CPUSetCPUs != "" || cfg.CPUSetMems != "" {
 		return fmt.Errorf("cpuset resource controls require cgroup v2")
@@ -152,11 +169,20 @@ func configureV2(cgPath string, pid int, cfg Config, debug bool) error {
 		}
 		swapPath := filepath.Join(cgPath, "memory.swap.max")
 		if _, err := os.Stat(swapPath); err == nil {
-			if err := write("memory.swap.max", "0"); err != nil {
+			swapValue := "0"
+			switch {
+			case cfg.MemorySwap == -1:
+				swapValue = "max"
+			case cfg.MemorySwap > 0:
+				swapValue = strconv.FormatInt(cfg.MemorySwap-cfg.MemoryMax, 10)
+			}
+			if err := write("memory.swap.max", swapValue); err != nil {
 				return err
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("inspect %s: %w", swapPath, err)
+		} else if cfg.MemorySwap != 0 {
+			return fmt.Errorf("memory swap resource control unavailable: %s does not exist", swapPath)
 		}
 	}
 

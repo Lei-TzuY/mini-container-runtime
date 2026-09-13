@@ -64,6 +64,55 @@ func TestConfigureV2WritesLimitsBeforeAttach(t *testing.T) {
 	}
 }
 
+func TestConfigureV2TranslatesOCISwapTotal(t *testing.T) {
+	dir := t.TempDir()
+	procs := fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
+	memory := fakeCgroupFile(t, dir, "memory.max", "max")
+	swap := fakeCgroupFile(t, dir, "memory.swap.max", "max")
+
+	cfg := Config{MemoryMax: 256 * 1024 * 1024, MemorySwap: 768 * 1024 * 1024}
+	if err := configureV2(dir, 5123, cfg, false); err != nil {
+		t.Fatalf("configureV2: %v", err)
+	}
+	if got := readFakeCgroupFile(t, memory); got != "268435456" {
+		t.Fatalf("memory.max=%q", got)
+	}
+	if got := readFakeCgroupFile(t, swap); got != "536870912" {
+		t.Fatalf("memory.swap.max=%q, want swap-only delta", got)
+	}
+	if got := readFakeCgroupFile(t, procs); got != "5123" {
+		t.Fatalf("cgroup.procs=%q", got)
+	}
+}
+
+func TestConfigureV2UnlimitedSwap(t *testing.T) {
+	dir := t.TempDir()
+	_ = fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
+	_ = fakeCgroupFile(t, dir, "memory.max", "max")
+	swap := fakeCgroupFile(t, dir, "memory.swap.max", "0")
+
+	if err := configureV2(dir, 7, Config{MemoryMax: 4096, MemorySwap: -1}, false); err != nil {
+		t.Fatalf("configureV2: %v", err)
+	}
+	if got := readFakeCgroupFile(t, swap); got != "max" {
+		t.Fatalf("memory.swap.max=%q, want max", got)
+	}
+}
+
+func TestConfigureV2RequestedSwapRequiresKernelKnob(t *testing.T) {
+	dir := t.TempDir()
+	procs := fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
+	_ = fakeCgroupFile(t, dir, "memory.max", "max")
+
+	err := configureV2(dir, 77, Config{MemoryMax: 4096, MemorySwap: 8192}, false)
+	if err == nil || !strings.Contains(err.Error(), "memory swap resource control unavailable") {
+		t.Fatalf("configureV2 error=%v, want missing swap knob failure", err)
+	}
+	if got := readFakeCgroupFile(t, procs); got != "unattached" {
+		t.Fatalf("process attached despite missing requested swap control: %q", got)
+	}
+}
+
 func TestConfigureV2MemoryHighFailureDoesNotAttachProcess(t *testing.T) {
 	dir := t.TempDir()
 	procs := fakeCgroupFile(t, dir, "cgroup.procs", "unattached")
