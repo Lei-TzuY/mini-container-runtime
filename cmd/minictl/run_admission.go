@@ -151,6 +151,8 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		Memory:            cfg.Memory,
 		CPUWeight:         cfg.CPUWeight,
 		CPUs:              cfg.CPUs,
+		CPUSetCPUs:        cfg.CPUSetCPUs,
+		CPUSetMems:        cfg.CPUSetMems,
 		PidsLimit:         cfg.PidsLimit,
 		Seccomp:           cfg.Seccomp,
 		BridgeNetwork:     cfg.BridgeNetwork,
