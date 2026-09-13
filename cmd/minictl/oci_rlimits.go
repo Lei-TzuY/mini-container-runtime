@@ -19,6 +19,7 @@ const (
 	processRlimitDATAEnv    = "MINICONTAINER_PROCESS_RLIMIT_DATA"
 	processOOMScoreAdjEnv   = "MINICONTAINER_PROCESS_OOM_SCORE_ADJ"
 	processIOPriorityEnv    = "MINICONTAINER_PROCESS_IO_PRIORITY"
+	processSchedulerEnv     = "MINICONTAINER_PROCESS_SCHEDULER"
 )
 
 var processRlimitRuntimeEnv = map[string]string{
@@ -43,6 +44,16 @@ type ociProcessIOPriorityConfig struct {
 	Priority *int   `json:"priority"`
 }
 
+type ociProcessSchedulerConfig struct {
+	Policy   string   `json:"policy"`
+	Nice     *int32   `json:"nice"`
+	Priority *int32   `json:"priority"`
+	Flags    []string `json:"flags"`
+	Runtime  *uint64  `json:"runtime"`
+	Deadline *uint64  `json:"deadline"`
+	Period   *uint64  `json:"period"`
+}
+
 // UnmarshalJSON extends the strict OCI bundle decoder with bounded process
 // policy surfaces the runtime can execute today. Policies are encoded as
 // reserved parent/runtime markers in Process.Env: existing managed-run state
@@ -57,6 +68,7 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	var rlimitsRaw json.RawMessage
 	var oomScoreAdjRaw json.RawMessage
 	var ioPriorityRaw json.RawMessage
+	var schedulerRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
@@ -65,9 +77,11 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 		rlimitsRaw = process["rlimits"]
 		oomScoreAdjRaw = process["oomScoreAdj"]
 		ioPriorityRaw = process["ioPriority"]
+		schedulerRaw = process["scheduler"]
 		delete(process, "rlimits")
 		delete(process, "oomScoreAdj")
 		delete(process, "ioPriority")
+		delete(process, "scheduler")
 		cleanProcess, err := json.Marshal(process)
 		if err != nil {
 			return err
@@ -146,6 +160,58 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%s:%d", processIOPriorityEnv, ioPriority.Class, *ioPriority.Priority))
+	}
+
+	if len(schedulerRaw) != 0 {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI process.scheduler requires linux")
+		}
+		if bytes.Equal(bytes.TrimSpace(schedulerRaw), []byte("null")) {
+			return fmt.Errorf("OCI process.scheduler must be an object")
+		}
+		var scheduler ociProcessSchedulerConfig
+		dec = json.NewDecoder(bytes.NewReader(schedulerRaw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&scheduler); err != nil {
+			return fmt.Errorf("decode process.scheduler: %w", err)
+		}
+		switch scheduler.Policy {
+		case "SCHED_OTHER", "SCHED_BATCH":
+		default:
+			return fmt.Errorf("OCI process.scheduler policy %q is not supported", scheduler.Policy)
+		}
+		nice := int32(0)
+		if scheduler.Nice != nil {
+			nice = *scheduler.Nice
+		}
+		if nice < -20 || nice > 19 {
+			return fmt.Errorf("OCI process.scheduler nice %d is outside [-20,19]", nice)
+		}
+		if scheduler.Priority != nil && *scheduler.Priority != 0 {
+			return fmt.Errorf("OCI process.scheduler priority must be 0 for %s", scheduler.Policy)
+		}
+		if len(scheduler.Flags) != 0 {
+			return fmt.Errorf("OCI process.scheduler flags are not supported for %s", scheduler.Policy)
+		}
+		if scheduler.Runtime != nil && *scheduler.Runtime != 0 {
+			return fmt.Errorf("OCI process.scheduler runtime must be 0 for %s", scheduler.Policy)
+		}
+		if scheduler.Deadline != nil && *scheduler.Deadline != 0 {
+			return fmt.Errorf("OCI process.scheduler deadline must be 0 for %s", scheduler.Policy)
+		}
+		if scheduler.Period != nil && *scheduler.Period != 0 {
+			return fmt.Errorf("OCI process.scheduler period must be 0 for %s", scheduler.Policy)
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == processSchedulerEnv {
+				return fmt.Errorf("process.env key %q conflicts with internal scheduler policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%s:%d", processSchedulerEnv, scheduler.Policy, nice))
 	}
 
 	if len(rlimitsRaw) == 0 {
