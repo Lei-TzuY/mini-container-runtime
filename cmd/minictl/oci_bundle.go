@@ -146,6 +146,7 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 	}
 	procMountSeen := false
 	sysfsMountSeen := false
+	mqueueMountSeen := false
 	for _, mount := range spec.Mounts {
 		switch mount.Type {
 		case "bind":
@@ -177,6 +178,14 @@ func loadOCIBundle(bundle string) (container.Config, error) {
 			}
 			sysfsMountSeen = true
 			if err := validateOCISysfsMount(mount.Destination, mount.Source, mount.Options); err != nil {
+				return container.Config{}, err
+			}
+		case "mqueue":
+			if mqueueMountSeen {
+				return container.Config{}, fmt.Errorf("duplicate OCI mqueue mount")
+			}
+			mqueueMountSeen = true
+			if err := validateOCIMqueueMount(mount.Destination, mount.Source, mount.Options); err != nil {
 				return container.Config{}, err
 			}
 		default:
