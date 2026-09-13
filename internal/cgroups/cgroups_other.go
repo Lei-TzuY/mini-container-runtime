@@ -10,6 +10,7 @@ import "fmt"
 type Config struct {
 	Name       string
 	MemoryMax  int64
+	MemoryHigh int64
 	CPUWeight  int64
 	CPUs       float64
 	CPUSetCPUs string
@@ -27,24 +28,9 @@ type Stats struct {
 	IOPressure     *PSIStats
 }
 
-func Apply(pid int, cfg Config, debug bool) error {
-	return fmt.Errorf("cgroups resource limits require Linux")
-}
-
+func Apply(pid int, cfg Config, debug bool) error { return fmt.Errorf("cgroups resource limits require Linux") }
 func Remove(name string, debug bool) {}
-
-func ReadStats(name string) (*Stats, error) {
-	return nil, fmt.Errorf("cgroups stats require Linux")
-}
-
-func Freeze(name string) error {
-	return fmt.Errorf("cgroups freeze requires Linux")
-}
-
-func Unfreeze(name string) error {
-	return fmt.Errorf("cgroups unfreeze requires Linux")
-}
-
-func IsFrozen(name string) (bool, error) {
-	return false, fmt.Errorf("cgroups freeze requires Linux")
-}
+func ReadStats(name string) (*Stats, error) { return nil, fmt.Errorf("cgroups stats require Linux") }
+func Freeze(name string) error { return fmt.Errorf("cgroups freeze requires Linux") }
+func Unfreeze(name string) error { return fmt.Errorf("cgroups unfreeze requires Linux") }
+func IsFrozen(name string) (bool, error) { return false, fmt.Errorf("cgroups freeze requires Linux") }
