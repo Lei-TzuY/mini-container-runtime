@@ -29,6 +29,12 @@ func applyCgroupWithDurableOwnership(
 		return false, &runtimeSetupError{err: fmt.Errorf("cgroup apply operation is nil")}
 	}
 	if st != nil {
+		spec, err := st.RestartSpec(containerID)
+		if err != nil {
+			return false, &runtimeStateError{err: fmt.Errorf("load durable resource policy before cgroup apply for container %s: %w", containerID, err)}
+		}
+		cfg.CPUSetCPUs = spec.CPUSetCPUs
+		cfg.CPUSetMems = spec.CPUSetMems
 		if err := st.MarkCgroupOwnedIfIdentity(containerID, pid, pidStartTime, cfg.Name); err != nil {
 			return false, &runtimeStateError{err: fmt.Errorf("persist cgroup ownership before apply for container %s: %w", containerID, err)}
 		}
