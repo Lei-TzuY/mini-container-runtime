@@ -51,6 +51,8 @@ type RestartSpec struct {
 	Memory            int64                `json:"memory,omitempty"`
 	CPUWeight         int64                `json:"cpu_weight,omitempty"`
 	CPUs              float64              `json:"cpus,omitempty"`
+	CPUSetCPUs        string               `json:"cpuset_cpus,omitempty"`
+	CPUSetMems        string               `json:"cpuset_mems,omitempty"`
 	PidsLimit         int64                `json:"pids_limit,omitempty"`
 	Seccomp           bool                 `json:"seccomp,omitempty"`
 	BridgeNetwork     bool                 `json:"bridge_network,omitempty"`
