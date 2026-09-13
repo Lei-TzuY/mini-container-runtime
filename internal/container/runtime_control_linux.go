@@ -42,7 +42,7 @@ func isRuntimeControlError(err error) bool {
 }
 
 func resourceLimitsRequested(cfg Config) bool {
-	return cfg.Memory != 0 || cfg.CPUWeight != 0 || cfg.CPUs != 0 || cfg.PidsLimit != 0 || strings.TrimSpace(cfg.CPUSetCPUs) != "" || strings.TrimSpace(cfg.CPUSetMems) != ""
+	return cfg.Memory != 0 || cfg.MemoryHigh != 0 || cfg.CPUWeight != 0 || cfg.CPUs != 0 || cfg.PidsLimit != 0 || strings.TrimSpace(cfg.CPUSetCPUs) != "" || strings.TrimSpace(cfg.CPUSetMems) != ""
 }
 
 func runtimeCgroupName(containerID string, childPID int, childStartTime uint64, managed bool) (string, error) {
@@ -142,9 +142,6 @@ func abortRuntimeSetupFailureWithAbort(
 			&runtimeStateError{err: fmt.Errorf("persist stopped state after runtime setup failure for container %s: %w", containerID, stateErr)},
 		)
 		if !changed {
-			// The child is gone, but the durable lifecycle record still does not
-			// prove that. Preserve captured cgroups and all ownership sidecars so
-			// reconciliation retains a complete retry proof.
 			return resultErr
 		}
 	}
