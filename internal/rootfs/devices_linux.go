@@ -82,6 +82,20 @@ func mountPrivateMqueue(devPath string, ops deviceMountOps) error {
 	return nil
 }
 
+func mountPrivateDevpts(devPath string, ops deviceMountOps) error {
+	ptsPath := filepath.Join(devPath, "pts")
+	if err := ops.ensureDir(ptsPath, 0o755); err != nil {
+		return fmt.Errorf("prepare /dev/pts: %w", err)
+	}
+	if err := ops.mount("devpts", ptsPath, "devpts", syscall.MS_NOSUID|syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0666"); err != nil {
+		return fmt.Errorf("mount private devpts: %w", err)
+	}
+	if err := ops.symlink("pts/ptmx", filepath.Join(devPath, "ptmx")); err != nil {
+		return fmt.Errorf("create /dev/ptmx: %w", err)
+	}
+	return nil
+}
+
 // preparePrivateDevices replaces any pre-pivot /dev mount with a private
 // device filesystem. Only a small character-device allowlist is bind-mounted
 // from the host; disks, GPUs, kmsg, fuse, and other host devices are not
@@ -129,15 +143,8 @@ func preparePrivateDevicesWithOps(newRoot string, debug bool, ops deviceMountOps
 		}
 	}
 
-	ptsPath := filepath.Join(devPath, "pts")
-	if err := ops.ensureDir(ptsPath, 0o755); err != nil {
-		return fmt.Errorf("prepare /dev/pts: %w", err)
-	}
-	if err := ops.mount("devpts", ptsPath, "devpts", syscall.MS_NOSUID|syscall.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=0666"); err != nil {
-		return fmt.Errorf("mount private devpts: %w", err)
-	}
-	if err := ops.symlink("pts/ptmx", filepath.Join(devPath, "ptmx")); err != nil {
-		return fmt.Errorf("create /dev/ptmx: %w", err)
+	if err := mountPrivateDevpts(devPath, ops); err != nil {
+		return err
 	}
 
 	shmPath := filepath.Join(devPath, "shm")
