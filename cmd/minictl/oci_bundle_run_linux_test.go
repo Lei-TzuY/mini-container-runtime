@@ -5,6 +5,7 @@ package main
 import (
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 func TestOCIBundleRunConnectsAdmissionResourcesAndRealProcess(t *testing.T) {
 	stateDir := t.TempDir()
-	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/sh","-c","printf oci-process"],"env":["A=1"],"cwd":"/"},"hostname":"oci-test","mounts":[{"destination":"/data","type":"bind","source":"/srv/oci-data","options":["rbind","ro"]}],"linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"user"}],"resources":{"memory":{"limit":67108864},"cpu":{"shares":1024,"quota":50000,"period":100000},"pids":{"limit":32}}}}`)
+	bundle := writeOCIBundle(t, `{"ociVersion":"1.1.0","root":{"path":"rootfs"},"process":{"args":["/bin/sh","-c","printf oci-process"],"env":["A=1"],"cwd":"/"},"hostname":"oci-test","mounts":[{"destination":"/data","type":"bind","source":"/srv/oci-data","options":["rbind","ro"]}],"linux":{"namespaces":[{"type":"pid"},{"type":"mount"},{"type":"user"}],"resources":{"memory":{"limit":67108864},"cpu":{"shares":1024,"quota":50000,"period":100000,"cpus":"0-2","mems":"0"},"pids":{"limit":32}}}}`)
 
 	var ran bool
 	id, err := runOCIBundleWith(bundle, ociBundleRunDeps{
@@ -32,8 +33,13 @@ func TestOCIBundleRunConnectsAdmissionResourcesAndRealProcess(t *testing.T) {
 				t.Fatalf("runner received unadmitted config: %+v", cfg)
 			}
 			wantWeight := int64(1 + (uint64(1024)-2)*9999/262142)
-			if cfg.Memory != 67108864 || cfg.PidsLimit != 32 || cfg.CPUs != 0.5 || cfg.CPUWeight != wantWeight {
+			if cfg.Memory != 67108864 || cfg.PidsLimit != 32 || cfg.CPUs != 0.5 || cfg.CPUWeight != wantWeight || cfg.CPUSetCPUs != "0-2" || cfg.CPUSetMems != "0" {
 				t.Fatalf("runner lost OCI resource policy: %+v", cfg)
+			}
+			for _, entry := range cfg.Env {
+				if strings.HasPrefix(entry, processCPUSetCPUsEnv+"=") || strings.HasPrefix(entry, processCPUSetMemsEnv+"=") {
+					t.Fatalf("internal cpuset marker leaked to payload environment: %q", entry)
+				}
 			}
 			if len(cfg.Volumes) != 1 || cfg.Volumes[0].HostPath != "/srv/oci-data" || cfg.Volumes[0].ContainerPath != "/data" || !cfg.Volumes[0].ReadOnly {
 				t.Fatalf("runner lost OCI bind mount policy: %+v", cfg.Volumes)
@@ -78,8 +84,13 @@ func TestOCIBundleRunConnectsAdmissionResourcesAndRealProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Memory != 67108864 || spec.PidsLimit != 32 || spec.CPUs != 0.5 {
+	if spec.Memory != 67108864 || spec.PidsLimit != 32 || spec.CPUs != 0.5 || spec.CPUSetCPUs != "0-2" || spec.CPUSetMems != "0" {
 		t.Fatalf("persisted restart spec lost OCI resources: %+v", spec)
+	}
+	for _, entry := range spec.Env {
+		if strings.HasPrefix(entry, processCPUSetCPUsEnv+"=") || strings.HasPrefix(entry, processCPUSetMemsEnv+"=") {
+			t.Fatalf("internal cpuset marker leaked to restart payload environment: %q", entry)
+		}
 	}
 	if len(spec.Volumes) != 1 || spec.Volumes[0].HostPath != "/srv/oci-data" || spec.Volumes[0].ContainerPath != "/data" || !spec.Volumes[0].ReadOnly {
 		t.Fatalf("persisted restart spec lost OCI bind mount: %+v", spec.Volumes)
