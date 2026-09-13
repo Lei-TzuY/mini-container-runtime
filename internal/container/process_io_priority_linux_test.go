@@ -43,14 +43,14 @@ func TestProcessIOPriorityRuntimeMarkerApplied(t *testing.T) {
 	}
 	env = append(env,
 		sentinelEnvKey+"=1",
-		processIOPriorityEnv+"=IOPRIO_CLASS_IDLE:4",
+		processIOPriorityEnv+"=IOPRIO_CLASS_BE:4",
 		processIOPriorityProbeEnv+"=1")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run io priority probe: %v: %s", err, out)
 	}
-	want := fmt.Sprintf("class=%d|priority=4|marker=%q", ioPriorityClassIdle, "")
+	want := fmt.Sprintf("class=%d|priority=4|marker=%q", ioPriorityClassBE, "")
 	if got := strings.TrimSpace(string(out)); got != want {
 		t.Fatalf("payload io priority/marker = %q, want %q", got, want)
 	}
