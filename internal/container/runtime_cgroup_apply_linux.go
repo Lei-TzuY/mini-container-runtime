@@ -35,6 +35,7 @@ func applyCgroupWithDurableOwnership(
 		switch {
 		case err == nil:
 			cfg.MemoryHigh = spec.MemoryHigh
+			cfg.MemorySwap = spec.MemorySwap
 			cfg.CPUSetCPUs = spec.CPUSetCPUs
 			cfg.CPUSetMems = spec.CPUSetMems
 		case errors.Is(err, os.ErrNotExist):

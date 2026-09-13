@@ -163,6 +163,7 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 		NoNewPrivileges:   cfg.NoNewPrivileges,
 		Memory:            cfg.Memory,
 		MemoryHigh:        cfg.MemoryHigh,
+		MemorySwap:        cfg.MemorySwap,
 		CPUWeight:         cfg.CPUWeight,
 		CPUs:              cfg.CPUs,
 		CPUSetCPUs:        cfg.CPUSetCPUs,
