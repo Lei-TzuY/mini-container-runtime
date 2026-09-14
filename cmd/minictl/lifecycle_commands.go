@@ -94,6 +94,17 @@ func stopContainerForOptions(store *state.Store, opts stopCommandOptions) (*stat
 	return container.StopContainer(store, opts.containerID, opts.timeout)
 }
 
+func killContainerForOptions(store *state.Store, opts killCommandOptions) (*state.Container, error) {
+	sig, err := container.ParseSignal(opts.signal)
+	if err != nil {
+		return nil, err
+	}
+	if int(sig) == 9 {
+		return container.StopContainerWithSignal(store, opts.containerID, opts.signal, 0)
+	}
+	return container.SendSignalResolved(store, opts.containerID, opts.signal)
+}
+
 func cmdStopSafe(args []string) {
 	opts, err := parseStopCommandArgs(args)
 	if err != nil {
@@ -133,7 +144,7 @@ func cmdKillSafe(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	rec, err := container.SendSignalResolved(store, opts.containerID, opts.signal)
+	rec, err := killContainerForOptions(store, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kill error: %v\n", err)
 		os.Exit(1)
