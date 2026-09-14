@@ -48,7 +48,7 @@ func parseRestartCommandArgs(args []string) (string, error) {
 }
 
 func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state.Container, error) {
-	if deps.openStore == nil || deps.stat == nil || deps.stop == nil || deps.run == nil {
+	if deps.openStore == nil || deps.stat == nil || deps.run == nil {
 		return nil, fmt.Errorf("restart command dependencies are incomplete")
 	}
 
@@ -70,9 +70,15 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 		return nil, fmt.Errorf("reconcile container %s before restart: %w", rec.ID, err)
 	}
 	if rec.Status == state.StatusRunning {
-		rec, err = deps.stop(st, rec.ID, restartStopTimeout)
-		if err != nil {
+		if deps.stop == nil {
+			return nil, fmt.Errorf("restart stop dependency is incomplete")
+		}
+		if _, err := deps.stop(st, rec.ID, restartStopTimeout); err != nil {
 			return nil, fmt.Errorf("stop running container %s before restart: %w", rec.ID, err)
+		}
+		rec, err = st.Get(rec.ID)
+		if err != nil {
+			return nil, fmt.Errorf("reload container %s after stop: %w", rec.ID, err)
 		}
 	}
 	if rec.Status != state.StatusStopped {
