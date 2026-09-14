@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"syscall"
 	"testing"
 	"time"
 
@@ -195,7 +194,7 @@ func TestRestartRunningContainerStopsThenRelaunchesWithRealProcess(t *testing.T)
 			if timeout != restartStopTimeout {
 				t.Fatalf("stop timeout = %v, want %v", timeout, restartStopTimeout)
 			}
-			if err := old.Process.Signal(syscall.SIGTERM); err != nil {
+			if err := stdin.Close(); err != nil {
 				return nil, err
 			}
 			if err := old.Wait(); err != nil {
