@@ -138,6 +138,26 @@ func payloadUmaskFromRuntimeEnv() (*uint32, error) {
 	return &umask, nil
 }
 
+func drainInitSupervisorProcessGroup(pgid int) error {
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("terminate payload process group %d: %w", pgid, err)
+	}
+	for {
+		var status syscall.WaitStatus
+		_, err := syscall.Wait4(-1, &status, 0, nil)
+		if errors.Is(err, syscall.EINTR) {
+			runtime.Gosched()
+			continue
+		}
+		if errors.Is(err, syscall.ECHILD) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reap payload descendant: %w", err)
+		}
+	}
+}
+
 func runContainerInitSupervisor(command []string) (int, error) {
 	if len(command) == 0 || command[0] == "" {
 		return 0, fmt.Errorf("payload command is empty")
@@ -232,12 +252,18 @@ func runContainerInitSupervisor(command []string) (int, error) {
 			return 0, err
 		default:
 		}
+
+		exitCode := 0
 		if status.Exited() {
-			return status.ExitStatus(), nil
+			exitCode = status.ExitStatus()
+		} else if status.Signaled() {
+			exitCode = 128 + int(status.Signal())
+		} else {
+			return 1, fmt.Errorf("payload %d exited with unsupported wait status %#x", pid, uint32(status))
 		}
-		if status.Signaled() {
-			return 128 + int(status.Signal()), nil
+		if err := drainInitSupervisorProcessGroup(pid); err != nil {
+			return 0, err
 		}
-		return 1, fmt.Errorf("payload %d exited with unsupported wait status %#x", pid, uint32(status))
+		return exitCode, nil
 	}
 }
