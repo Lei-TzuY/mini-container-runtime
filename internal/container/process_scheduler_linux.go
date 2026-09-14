@@ -5,6 +5,7 @@ package container
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -13,10 +14,12 @@ import (
 
 const processSchedulerEnv = "MINICONTAINER_PROCESS_SCHEDULER"
 
-// OCI process.scheduler belongs to the workload process tree. Apply it in
-// re-executed container-init and exec generations; descendants inherit the
-// scheduler policy and nice value across fork/exec. The marker is removed
-// before payload execution.
+var processSchedulerThreadID int
+
+// OCI process.scheduler is a per-thread Linux property. Pin the re-executed
+// container-init or exec generation to the thread on which the policy is
+// installed so the eventual payload exec inherits the requested scheduler
+// policy instead of migrating to an unconfigured Go runtime thread.
 func init() {
 	if os.Getenv(sentinelEnvKey) != "1" && os.Getenv(execSentinelKey) != "1" {
 		return
@@ -42,6 +45,7 @@ func init() {
 		failProcessSchedulerInit("invalid policy %q", policyName)
 	}
 
+	runtime.LockOSThread()
 	attr := &unix.SchedAttr{
 		Size:   unix.SizeofSchedAttr,
 		Policy: policy,
@@ -50,6 +54,7 @@ func init() {
 	if err := unix.SchedSetAttr(0, attr, 0); err != nil {
 		failProcessSchedulerInit("set %s nice=%d: %v", policyName, nice, err)
 	}
+	processSchedulerThreadID = unix.Gettid()
 }
 
 func processSchedulerPolicy(name string) (uint32, bool) {

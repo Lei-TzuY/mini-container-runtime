@@ -16,9 +16,13 @@ const processSchedulerProbeEnv = "MINICONTAINER_TEST_PROCESS_SCHEDULER_PROBE"
 
 func TestProcessSchedulerRuntimeMarkerApplied(t *testing.T) {
 	if os.Getenv(processSchedulerProbeEnv) == "1" {
-		attr, err := unix.SchedGetAttr(0, 0)
+		if processSchedulerThreadID <= 0 {
+			fmt.Fprint(os.Stderr, "scheduler thread was not pinned")
+			os.Exit(2)
+		}
+		attr, err := unix.SchedGetAttr(processSchedulerThreadID, 0)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "sched_getattr: %v", err)
+			fmt.Fprintf(os.Stderr, "sched_getattr pinned thread: %v", err)
 			os.Exit(2)
 		}
 		fmt.Printf("policy=%d|nice=%d|marker=%q", attr.Policy, attr.Nice, os.Getenv(processSchedulerEnv))
@@ -50,6 +54,6 @@ func TestProcessSchedulerRuntimeMarkerApplied(t *testing.T) {
 	}
 	want := fmt.Sprintf("policy=%d|nice=5|marker=%q", unix.SCHED_BATCH, "")
 	if got := strings.TrimSpace(string(out)); got != want {
-		t.Fatalf("payload scheduler/marker = %q, want %q", got, want)
+		t.Fatalf("pinned scheduler/marker = %q, want %q", got, want)
 	}
 }
