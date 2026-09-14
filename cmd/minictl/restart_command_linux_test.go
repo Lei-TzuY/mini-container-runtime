@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 
@@ -76,6 +77,10 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	rec, err := restartStoppedContainer(id, restartCommandDeps{
 		openStore: func() (*state.Store, error) { return state.Open(stateDir) },
 		stat:      os.Stat,
+		stop: func(*state.Store, string, time.Duration) (*state.Container, error) {
+			t.Fatal("stop called for already-stopped container")
+			return nil, nil
+		},
 		run: func(cfg container.Config) error {
 			gotCfg = cfg
 			cmd := exec.Command(cfg.Command[0], cfg.Command[1:]...)
@@ -124,6 +129,117 @@ func TestRestartStoppedContainerRelaunchesPersistedSpecWithRealProcess(t *testin
 	}
 }
 
+func TestRestartRunningContainerStopsThenRelaunchesWithRealProcess(t *testing.T) {
+	stateDir := t.TempDir()
+	rootfs := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "restarted-running")
+	id := "restart-running-process"
+
+	old := exec.Command("/bin/cat")
+	stdin, err := old.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		if old.ProcessState == nil {
+			_ = old.Process.Kill()
+			_, _ = old.Process.Wait()
+		}
+	}()
+	startTime, err := container.ProcessStartTime(old.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(&state.Container{
+		ID:           id,
+		PID:          old.Process.Pid,
+		PIDStartTime: startTime,
+		Status:       state.StatusRunning,
+		RootFS:       rootfs,
+		Command:      []string{"/bin/cat"},
+		CreatedAt:    time.Now(),
+	}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.SaveRestartSpec(id, state.RestartSpec{
+		RootFS:  rootfs,
+		Command: []string{"/bin/sh", "-c", "printf restarted > \"$1\"", "sh", marker},
+	}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stopCalled := false
+	runCalled := false
+	_, err = restartStoppedContainer(id, restartCommandDeps{
+		openStore: func() (*state.Store, error) { return state.Open(stateDir) },
+		stat:      os.Stat,
+		stop: func(st *state.Store, gotID string, timeout time.Duration) (*state.Container, error) {
+			stopCalled = true
+			if gotID != id {
+				t.Fatalf("stop id = %q, want %q", gotID, id)
+			}
+			if timeout != restartStopTimeout {
+				t.Fatalf("stop timeout = %v, want %v", timeout, restartStopTimeout)
+			}
+			if err := old.Process.Signal(syscall.SIGTERM); err != nil {
+				return nil, err
+			}
+			if err := old.Wait(); err != nil {
+				return nil, err
+			}
+			rec, err := st.Get(id)
+			if err != nil {
+				return nil, err
+			}
+			rec.Status = state.StatusStopped
+			rec.PID = 0
+			rec.PIDStartTime = 0
+			if err := st.Save(rec); err != nil {
+				return nil, err
+			}
+			return rec, nil
+		},
+		run: func(cfg container.Config) error {
+			runCalled = true
+			if !stopCalled {
+				t.Fatal("run invoked before running container was stopped")
+			}
+			cmd := exec.Command(cfg.Command[0], cfg.Command[1:]...)
+			return cmd.Run()
+		},
+	})
+	if err != nil {
+		t.Fatalf("restart running container: %v", err)
+	}
+	if !stopCalled || !runCalled {
+		t.Fatalf("stopCalled=%v runCalled=%v", stopCalled, runCalled)
+	}
+	if old.ProcessState == nil {
+		t.Fatal("old process still has no exit state after restart stop phase")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read restart marker: %v", err)
+	}
+	if string(data) != "restarted" {
+		t.Fatalf("marker = %q, want restarted", data)
+	}
+}
+
 func TestRestartStoppedContainerRejectsNonStoppedContainer(t *testing.T) {
 	stateDir := t.TempDir()
 	st, err := state.Open(stateDir)
@@ -149,15 +265,19 @@ func TestRestartStoppedContainerRejectsNonStoppedContainer(t *testing.T) {
 	_, err = restartStoppedContainer(id, restartCommandDeps{
 		openStore: func() (*state.Store, error) { return state.Open(stateDir) },
 		stat:      os.Stat,
+		stop: func(*state.Store, string, time.Duration) (*state.Container, error) {
+			called = true
+			return nil, nil
+		},
 		run: func(container.Config) error {
 			called = true
 			return nil
 		},
 	})
 	if err == nil {
-		t.Fatal("expected non-stopped-container rejection")
+		t.Fatal("expected non-restartable-container rejection")
 	}
 	if called {
-		t.Fatal("runtime invoked for non-stopped container")
+		t.Fatal("stop/runtime invoked for non-restartable container")
 	}
 }
