@@ -74,6 +74,7 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 	var cpusetCPUsRaw json.RawMessage
 	var cpusetMemsRaw json.RawMessage
 	var memoryReservationRaw json.RawMessage
+	var memorySwapRaw json.RawMessage
 	if processRaw, ok := document["process"]; ok {
 		var process map[string]json.RawMessage
 		if err := json.Unmarshal(processRaw, &process); err != nil {
@@ -109,7 +110,9 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 					return err
 				}
 				memoryReservationRaw = memory["reservation"]
+				memorySwapRaw = memory["swap"]
 				delete(memory, "reservation")
+				delete(memory, "swap")
 				cleanMemory, err := json.Marshal(memory)
 				if err != nil {
 					return err
@@ -179,6 +182,40 @@ func (c *ociBundleConfig) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d", processMemoryHighEnv, reservation))
+	}
+
+	if len(memorySwapRaw) != 0 {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("OCI linux.resources.memory.swap requires linux")
+		}
+		if bytes.Equal(bytes.TrimSpace(memorySwapRaw), []byte("null")) {
+			return fmt.Errorf("OCI linux.resources.memory.swap must be -1 or a positive byte limit")
+		}
+		var swap int64
+		if err := json.Unmarshal(memorySwapRaw, &swap); err != nil {
+			return fmt.Errorf("decode linux.resources.memory.swap: %w", err)
+		}
+		if swap != -1 && swap <= 0 {
+			return fmt.Errorf("linux.resources.memory.swap must be -1 or greater than zero")
+		}
+		if swap > 0 {
+			if c.Linux == nil || c.Linux.Resources == nil || c.Linux.Resources.Memory == nil || c.Linux.Resources.Memory.Limit == nil {
+				return fmt.Errorf("linux.resources.memory.swap requires linux.resources.memory.limit")
+			}
+			if *c.Linux.Resources.Memory.Limit > 0 && swap < *c.Linux.Resources.Memory.Limit {
+				return fmt.Errorf("linux.resources.memory.swap must be at least linux.resources.memory.limit")
+			}
+		}
+		for _, entry := range c.Process.Env {
+			key := entry
+			if j := strings.IndexByte(key, '='); j >= 0 {
+				key = key[:j]
+			}
+			if key == processMemorySwapEnv {
+				return fmt.Errorf("process.env key %q conflicts with internal memory swap policy", key)
+			}
+		}
+		c.Process.Env = append(c.Process.Env, fmt.Sprintf("%s=%d", processMemorySwapEnv, swap))
 	}
 
 	appendCPUSetMarker := func(raw json.RawMessage, field, marker string) error {

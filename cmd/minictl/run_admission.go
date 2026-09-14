@@ -42,14 +42,15 @@ func prepareManagedRunStateWith(cfg *container.Config, deps runAdmissionDeps) (*
 	if err != nil {
 		return nil, nil, fmt.Errorf("consume OCI cpuset policy: %w", err)
 	}
-	cleanEnv, memoryHigh, err := extractOCIMemoryPolicy(cleanEnv)
+	cleanEnv, memoryHigh, memorySwap, err := extractOCIMemoryPolicy(cleanEnv)
 	if err != nil {
-		return nil, nil, fmt.Errorf("consume OCI memory reservation policy: %w", err)
+		return nil, nil, fmt.Errorf("consume OCI memory policy: %w", err)
 	}
 	cfg.Env = cleanEnv
 	cfg.CPUSetCPUs = cpuSetCPUs
 	cfg.CPUSetMems = cpuSetMems
 	cfg.MemoryHigh = memoryHigh
+	cfg.MemorySwap = memorySwap
 
 	rootfs, err := normalizeRunAdmissionRootFS(cfg.RootFS)
 	if err != nil {
