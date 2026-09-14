@@ -3,10 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"minicontainer/internal/container"
 	"minicontainer/internal/state"
 )
+
+const restartStopTimeout = 10 * time.Second
 
 func init() {
 	if os.Getenv("MINICONTAINER_INIT") == "1" || os.Getenv("MINICONTAINER_EXEC") == "1" {
@@ -21,6 +24,7 @@ func init() {
 type restartCommandDeps struct {
 	openStore func() (*state.Store, error)
 	stat      func(string) (os.FileInfo, error)
+	stop      func(*state.Store, string, time.Duration) (*state.Container, error)
 	run       func(container.Config) error
 }
 
@@ -28,6 +32,7 @@ func defaultRestartCommandDeps() restartCommandDeps {
 	return restartCommandDeps{
 		openStore: openStore,
 		stat:      os.Stat,
+		stop:      container.StopContainer,
 		run:       container.RunWithSecurityPolicy,
 	}
 }
@@ -43,7 +48,7 @@ func parseRestartCommandArgs(args []string) (string, error) {
 }
 
 func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state.Container, error) {
-	if deps.openStore == nil || deps.stat == nil || deps.run == nil {
+	if deps.openStore == nil || deps.stat == nil || deps.stop == nil || deps.run == nil {
 		return nil, fmt.Errorf("restart command dependencies are incomplete")
 	}
 
@@ -64,8 +69,14 @@ func restartStoppedContainer(idOrPrefix string, deps restartCommandDeps) (*state
 	if err != nil {
 		return nil, fmt.Errorf("reconcile container %s before restart: %w", rec.ID, err)
 	}
+	if rec.Status == state.StatusRunning {
+		rec, err = deps.stop(st, rec.ID, restartStopTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("stop running container %s before restart: %w", rec.ID, err)
+		}
+	}
 	if rec.Status != state.StatusStopped {
-		return nil, fmt.Errorf("container %s is %s (must be stopped)", rec.ID, rec.Status)
+		return nil, fmt.Errorf("container %s is %s (must be running or stopped)", rec.ID, rec.Status)
 	}
 
 	spec, err := st.RestartSpec(rec.ID)
