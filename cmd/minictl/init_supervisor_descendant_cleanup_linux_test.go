@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -89,16 +90,11 @@ func runInitSupervisorDrainHelper(t *testing.T, role string) {
 			os.Exit(154)
 		}
 		sigCh := make(chan os.Signal, 1)
-		signalNotifyForDrainTest(sigCh)
+		signal.Notify(sigCh, syscall.SIGUSR1)
+		defer signal.Stop(sigCh)
 		<-sigCh
 		os.Exit(155)
 	default:
 		os.Exit(156)
 	}
-}
-
-func signalNotifyForDrainTest(ch chan os.Signal) {
-	// SIGUSR1 is never sent by the test. Registering it keeps the helper blocked
-	// without polling or sleeps until the supervisor terminates it with SIGKILL.
-	signal.Notify(ch, syscall.SIGUSR1)
 }
