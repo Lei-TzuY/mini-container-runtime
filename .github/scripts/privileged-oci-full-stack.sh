@@ -105,10 +105,6 @@ config = {
             {"type": "network"},
             {"type": "user"},
         ],
-        "resources": {
-            "memory": {"limit": 134217728},
-            "pids": {"limit": 32},
-        },
         "seccomp": {
             "defaultAction": "SCMP_ACT_ALLOW",
             "architectures": ["SCMP_ARCH_X86_64"],
