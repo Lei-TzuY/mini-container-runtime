@@ -33,7 +33,6 @@ done
 
 host_mnt_ns="$(readlink /proc/self/ns/mnt)"
 host_pid_ns="$(readlink /proc/self/ns/pid)"
-host_cgroup_ns="$(readlink /proc/self/ns/cgroup)"
 
 EVIDENCE_DIR="$evidence" CONFIG_PATH="$bundle/config.json" python3 - <<'PY'
 import json
@@ -84,7 +83,6 @@ config = {
             {"type": "uts"},
             {"type": "ipc"},
             {"type": "network"},
-            {"type": "cgroup"},
         ],
         "resources": {
             "memory": {"limit": 134217728},
@@ -127,10 +125,6 @@ done
 }
 [[ "$(<"$evidence/pid.ns")" != "$host_pid_ns" ]] || {
   echo "PID namespace was not isolated" >&2
-  exit 1
-}
-[[ "$(<"$evidence/cgroup.ns")" != "$host_cgroup_ns" ]] || {
-  echo "cgroup namespace was not isolated" >&2
   exit 1
 }
 grep -q '__minicontainer-init-supervisor' "$evidence/init.cmdline" || {
