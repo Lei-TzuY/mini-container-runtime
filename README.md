@@ -71,6 +71,13 @@ re-executed container init:
   signals, preserves the payload exit status, reaps orphans, and terminates
   descendants that escape the payload process group.
 
+
+Security ordering is part of this contract: the re-executed init completes
+namespace, mount, rootfs, volume, and working-directory setup before consuming
+the no-new-privileges marker. It then applies capability drops and seccomp
+before payload execution. Applying no-new-privileges from a package initializer
+would be too early because the init still needs privileged mount operations.
+
 Important implementation areas:
 
 | Area | Package |
