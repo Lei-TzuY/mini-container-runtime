@@ -33,6 +33,7 @@ done
 
 host_mnt_ns="$(readlink /proc/self/ns/mnt)"
 host_pid_ns="$(readlink /proc/self/ns/pid)"
+host_user_ns="$(readlink /proc/self/ns/user)"
 
 EVIDENCE_DIR="$evidence" CONFIG_PATH="$bundle/config.json" python3 - <<'PY'
 import json
@@ -50,6 +51,7 @@ payload = r"""set -eu
 test "$(hostname)" = "conquest-e2e"
 readlink /proc/self/ns/mnt > /evidence/mnt.ns
 readlink /proc/self/ns/pid > /evidence/pid.ns
+readlink /proc/self/ns/user > /evidence/user.ns
 readlink /proc/self/ns/cgroup > /evidence/cgroup.ns
 tr '\\000' ' ' < /proc/1/cmdline > /evidence/init.cmdline
 grep -Eq '^NoNewPrivs:[[:space:]]*1$' /proc/self/status
@@ -67,6 +69,7 @@ config = {
         "args": ["/bin/sh", "-c", payload],
         "env": ["PATH=/bin"],
         "cwd": "/",
+        "noNewPrivileges": True,
     },
     "hostname": "conquest-e2e",
     "mounts": [{
@@ -87,6 +90,7 @@ config = {
             {"type": "uts"},
             {"type": "ipc"},
             {"type": "network"},
+            {"type": "user"},
         ],
         "resources": {
             "memory": {"limit": 134217728},
@@ -115,7 +119,7 @@ require_file() {
     exit 1
   }
 }
-for name in result mnt.ns pid.ns cgroup.ns init.cmdline memory.max pids.max; do
+for name in result mnt.ns pid.ns user.ns cgroup.ns init.cmdline memory.max pids.max; do
   require_file "$evidence/$name"
 done
 
@@ -129,6 +133,10 @@ done
 }
 [[ "$(<"$evidence/pid.ns")" != "$host_pid_ns" ]] || {
   echo "PID namespace was not isolated" >&2
+  exit 1
+}
+[[ "$(<"$evidence/user.ns")" != "$host_user_ns" ]] || {
+  echo "user namespace was not isolated" >&2
   exit 1
 }
 grep -q '__minicontainer-init-supervisor' "$evidence/init.cmdline" || {
