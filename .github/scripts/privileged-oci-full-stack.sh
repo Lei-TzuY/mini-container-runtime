@@ -21,6 +21,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+runtime_bin="$work/minictl"
+install -m 0755 "$minictl" "$runtime_bin"
+minictl="$runtime_bin"
+
 bundle="$work/bundle"
 rootfs="$bundle/rootfs"
 evidence="$work/evidence"
