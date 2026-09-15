@@ -70,6 +70,11 @@ config = {
     },
     "hostname": "conquest-e2e",
     "mounts": [{
+        "destination": "/proc",
+        "type": "proc",
+        "source": "proc",
+        "options": ["rw", "nosuid", "noexec", "nodev"],
+    }, {
         "destination": "/evidence",
         "type": "bind",
         "source": os.environ["EVIDENCE_DIR"],
