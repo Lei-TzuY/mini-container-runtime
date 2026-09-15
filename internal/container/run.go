@@ -503,6 +503,16 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
+	// RootFS admission may represent the pinned directory as /proc/self/fd/N.
+	// chdir resolves that magic link once to the already-open inode, retaining the
+	// TOCTOU boundary while avoiding procfs magic-link paths as mount targets.
+	// Relative setup paths also remain attached to the admitted directory if its
+	// original pathname is renamed or replaced after the child starts.
+	if err := os.Chdir(targetRootFS); err != nil {
+		return fmt.Errorf("enter pinned rootfs setup directory %q: %w", targetRootFS, err)
+	}
+	targetRootFS = "."
+
 	if err := mountRuntimeHostsFile(runtimeHostsFile, targetRootFS, cfg.Debug); err != nil {
 		return fmt.Errorf("runtime hosts: %w", err)
 	}
