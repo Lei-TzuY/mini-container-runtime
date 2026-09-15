@@ -33,7 +33,7 @@ A green check only proves the layer that actually ran.
 | --- | --- | --- |
 | Unprivileged CI | `go vet ./...` and `go test ./...` | parsing, policy, state, fail-closed behavior, process supervision, and model tests |
 | Privileged kernel CI | a named subsystem acceptance set as root on a disposable Ubuntu runner | selected live namespace, cgroup-namespace, devpts, seccomp, bridge, veth, and descendant-cleanup regressions |
-| Privileged full-stack smoke | one static-rootfs `minictl oci-run` from bundle admission through payload exit | the tested PID/mount/cgroup namespace, bind mount, cgroup limit, PID-1, no-new-privileges, and seccomp combination |
+| Privileged full-stack smoke | one static-rootfs `minictl oci-run` from bundle admission through payload exit | the tested PID/mount namespaces, bind mount, cgroup limits, PID-1, no-new-privileges, and seccomp combination |
 | Not yet claimed | no multi-kernel matrix, hostile multi-tenant audit, reboot test, or all-options end-to-end matrix | production security, complete OCI/Docker conformance, and every feature combination |
 
 The privileged job runs only the named kernel acceptance set, records `go test -json`
@@ -49,8 +49,8 @@ critical live-kernel tests are skipped or do not pass:
 
 The same privileged job also builds `minictl`, creates a static BusyBox rootfs,
 and executes one real OCI bundle through `minictl oci-run`. The payload writes
-evidence through a bind mount; the host then verifies distinct PID, mount, and
-cgroup namespace identities, the PID-1 supervisor, applied `memory.max` and
+evidence through a bind mount; the host then verifies distinct PID and mount namespace identities, the PID-1 supervisor,
+applied `memory.max` and
 `pids.max`, and active no-new-privileges/seccomp state.
 
 This is stronger than treating mocked `ip`, `mount`, cgroup files, or a
