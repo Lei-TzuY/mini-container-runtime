@@ -48,6 +48,7 @@ blocked = [
     "fanotify_init", "userfaultfd", "unshare",
 ]
 payload = r"""set -eu
+printf 'payload: started\n' >&2
 test "$(hostname)" = "conquest-e2e"
 readlink /proc/self/ns/mnt > /evidence/mnt.ns
 readlink /proc/self/ns/pid > /evidence/pid.ns
@@ -61,6 +62,7 @@ test -n "$cg_path"
 cat "/sys/fs/cgroup${cg_path}/memory.max" > /evidence/memory.max
 cat "/sys/fs/cgroup${cg_path}/pids.max" > /evidence/pids.max
 printf 'ok\n' > /evidence/result
+printf 'payload: evidence complete\n' >&2
 """
 config = {
     "ociVersion": "1.1.0",
@@ -110,7 +112,18 @@ with open(os.environ["CONFIG_PATH"], "w", encoding="utf-8") as stream:
     json.dump(config, stream)
 PY
 
-HOME="$runtime_home" MINICONTAINER_DEBUG=1 "$minictl" oci-run "$bundle"
+set +e
+timeout --signal=TERM --kill-after=5s 60s \
+  env HOME="$runtime_home" MINICONTAINER_DEBUG=1 \
+  "$minictl" oci-run "$bundle"
+run_status=$?
+set -e
+if [[ "$run_status" -ne 0 ]]; then
+  echo "full-stack runtime exited with status $run_status" >&2
+  find "$evidence" -maxdepth 1 -type f -printf '%f\n' \
+    -exec sh -c 'printf "%s: " "$1"; cat "$1"; printf "\n"' _ {} \; >&2 || true
+  exit "$run_status"
+fi
 
 require_file() {
   local path="$1"
