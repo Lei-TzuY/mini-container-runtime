@@ -526,8 +526,11 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.MkdirAll(procPath, 0755); err != nil {
 		return fmt.Errorf("mkdir proc: %w", err)
 	}
+	if cfg.Debug {
+		fmt.Printf("[init] mounting proc target=%q flags=%#x pid=%d euid=%d\n", procPath, procMountFlags, os.Getpid(), os.Geteuid())
+	}
 	if err := syscall.Mount("proc", procPath, "proc", procMountFlags, ""); err != nil {
-		return fmt.Errorf("mount proc: %w", err)
+		return fmt.Errorf("mount proc at %q with flags %#x: %w", procPath, procMountFlags, err)
 	}
 	if cfg.Debug {
 		fmt.Println("[init] /proc mounted")
