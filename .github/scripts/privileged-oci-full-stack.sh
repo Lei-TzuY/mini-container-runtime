@@ -31,6 +31,13 @@ evidence="$work/evidence"
 runtime_home="$work/home"
 mkdir -p "$rootfs/bin" "$rootfs/dev" "$rootfs/proc" "$rootfs/sys" "$rootfs/tmp" "$rootfs/evidence" "$evidence" "$runtime_home"
 install -m 0755 "$busybox" "$rootfs/bin/busybox"
+proc_probe="$work/proc-probe"
+mkdir -p "$proc_probe"
+unshare --user --map-root-user --fork --pid --mount --uts --ipc --net \
+  sh -eu -c 'mount --make-rprivate /; mount -t proc -o nosuid,noexec,nodev proc "$1"; umount "$1"' \
+  _ "$proc_probe"
+echo "minimal namespace proc-mount probe passed"
+
 for applet in sh awk cat grep hostname readlink tr; do
   ln -s busybox "$rootfs/bin/$applet"
 done
