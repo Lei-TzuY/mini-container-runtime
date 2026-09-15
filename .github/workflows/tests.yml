@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   test:
+    name: Unprivileged unit and process tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,3 +21,21 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+
+  privileged-kernel:
+    name: Privileged kernel regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Exercise live Linux integration as root
+        run: |
+          sudo -n env \
+            HOME="$RUNNER_TEMP/minictl-root-home" \
+            PATH="$PATH" \
+            GOCACHE="$RUNNER_TEMP/minictl-root-build-cache" \
+            GOMODCACHE="$RUNNER_TEMP/minictl-root-module-cache" \
+            go test -count=1 ./...
