@@ -64,3 +64,14 @@ jobs:
                 exit 1
               }
           done
+
+      - name: Exercise one full-stack OCI isolation path
+        shell: bash
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y busybox-static
+          mkdir -p build
+          go build -o build/minictl ./cmd/minictl
+          sudo -n bash .github/scripts/privileged-oci-full-stack.sh \
+            "$PWD/build/minictl" \
+            "$(command -v busybox)"
