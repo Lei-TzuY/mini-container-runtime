@@ -67,7 +67,6 @@ config = {
         "args": ["/bin/sh", "-c", payload],
         "env": ["PATH=/bin"],
         "cwd": "/",
-        "noNewPrivileges": True,
     },
     "hostname": "conquest-e2e",
     "mounts": [{
