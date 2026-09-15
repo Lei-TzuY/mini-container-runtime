@@ -503,6 +503,16 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
+	// RootFS admission may represent the pinned directory as /proc/self/fd/N.
+	// chdir resolves that magic link once to the already-open inode, retaining the
+	// TOCTOU boundary while avoiding procfs magic-link paths as mount targets.
+	// Relative setup paths also remain attached to the admitted directory if its
+	// original pathname is renamed or replaced after the child starts.
+	if err := os.Chdir(targetRootFS); err != nil {
+		return fmt.Errorf("enter pinned rootfs setup directory %q: %w", targetRootFS, err)
+	}
+	targetRootFS = "."
+
 	if err := mountRuntimeHostsFile(runtimeHostsFile, targetRootFS, cfg.Debug); err != nil {
 		return fmt.Errorf("runtime hosts: %w", err)
 	}
@@ -526,8 +536,11 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.MkdirAll(procPath, 0755); err != nil {
 		return fmt.Errorf("mkdir proc: %w", err)
 	}
+	if cfg.Debug {
+		fmt.Printf("[init] mounting proc target=%q flags=%#x pid=%d euid=%d\n", procPath, procMountFlags, os.Getpid(), os.Geteuid())
+	}
 	if err := syscall.Mount("proc", procPath, "proc", procMountFlags, ""); err != nil {
-		return fmt.Errorf("mount proc: %w", err)
+		return fmt.Errorf("mount proc at %q with flags %#x: %w", procPath, procMountFlags, err)
 	}
 	if cfg.Debug {
 		fmt.Println("[init] /proc mounted")
@@ -606,6 +619,10 @@ func ContainerInit(cfg Config) (resultErr error) {
 
 	if err := enterWorkDir(cfg.WorkDir); err != nil {
 		return err
+	}
+
+	if err := applyNoNewPrivilegesPolicy(); err != nil {
+		return fmt.Errorf("no-new-privileges: %w", err)
 	}
 
 	if len(cfg.CapDrop) > 0 {

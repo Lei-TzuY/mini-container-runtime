@@ -13,9 +13,9 @@ import (
 
 const prGetNoNewPrivs = 39
 
-func TestNoNewPrivilegesInitMarkerEnforcesKernelPolicy(t *testing.T) {
+func TestNoNewPrivilegesMarkerEnforcesKernelPolicyAtExplicitBoundary(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestNoNewPrivilegesHelper$")
-	cmd.Env = append(os.Environ(), sentinelEnv, noNewPrivilegesEnv+"=1", "MINICONTAINER_NNP_HELPER=1")
+	cmd.Env = append(os.Environ(), noNewPrivilegesEnv+"=1", "MINICONTAINER_NNP_HELPER=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("helper failed: %v\n%s", err, out)
@@ -30,6 +30,9 @@ func TestNoNewPrivilegesHelper(t *testing.T) {
 	if os.Getenv("MINICONTAINER_NNP_HELPER") != "1" {
 		return
 	}
+	if err := applyNoNewPrivilegesPolicy(); err != nil {
+		t.Fatalf("apply no-new-privileges policy: %v", err)
+	}
 	r1, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prGetNoNewPrivs, 0, 0)
 	if errno != 0 {
 		t.Fatalf("prctl(PR_GET_NO_NEW_PRIVS): %v", errno)
@@ -38,4 +41,14 @@ func TestNoNewPrivilegesHelper(t *testing.T) {
 		t.Fatalf("runtime marker leaked into helper environment")
 	}
 	_, _ = os.Stdout.WriteString(strconv.FormatUint(uint64(r1), 10) + "\n")
+}
+
+func TestNoNewPrivilegesMarkerRejectsUnexpectedValue(t *testing.T) {
+	t.Setenv(noNewPrivilegesEnv, "true")
+	if err := applyNoNewPrivilegesPolicy(); err == nil {
+		t.Fatal("expected malformed runtime marker to fail closed")
+	}
+	if _, ok := os.LookupEnv(noNewPrivilegesEnv); ok {
+		t.Fatal("malformed runtime marker was not consumed")
+	}
 }

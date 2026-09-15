@@ -41,7 +41,7 @@ jobs:
             GOCACHE="$RUNNER_TEMP/minictl-root-build-cache" \
             GOMODCACHE="$RUNNER_TEMP/minictl-root-module-cache" \
             go test -json -count=1 \
-              -run '^(TestBuildCloneFlagsCreatesDistinctCgroupNamespace|TestContainerInitSupervisorDrainsEscapedSessionDescendant|TestPrivateDevptsMountKernel|TestSeccompLiveProcessAllowsNativeABIAndKillsBlockedSyscall|TestInspectBridgeIPv4OwnedKernel|TestAttachVethHostToOwnedBridgeKernel)$' \
+              -run '^(TestBuildCloneFlagsCreatesDistinctCgroupNamespace|TestProcMountFlagsKernel|TestContainerInitSupervisorDrainsEscapedSessionDescendant|TestPrivateDevptsMountKernel|TestSeccompLiveProcessAllowsNativeABIAndKillsBlockedSyscall|TestInspectBridgeIPv4OwnedKernel|TestAttachVethHostToOwnedBridgeKernel)$' \
               ./... |
             tee "$RUNNER_TEMP/minictl-privileged-tests.jsonl"
       - name: Require critical live-kernel evidence
@@ -49,6 +49,7 @@ jobs:
         run: |
           required_tests=(
             TestBuildCloneFlagsCreatesDistinctCgroupNamespace
+            TestProcMountFlagsKernel
             TestContainerInitSupervisorDrainsEscapedSessionDescendant
             TestPrivateDevptsMountKernel
             TestSeccompLiveProcessAllowsNativeABIAndKillsBlockedSyscall
@@ -64,3 +65,14 @@ jobs:
                 exit 1
               }
           done
+
+      - name: Exercise one full-stack OCI isolation path
+        shell: bash
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y busybox-static
+          mkdir -p build
+          go build -o build/minictl ./cmd/minictl
+          sudo -n bash .github/scripts/privileged-oci-full-stack.sh \
+            "$PWD/build/minictl" \
+            "$(command -v busybox)"
