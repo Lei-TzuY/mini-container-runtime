@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   test:
+    name: Unprivileged unit and process tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,3 +21,46 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+
+  privileged-kernel:
+    name: Privileged kernel regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Exercise live Linux integration as root
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo -n env \
+            HOME="$RUNNER_TEMP/minictl-root-home" \
+            PATH="$PATH" \
+            GOCACHE="$RUNNER_TEMP/minictl-root-build-cache" \
+            GOMODCACHE="$RUNNER_TEMP/minictl-root-module-cache" \
+            go test -json -count=1 \
+              -run '^(TestBuildCloneFlagsCreatesDistinctCgroupNamespace|TestContainerInitSupervisorDrainsEscapedSessionDescendant|TestPrivateDevptsMountKernel|TestSeccompLiveProcessAllowsNativeABIAndKillsBlockedSyscall|TestInspectBridgeIPv4OwnedKernel|TestAttachVethHostToOwnedBridgeKernel)$' \
+              ./... |
+            tee "$RUNNER_TEMP/minictl-privileged-tests.jsonl"
+      - name: Require critical live-kernel evidence
+        shell: bash
+        run: |
+          required_tests=(
+            TestBuildCloneFlagsCreatesDistinctCgroupNamespace
+            TestContainerInitSupervisorDrainsEscapedSessionDescendant
+            TestPrivateDevptsMountKernel
+            TestSeccompLiveProcessAllowsNativeABIAndKillsBlockedSyscall
+            TestInspectBridgeIPv4OwnedKernel
+            TestAttachVethHostToOwnedBridgeKernel
+          )
+          for test_name in "${required_tests[@]}"; do
+            jq -e --arg test_name "$test_name" \
+              'select(.Test == $test_name and .Action == "pass")' \
+              "$RUNNER_TEMP/minictl-privileged-tests.jsonl" >/dev/null ||
+              {
+                echo "::error::critical live-kernel test did not pass: $test_name"
+                exit 1
+              }
+          done

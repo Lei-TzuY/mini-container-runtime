@@ -3,10 +3,10 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -64,14 +64,21 @@ func TestAttachVethHostToOwnedBridgeKernel(t *testing.T) {
 			fmt.Fprintln(os.Stderr, "attach veth:", err)
 			os.Exit(4)
 		}
-		master, err := os.Readlink("/sys/class/net/vh-itest/master")
+		out, err := runBridgeIPCommand("-j", "link", "show", "dev", "vh-itest")
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "read veth master:", err)
+			fmt.Fprintln(os.Stderr, "inspect veth master:", err)
 			os.Exit(5)
 		}
-		if filepath.Base(master) != "br-itest" {
-			fmt.Fprintf(os.Stderr, "veth master=%q\n", master)
+		var links []struct {
+			Master string `json:"master"`
+		}
+		if err := json.Unmarshal(out, &links); err != nil || len(links) != 1 {
+			fmt.Fprintf(os.Stderr, "decode veth master: %v output=%s\n", err, out)
 			os.Exit(6)
+		}
+		if links[0].Master != "br-itest" {
+			fmt.Fprintf(os.Stderr, "veth master=%q\n", links[0].Master)
+			os.Exit(7)
 		}
 		return
 	}
