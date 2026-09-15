@@ -608,6 +608,10 @@ func ContainerInit(cfg Config) (resultErr error) {
 		return err
 	}
 
+	if err := applyNoNewPrivilegesPolicy(); err != nil {
+		return fmt.Errorf("no-new-privileges: %w", err)
+	}
+
 	if len(cfg.CapDrop) > 0 {
 		if err := DropCapabilities(cfg.CapDrop, cfg.Debug); err != nil {
 			return fmt.Errorf("drop capabilities: %w", err)
