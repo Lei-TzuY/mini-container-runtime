@@ -32,10 +32,11 @@ A green check only proves the layer that actually ran.
 | Evidence level | What runs | What it supports |
 | --- | --- | --- |
 | Unprivileged CI | `go vet ./...` and `go test ./...` | parsing, policy, state, fail-closed behavior, process supervision, and model tests |
-| Privileged kernel CI | the full suite as root on a disposable Ubuntu runner | selected live namespace, cgroup-namespace, devpts, seccomp, bridge, veth, and descendant-cleanup regressions |
+| Privileged kernel CI | a named acceptance set as root on a disposable Ubuntu runner | selected live namespace, cgroup-namespace, devpts, seccomp, bridge, veth, and descendant-cleanup regressions |
 | Not yet claimed | no multi-kernel matrix, hostile multi-tenant audit, reboot test, or all-options end-to-end matrix | production security, complete OCI/Docker conformance, and every feature combination |
 
-The privileged job records `go test -json` output and fails if any of these
+The privileged job runs only the named kernel acceptance set, records `go test -json`
+output, and fails if any of these
 critical live-kernel tests are skipped or do not pass:
 
 - `TestBuildCloneFlagsCreatesDistinctCgroupNamespace`
@@ -93,14 +94,12 @@ go vet ./...
 go test ./...
 ```
 
-To reproduce the privileged CI layer on a disposable Linux host:
+To reproduce the privileged CI layer, use the exact `-run` acceptance regex
+in [`.github/workflows/tests.yml`](.github/workflows/tests.yml) on a disposable
+Linux host. Running the entire suite as root is intentionally not the contract:
+some unprivileged credential tests depend on the invoking user's identity.
 
-```bash
-sudo -n env PATH="$PATH" go test -count=1 ./...
-```
-
-Individual kernel tests can be run with `-run` while developing one
-subsystem. A skipped kernel test is an environment result, not passing
+Individual kernel tests can be run with `-run` while developing one subsystem. A skipped kernel test is an environment result, not passing
 evidence.
 
 ## Bounded run example
