@@ -54,15 +54,17 @@ blocked = [
 payload = r"""set -eu
 printf 'payload: started\n' >&2
 test "$(hostname)" = "conquest-e2e"
-readlink /proc/self/ns/mnt > /evidence/mnt.ns
-readlink /proc/self/ns/pid > /evidence/pid.ns
-readlink /proc/self/ns/user > /evidence/user.ns
-readlink /proc/self/ns/cgroup > /evidence/cgroup.ns
+payload_proc="/proc/$$"
+readlink "$payload_proc/ns/mnt" > /evidence/mnt.ns
+readlink "$payload_proc/ns/pid" > /evidence/pid.ns
+readlink "$payload_proc/ns/user" > /evidence/user.ns
+readlink "$payload_proc/ns/cgroup" > /evidence/cgroup.ns
 tr '\\000' ' ' < /proc/1/cmdline > /evidence/init.cmdline
-awk '/^PPid:/ {print $2}' /proc/self/status > /evidence/payload.ppid
-grep -Eq '^NoNewPrivs:[[:space:]]*1$' /proc/self/status
-grep -Eq '^Seccomp:[[:space:]]*2$' /proc/self/status
-cg_path="$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)"
+cat "$payload_proc/status" > /evidence/payload.status
+awk '/^PPid:/ {print $2}' "$payload_proc/status" > /evidence/payload.ppid
+grep -Eq '^NoNewPrivs:[[:space:]]*1$' "$payload_proc/status"
+grep -Eq '^Seccomp:[[:space:]]*2$' "$payload_proc/status"
+cg_path="$(awk -F: '$1 == "0" {print $3}' "$payload_proc/cgroup")"
 test -n "$cg_path"
 cat "/sys/fs/cgroup${cg_path}/memory.max" > /evidence/memory.max
 cat "/sys/fs/cgroup${cg_path}/pids.max" > /evidence/pids.max
@@ -137,7 +139,7 @@ require_file() {
     exit 1
   }
 }
-for name in result mnt.ns pid.ns user.ns cgroup.ns init.cmdline payload.ppid memory.max pids.max; do
+for name in result mnt.ns pid.ns user.ns cgroup.ns init.cmdline payload.status payload.ppid memory.max pids.max; do
   require_file "$evidence/$name"
 done
 
