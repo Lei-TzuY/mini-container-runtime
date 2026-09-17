@@ -9,7 +9,10 @@ import (
 	"strconv"
 )
 
-const pinnedRootFSEnvKey = "MINICONTAINER_ROOTFS_FD"
+const (
+	pinnedRootFSEnvKey     = "MINICONTAINER_ROOTFS_FD"
+	pinnedRootFSPathEnvKey = "MINICONTAINER_ROOTFS_PATH"
+)
 
 // startContainerProcess is the last parent-side admission gate before the
 // kernel creates a child process. Managed runs revalidate the filesystem object
@@ -64,6 +67,10 @@ func startContainerProcess(cfg Config, cmd *exec.Cmd) error {
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
-	cmd.Env = append(cmd.Env, pinnedRootFSEnvKey+"="+strconv.Itoa(childFD))
+	cmd.Env = append(
+		cmd.Env,
+		pinnedRootFSEnvKey+"="+strconv.Itoa(childFD),
+		pinnedRootFSPathEnvKey+"="+cfg.RootFS,
+	)
 	return cmd.Start()
 }
