@@ -67,15 +67,18 @@ func clearRuntimeControlEnvironment() error {
 	return nil
 }
 
-// consumeOverlayWorkDir reads the parent-issued overlay path and then clears
-// every ambient MINICONTAINER_* control variable before payload setup proceeds.
+// consumeOverlayWorkDir reads and consumes only the parent-issued workdir.
+// Other bootstrap markers remain available to their dedicated consumers; the
+// reserved MINICONTAINER_* namespace is cleared once all setup is complete.
 // The path is validated before PrepareOverlay can create children beneath it,
 // so a forged environment value cannot redirect overlay setup into an arbitrary
 // host directory.
 func consumeOverlayWorkDir(enabled bool) (string, error) {
-	dir := os.Getenv(overlayWorkDirEnv)
-	if err := clearRuntimeControlEnvironment(); err != nil {
-		return "", err
+	dir, present := os.LookupEnv(overlayWorkDirEnv)
+	if present {
+		if err := os.Unsetenv(overlayWorkDirEnv); err != nil {
+			return "", fmt.Errorf("clear runtime overlay workdir environment: %w", err)
+		}
 	}
 	if !enabled {
 		return "", nil
