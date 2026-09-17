@@ -450,6 +450,14 @@ func ContainerInit(cfg Config) (resultErr error) {
 	}
 	defer func() { initStatus.finish(resultErr) }()
 
+	supervisorExecutable, err := pinInitSupervisorExecutable(cfg.Command)
+	if err != nil {
+		return err
+	}
+	if supervisorExecutable != nil {
+		defer supervisorExecutable.Close()
+	}
+
 	runtimeHostsFile, err := runtimeHostsFileFromFD(cfg.BridgeNetwork)
 	if err != nil {
 		return fmt.Errorf("open runtime hosts file: %w", err)
@@ -645,9 +653,18 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
-	binary, err := exec.LookPath(cfg.Command[0])
-	if err != nil {
-		binary = cfg.Command[0]
+	binary := ""
+	if supervisorExecutable != nil {
+		binary, err = initSupervisorExecutablePath(supervisorExecutable)
+		if err != nil {
+			return err
+		}
+		cfg.Command[0] = binary
+	} else {
+		binary, err = exec.LookPath(cfg.Command[0])
+		if err != nil {
+			binary = cfg.Command[0]
+		}
 	}
 
 	if cfg.Debug {
