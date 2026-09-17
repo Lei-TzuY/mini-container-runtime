@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -628,6 +629,12 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := enterWorkDir(cfg.WorkDir); err != nil {
 		return err
 	}
+
+	// Linux credentials, no-new-privileges, capability sets, and seccomp
+	// filters are inherited from the thread that forks the payload. Pin this
+	// goroutine before applying any thread-scoped policy so Go cannot migrate
+	// the eventual ForkExec onto an unrestricted OS thread.
+	runtime.LockOSThread()
 
 	if err := applyNoNewPrivilegesPolicy(); err != nil {
 		return fmt.Errorf("no-new-privileges: %w", err)
