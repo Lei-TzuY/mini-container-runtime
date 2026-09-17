@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -16,10 +17,15 @@ const procMountKernelChildEnv = "MINICONTAINER_PROC_MOUNT_KERNEL_CHILD"
 
 func TestProcMountFlagsKernel(t *testing.T) {
 	if os.Getenv(procMountKernelChildEnv) == "1" {
+		root := os.Getenv("MINICONTAINER_PROC_MOUNT_KERNEL_ROOT")
 		target := os.Getenv("MINICONTAINER_PROC_MOUNT_KERNEL_TARGET")
-		if target == "" {
-			t.Fatal("missing proc mount target")
+		if root == "" || target == "" {
+			t.Fatal("missing proc mount root or target")
 		}
+		if err := os.Chdir(root); err != nil {
+			t.Fatalf("chdir proc mount root: %v", err)
+		}
+		mountTarget := filepath.Base(target)
 		flags, err := procMountFlags([]string{"rw", "nosuid", "noexec", "nodev"})
 		if err != nil {
 			t.Fatal(err)
@@ -31,14 +37,14 @@ func TestProcMountFlagsKernel(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		if err := syscall.Mount("proc", target, "proc", flags, ""); err != nil {
+		if err := syscall.Mount("proc", mountTarget, "proc", flags, ""); err != nil {
 			if isNamespacePermissionError(err) {
 				fmt.Fprintf(os.Stderr, "namespace permission denied: proc mount: %v\n", err)
 				os.Exit(2)
 			}
 			t.Fatal(err)
 		}
-		defer syscall.Unmount(target, syscall.MNT_DETACH)
+		defer syscall.Unmount(mountTarget, syscall.MNT_DETACH)
 
 		data, err := os.ReadFile("/proc/self/mountinfo")
 		if err != nil {
@@ -60,9 +66,18 @@ func TestProcMountFlagsKernel(t *testing.T) {
 		t.Fatalf("proc mount %q not found in mountinfo", target)
 	}
 
-	target := t.TempDir()
+	root := t.TempDir()
+	target := filepath.Join(root, "proc")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("mkdir proc mount target: %v", err)
+	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProcMountFlagsKernel$")
-	cmd.Env = append(os.Environ(), procMountKernelChildEnv+"=1", "MINICONTAINER_PROC_MOUNT_KERNEL_TARGET="+target)
+	cmd.Env = append(
+		os.Environ(),
+		procMountKernelChildEnv+"=1",
+		"MINICONTAINER_PROC_MOUNT_KERNEL_ROOT="+root,
+		"MINICONTAINER_PROC_MOUNT_KERNEL_TARGET="+target,
+	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
 		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},

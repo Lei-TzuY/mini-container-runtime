@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -174,19 +175,17 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		return fmt.Errorf("prepare tmpfs mount policy: %w", err)
 	}
 
-	overlayWorkDir, err := createParentOverlayWorkDir(cfg.Overlay, os.MkdirTemp)
+	runtimeWorkDir, err := createParentRuntimeWorkDir(os.MkdirTemp)
 	if err != nil {
 		return err
 	}
-	if overlayWorkDir != "" {
-		cmd.Env = appendOverlayWorkDirEnv(cmd.Env, overlayWorkDir)
-		defer func() {
-			resultErr = finishOverlayWorkDir(resultErr, overlayWorkDir, os.RemoveAll)
-			if cfg.Debug && resultErr == nil {
-				fmt.Println("[parent] container exited cleanly")
-			}
-		}()
-	}
+	cmd.Env = appendRuntimeWorkDirEnv(cmd.Env, runtimeWorkDir)
+	defer func() {
+		resultErr = finishRuntimeWorkDir(resultErr, runtimeWorkDir, os.RemoveAll)
+		if cfg.Debug && resultErr == nil {
+			fmt.Println("[parent] container exited cleanly")
+		}
+	}()
 
 	runtimeHostsFile, err := createRuntimeHostsFile(cfg.BridgeNetwork)
 	if err != nil {
@@ -413,9 +412,6 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		return resultErr
 	}
 
-	if cfg.Debug && overlayWorkDir == "" {
-		fmt.Println("[parent] container exited cleanly")
-	}
 	return nil
 }
 
@@ -486,14 +482,32 @@ func ContainerInit(cfg Config) (resultErr error) {
 		fmt.Println("[init] mount namespace propagation set to private")
 	}
 
-	overlayTmp, err := consumeOverlayWorkDir(cfg.Overlay)
+	runtimeTmp, err := consumeRuntimeWorkDir()
 	if err != nil {
-		return fmt.Errorf("runtime overlay workdir: %w", err)
+		return fmt.Errorf("runtime setup workdir: %w", err)
 	}
 
-	targetRootFS := cfg.RootFS
+	// The admitted rootfs descriptor was opened in the parent mount namespace.
+	// Clone it onto a parent-owned staging mountpoint that belongs to this child
+	// namespace before adding /proc, /sys, devices, or volume mounts beneath it.
+	admittedRootFSPath, err := consumePinnedRootFSPath(cfg.RootFS)
+	if err != nil {
+		return fmt.Errorf("pinned rootfs path: %w", err)
+	}
+	stagedRootFS := filepath.Join(runtimeTmp, "rootfs")
+	if err := os.Mkdir(stagedRootFS, 0o700); err != nil {
+		return fmt.Errorf("create staged rootfs mountpoint: %w", err)
+	}
+	if err := attachPinnedRootFS(cfg.RootFS, admittedRootFSPath, stagedRootFS); err != nil {
+		return fmt.Errorf("attach pinned rootfs to child mount namespace: %w", err)
+	}
+	targetRootFS := stagedRootFS
+	if cfg.Debug {
+		fmt.Printf("[init] pinned rootfs attached at %q\n", targetRootFS)
+	}
+
 	if cfg.Overlay {
-		overlayDirs, err := rootfs.PrepareOverlay(cfg.RootFS, overlayTmp)
+		overlayDirs, err := rootfs.PrepareOverlay(targetRootFS, runtimeTmp)
 		if err != nil {
 			return fmt.Errorf("prepare overlay: %w", err)
 		}
@@ -526,8 +540,11 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.MkdirAll(procPath, 0755); err != nil {
 		return fmt.Errorf("mkdir proc: %w", err)
 	}
+	if cfg.Debug {
+		fmt.Printf("[init] mounting proc target=%q flags=%#x pid=%d euid=%d\n", procPath, procMountFlags, os.Getpid(), os.Geteuid())
+	}
 	if err := syscall.Mount("proc", procPath, "proc", procMountFlags, ""); err != nil {
-		return fmt.Errorf("mount proc: %w", err)
+		return fmt.Errorf("mount proc at %q with flags %#x: %w", procPath, procMountFlags, err)
 	}
 	if cfg.Debug {
 		fmt.Println("[init] /proc mounted")
@@ -541,6 +558,10 @@ func ContainerInit(cfg Config) (resultErr error) {
 		if cfg.Debug {
 			fmt.Printf("[init] mount sysfs: %v (ignored)\n", err)
 		}
+	}
+
+	if err := mountCgroupV2View(targetRootFS, resourceLimitsRequested(cfg) || cfg.CgroupNS, cfg.Debug); err != nil {
+		return fmt.Errorf("cgroup v2 view: %w", err)
 	}
 
 	devPath := filepath.Join(targetRootFS, "dev")
@@ -608,6 +629,19 @@ func ContainerInit(cfg Config) (resultErr error) {
 		return err
 	}
 
+	// Linux credentials, no-new-privileges, capability sets, and seccomp
+	// filters are inherited from the thread that forks the payload. Pin this
+	// goroutine before applying any thread-scoped policy so Go cannot migrate
+	// the eventual ForkExec onto an unrestricted OS thread.
+	runtime.LockOSThread()
+
+	if err := applyProcessIOPriorityPolicy(); err != nil {
+		return fmt.Errorf("process io priority: %w", err)
+	}
+	if err := applyNoNewPrivilegesPolicy(); err != nil {
+		return fmt.Errorf("no-new-privileges: %w", err)
+	}
+
 	if len(cfg.CapDrop) > 0 {
 		if err := DropCapabilities(cfg.CapDrop, cfg.Debug); err != nil {
 			return fmt.Errorf("drop capabilities: %w", err)
@@ -620,17 +654,19 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
-	binary, err := exec.LookPath(cfg.Command[0])
+	supervisor, err := prepareInitSupervisor(cfg.Command)
 	if err != nil {
-		binary = cfg.Command[0]
+		return fmt.Errorf("prepare init supervisor: %w", err)
 	}
-
 	if cfg.Debug {
-		fmt.Printf("[init] exec: %s %v\n", binary, cfg.Command[1:])
+		fmt.Printf("[init] supervise: %s %v\n", supervisor.binary, supervisor.command[1:])
 	}
 
 	if err := os.Unsetenv(sentinelEnvKey); err != nil {
 		return fmt.Errorf("clear runtime init environment: %w", err)
+	}
+	if err := clearRuntimeControlEnvironment(); err != nil {
+		return fmt.Errorf("isolate runtime control environment: %w", err)
 	}
 	env := os.Environ()
 	if len(cfg.Env) > 0 {
@@ -640,8 +676,12 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := initStatus.readyForExec(); err != nil {
 		return err
 	}
-	if err := syscall.Exec(binary, cfg.Command, env); err != nil {
-		return fmt.Errorf("exec %s: %w", binary, err)
+	exitCode, err := supervisor.run(env)
+	if err != nil {
+		return fmt.Errorf("supervise payload: %w", err)
+	}
+	if exitCode != 0 {
+		return &PayloadExitError{Code: exitCode}
 	}
 
 	return nil

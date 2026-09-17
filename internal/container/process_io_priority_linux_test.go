@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -16,6 +17,11 @@ const processIOPriorityProbeEnv = "MINICONTAINER_TEST_PROCESS_IO_PRIORITY_PROBE"
 
 func TestProcessIOPriorityRuntimeMarkerApplied(t *testing.T) {
 	if os.Getenv(processIOPriorityProbeEnv) == "1" {
+		runtime.LockOSThread()
+		if err := applyProcessIOPriorityPolicy(); err != nil {
+			fmt.Fprintf(os.Stderr, "apply ioprio: %v", err)
+			os.Exit(2)
+		}
 		value, _, errno := unix.Syscall(unix.SYS_IOPRIO_GET, uintptr(ioPriorityWhoProcess), 0, 0)
 		if errno != 0 {
 			fmt.Fprintf(os.Stderr, "ioprio_get: %v", errno)

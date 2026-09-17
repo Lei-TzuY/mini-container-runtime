@@ -105,18 +105,23 @@ func RunWithSecurityPolicy(cfg Config) error {
 	return Run(cfg)
 }
 
-func init() {
-	if os.Getenv(sentinelEnvKey) != "1" {
-		return
+// applyNoNewPrivilegesPolicy consumes the parent-only marker only after
+// namespace, mount, rootfs, and network setup has completed. Applying it from a
+// package init hook is too early: the re-executed child still needs privileged
+// mount operations before it can safely restrict payload privilege gains.
+func applyNoNewPrivilegesPolicy() error {
+	value, ok := os.LookupEnv(noNewPrivilegesEnv)
+	if !ok {
+		return nil
 	}
-	// The cgroup-namespace marker is parent-only: clone(2) already consumed it.
-	_ = os.Unsetenv(ns.CgroupNamespaceEnv)
-	if os.Getenv(noNewPrivilegesEnv) != "1" {
-		return
+	if err := os.Unsetenv(noNewPrivilegesEnv); err != nil {
+		return fmt.Errorf("clear no-new-privileges runtime marker: %w", err)
+	}
+	if value != "1" {
+		return fmt.Errorf("invalid no-new-privileges runtime marker %q", value)
 	}
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0); errno != 0 {
-		fmt.Fprintf(os.Stderr, "container init: prctl(PR_SET_NO_NEW_PRIVS): %v\n", errno)
-		os.Exit(126)
+		return fmt.Errorf("prctl(PR_SET_NO_NEW_PRIVS): %w", errno)
 	}
-	_ = os.Unsetenv(noNewPrivilegesEnv)
+	return nil
 }

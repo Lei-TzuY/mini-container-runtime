@@ -22,31 +22,6 @@ const (
 	initSupervisorTestDir  = "MINICONTAINER_TEST_INIT_SUPERVISOR_DIR"
 )
 
-func TestWrapContainerInitPayload(t *testing.T) {
-	oldArgs := os.Args
-	oldInit := os.Getenv("MINICONTAINER_INIT")
-	t.Cleanup(func() {
-		os.Args = oldArgs
-		_ = os.Setenv("MINICONTAINER_INIT", oldInit)
-	})
-
-	os.Args = []string{"/host/minictl", "run", "--hostname", "demo", "/rootfs", "/bin/app", "arg1"}
-	if err := os.Setenv("MINICONTAINER_INIT", "1"); err != nil {
-		t.Fatal(err)
-	}
-	wrapContainerInitPayload()
-
-	want := []string{"/host/minictl", "run", "--hostname", "demo", "/rootfs", "/proc/self/exe", initSupervisorArg, "/bin/app", "arg1"}
-	if len(os.Args) != len(want) {
-		t.Fatalf("wrapped args len=%d want=%d: %q", len(os.Args), len(want), os.Args)
-	}
-	for i := range want {
-		if os.Args[i] != want[i] {
-			t.Fatalf("wrapped arg[%d]=%q want=%q; all=%q", i, os.Args[i], want[i], os.Args)
-		}
-	}
-}
-
 func TestContainerInitSupervisorReapsOrphan(t *testing.T) {
 	role := os.Getenv(initSupervisorTestRole)
 	if role != "" {

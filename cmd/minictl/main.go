@@ -226,6 +226,9 @@ func containerInitMain() {
 	}
 
 	if err := container.ContainerInit(cfg); err != nil {
+		if code, ok := container.PayloadExitCode(err); ok {
+			os.Exit(code)
+		}
 		fmt.Fprintf(os.Stderr, "container init: %v\n", err)
 		os.Exit(1)
 	}

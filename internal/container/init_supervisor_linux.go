@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package container
 
 import (
 	"errors"
@@ -14,14 +14,6 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
-)
-
-const (
-	initSupervisorArg       = "__minicontainer-init-supervisor"
-	processUIDRuntimeEnv    = "MINICONTAINER_PROCESS_UID"
-	processGIDRuntimeEnv    = "MINICONTAINER_PROCESS_GID"
-	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
-	processUmaskRuntimeEnv  = "MINICONTAINER_PROCESS_UMASK"
 )
 
 var initSupervisorForwardSignals = []os.Signal{
@@ -45,48 +37,19 @@ var initSupervisorForwardSignals = []os.Signal{
 	syscall.SIGWINCH,
 }
 
-// init installs a tiny internal wrapper around the payload command only in the
-// re-executed container-init process. ContainerInit still performs all existing
-// namespace/rootfs/security setup, then execs /proc/self/exe. That process stays
-// PID 1 and supervises the real payload as its child.
-func init() {
-	if os.Getenv("MINICONTAINER_INIT") == "1" {
-		wrapContainerInitPayload()
-		return
-	}
-	if len(os.Args) >= 2 && os.Args[1] == initSupervisorArg {
-		code, err := runContainerInitSupervisor(os.Args[2:])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "container init supervisor: %v\n", err)
-			os.Exit(125)
-		}
-		os.Exit(code)
-	}
+type preparedInitSupervisor struct {
+	command    []string
+	binary     string
+	credential *syscall.Credential
+	umask      *uint32
 }
 
-func wrapContainerInitPayload() {
-	if len(os.Args) < 3 {
-		return
-	}
-	cfg, err := parseRunConfig(os.Args[2:])
-	if err != nil || len(cfg.Command) == 0 {
-		return
-	}
-	commandStart := len(os.Args) - len(cfg.Command)
-	if commandStart < 2 || commandStart > len(os.Args) {
-		return
-	}
-	wrapped := make([]string, 0, len(os.Args)+2)
-	wrapped = append(wrapped, os.Args[:commandStart]...)
-	wrapped = append(wrapped, "/proc/self/exe", initSupervisorArg)
-	wrapped = append(wrapped, cfg.Command...)
-	os.Args = wrapped
-}
-
-func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
-	uidRaw, hasUID := os.LookupEnv(processUIDRuntimeEnv)
-	gidRaw, hasGID := os.LookupEnv(processGIDRuntimeEnv)
-	groupsRaw, hasGroups := os.LookupEnv(processGroupsRuntimeEnv)
+// PayloadCredentialFromRuntimeEnv consumes the parent-issued process identity
+// policy before the reserved runtime environment is cleared.
+func PayloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
+	uidRaw, hasUID := os.LookupEnv(processUIDEnv)
+	gidRaw, hasGID := os.LookupEnv(processGIDEnv)
+	groupsRaw, hasGroups := os.LookupEnv(processGroupsEnv)
 	if !hasUID && !hasGID && !hasGroups {
 		return nil, nil
 	}
@@ -111,7 +74,7 @@ func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
 			groups = append(groups, uint32(value))
 		}
 	}
-	for _, key := range []string{processUIDRuntimeEnv, processGIDRuntimeEnv, processGroupsRuntimeEnv} {
+	for _, key := range []string{processUIDEnv, processGIDEnv, processGroupsEnv} {
 		if err := os.Unsetenv(key); err != nil {
 			return nil, fmt.Errorf("clear process user runtime marker %s: %w", key, err)
 		}
@@ -119,12 +82,13 @@ func payloadCredentialFromRuntimeEnv() (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}, nil
 }
 
-func payloadUmaskFromRuntimeEnv() (*uint32, error) {
-	raw, ok := os.LookupEnv(processUmaskRuntimeEnv)
+// PayloadUmaskFromRuntimeEnv consumes and validates the parent-issued umask.
+func PayloadUmaskFromRuntimeEnv() (*uint32, error) {
+	raw, ok := os.LookupEnv(processUmaskEnv)
 	if !ok {
 		return nil, nil
 	}
-	if err := os.Unsetenv(processUmaskRuntimeEnv); err != nil {
+	if err := os.Unsetenv(processUmaskEnv); err != nil {
 		return nil, fmt.Errorf("clear process umask runtime marker: %w", err)
 	}
 	value, err := strconv.ParseUint(raw, 10, 32)
@@ -136,6 +100,41 @@ func payloadUmaskFromRuntimeEnv() (*uint32, error) {
 	}
 	umask := uint32(value)
 	return &umask, nil
+}
+
+func prepareInitSupervisor(command []string) (*preparedInitSupervisor, error) {
+	if len(command) == 0 || command[0] == "" {
+		return nil, fmt.Errorf("payload command is empty")
+	}
+	binary, err := exec.LookPath(command[0])
+	if err != nil {
+		return nil, fmt.Errorf("resolve payload executable %q: %w", command[0], err)
+	}
+	credential, err := PayloadCredentialFromRuntimeEnv()
+	if err != nil {
+		return nil, err
+	}
+	payloadUmask, err := PayloadUmaskFromRuntimeEnv()
+	if err != nil {
+		return nil, err
+	}
+	return &preparedInitSupervisor{
+		command:    append([]string(nil), command...),
+		binary:     binary,
+		credential: credential,
+		umask:      payloadUmask,
+	}, nil
+}
+
+// RunInitSupervisor runs the same PID-1 supervision path used by ContainerInit.
+// It is exported so process-level tests can exercise signal forwarding and
+// descendant cleanup without constructing a privileged container.
+func RunInitSupervisor(command []string) (int, error) {
+	supervisor, err := prepareInitSupervisor(command)
+	if err != nil {
+		return 0, err
+	}
+	return supervisor.run(os.Environ())
 }
 
 func terminateInitSupervisorChildren() error {
@@ -182,29 +181,9 @@ func drainInitSupervisorProcessGroup(pgid int) error {
 	}
 }
 
-func runContainerInitSupervisor(command []string) (int, error) {
-	if len(command) == 0 || command[0] == "" {
-		return 0, fmt.Errorf("payload command is empty")
-	}
-
-	// PID 1 already adopts orphaned descendants in its PID namespace. Marking it
-	// as a child subreaper makes that contract explicit and also lets deterministic
-	// integration tests exercise the same behavior without creating a PID namespace.
+func (s *preparedInitSupervisor) run(env []string) (int, error) {
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 		return 0, fmt.Errorf("enable child subreaper: %w", err)
-	}
-
-	binary, err := exec.LookPath(command[0])
-	if err != nil {
-		return 0, fmt.Errorf("resolve payload executable %q: %w", command[0], err)
-	}
-	credential, err := payloadCredentialFromRuntimeEnv()
-	if err != nil {
-		return 0, err
-	}
-	payloadUmask, err := payloadUmaskFromRuntimeEnv()
-	if err != nil {
-		return 0, err
 	}
 
 	forwardedSignals := make(chan os.Signal, 16)
@@ -212,15 +191,15 @@ func runContainerInitSupervisor(command []string) (int, error) {
 	defer signal.Stop(forwardedSignals)
 
 	oldUmask := -1
-	if payloadUmask != nil {
-		oldUmask = syscall.Umask(int(*payloadUmask))
+	if s.umask != nil {
+		oldUmask = syscall.Umask(int(*s.umask))
 	}
-	pid, err := syscall.ForkExec(binary, command, &syscall.ProcAttr{
-		Env:   os.Environ(),
+	pid, err := syscall.ForkExec(s.binary, s.command, &syscall.ProcAttr{
+		Env:   env,
 		Files: []uintptr{os.Stdin.Fd(), os.Stdout.Fd(), os.Stderr.Fd()},
 		Sys: &syscall.SysProcAttr{
 			Setpgid:    true,
-			Credential: credential,
+			Credential: s.credential,
 		},
 	})
 	if oldUmask >= 0 {
@@ -242,11 +221,11 @@ func runContainerInitSupervisor(command []string) (int, error) {
 				if sig == nil {
 					continue
 				}
-				s, ok := sig.(syscall.Signal)
+				native, ok := sig.(syscall.Signal)
 				if !ok {
 					continue
 				}
-				if err := syscall.Kill(-pid, s); err != nil && !errors.Is(err, syscall.ESRCH) {
+				if err := syscall.Kill(-pid, native); err != nil && !errors.Is(err, syscall.ESRCH) {
 					select {
 					case forwardingErr <- fmt.Errorf("forward signal %v to payload process group %d: %w", sig, pid, err):
 					default:
@@ -267,7 +246,6 @@ func runContainerInitSupervisor(command []string) (int, error) {
 			return 0, fmt.Errorf("reap child process: %w", err)
 		}
 		if reapedPID != pid {
-			// Reap orphaned descendants and continue supervising the primary payload.
 			continue
 		}
 
