@@ -174,7 +174,7 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		return fmt.Errorf("prepare tmpfs mount policy: %w", err)
 	}
 
-	overlayWorkDir, err := createParentOverlayWorkDir(cfg.Overlay, os.MkdirTemp)
+	overlayWorkDir, err := createParentOverlayWorkDir(true, os.MkdirTemp)
 	if err != nil {
 		return err
 	}
@@ -486,14 +486,28 @@ func ContainerInit(cfg Config) (resultErr error) {
 		fmt.Println("[init] mount namespace propagation set to private")
 	}
 
-	overlayTmp, err := consumeOverlayWorkDir(cfg.Overlay)
+	overlayTmp, err := consumeOverlayWorkDir(true)
 	if err != nil {
-		return fmt.Errorf("runtime overlay workdir: %w", err)
+		return fmt.Errorf("runtime setup workdir: %w", err)
 	}
 
-	targetRootFS := cfg.RootFS
+	// The admitted rootfs descriptor was opened in the parent mount namespace.
+	// Clone it onto a parent-owned staging mountpoint that belongs to this child
+	// namespace before adding /proc, /sys, devices, or volume mounts beneath it.
+	stagedRootFS := filepath.Join(overlayTmp, "rootfs")
+	if err := os.Mkdir(stagedRootFS, 0o700); err != nil {
+		return fmt.Errorf("create staged rootfs mountpoint: %w", err)
+	}
+	if err := syscall.Mount(cfg.RootFS, stagedRootFS, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("attach pinned rootfs to child mount namespace: %w", err)
+	}
+	targetRootFS := stagedRootFS
+	if cfg.Debug {
+		fmt.Printf("[init] pinned rootfs attached at %q\n", targetRootFS)
+	}
+
 	if cfg.Overlay {
-		overlayDirs, err := rootfs.PrepareOverlay(cfg.RootFS, overlayTmp)
+		overlayDirs, err := rootfs.PrepareOverlay(targetRootFS, overlayTmp)
 		if err != nil {
 			return fmt.Errorf("prepare overlay: %w", err)
 		}
@@ -648,6 +662,9 @@ func ContainerInit(cfg Config) (resultErr error) {
 
 	if err := os.Unsetenv(sentinelEnvKey); err != nil {
 		return fmt.Errorf("clear runtime init environment: %w", err)
+	}
+	if err := clearRuntimeControlEnvironment(); err != nil {
+		return fmt.Errorf("isolate runtime control environment: %w", err)
 	}
 	env := os.Environ()
 	if len(cfg.Env) > 0 {
