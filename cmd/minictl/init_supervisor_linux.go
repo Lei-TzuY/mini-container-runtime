@@ -13,11 +13,12 @@ import (
 	"strings"
 	"syscall"
 
+	"minicontainer/internal/container"
+
 	"golang.org/x/sys/unix"
 )
 
 const (
-	initSupervisorArg       = "__minicontainer-init-supervisor"
 	processUIDRuntimeEnv    = "MINICONTAINER_PROCESS_UID"
 	processGIDRuntimeEnv    = "MINICONTAINER_PROCESS_GID"
 	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
@@ -54,7 +55,7 @@ func init() {
 		wrapContainerInitPayload()
 		return
 	}
-	if len(os.Args) >= 2 && os.Args[1] == initSupervisorArg {
+	if len(os.Args) >= 2 && os.Args[1] == container.InitSupervisorArg {
 		code, err := runContainerInitSupervisor(os.Args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "container init supervisor: %v\n", err)
@@ -78,7 +79,7 @@ func wrapContainerInitPayload() {
 	}
 	wrapped := make([]string, 0, len(os.Args)+2)
 	wrapped = append(wrapped, os.Args[:commandStart]...)
-	wrapped = append(wrapped, "/proc/self/exe", initSupervisorArg)
+	wrapped = append(wrapped, "/proc/self/exe", container.InitSupervisorArg)
 	wrapped = append(wrapped, cfg.Command...)
 	os.Args = wrapped
 }
