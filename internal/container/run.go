@@ -494,11 +494,15 @@ func ContainerInit(cfg Config) (resultErr error) {
 	// The admitted rootfs descriptor was opened in the parent mount namespace.
 	// Clone it onto a parent-owned staging mountpoint that belongs to this child
 	// namespace before adding /proc, /sys, devices, or volume mounts beneath it.
+	admittedRootFSPath, err := consumePinnedRootFSPath(cfg.RootFS)
+	if err != nil {
+		return fmt.Errorf("pinned rootfs path: %w", err)
+	}
 	stagedRootFS := filepath.Join(overlayTmp, "rootfs")
 	if err := os.Mkdir(stagedRootFS, 0o700); err != nil {
 		return fmt.Errorf("create staged rootfs mountpoint: %w", err)
 	}
-	if err := attachPinnedRootFS(cfg.RootFS, stagedRootFS); err != nil {
+	if err := attachPinnedRootFS(cfg.RootFS, admittedRootFSPath, stagedRootFS); err != nil {
 		return fmt.Errorf("attach pinned rootfs to child mount namespace: %w", err)
 	}
 	targetRootFS := stagedRootFS
