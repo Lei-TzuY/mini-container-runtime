@@ -57,6 +57,10 @@ func init() {
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == container.InitSupervisorArg {
+		if err := closeInitSupervisorExecutablePath(os.Args[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "container init supervisor: %v\n", err)
+			os.Exit(125)
+		}
 		code, err := runContainerInitSupervisor(os.Args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "container init supervisor: %v\n", err)
@@ -64,6 +68,22 @@ func init() {
 		}
 		os.Exit(code)
 	}
+}
+
+func closeInitSupervisorExecutablePath(path string) error {
+	const prefix = "/proc/self/fd/"
+	if !strings.HasPrefix(path, prefix) {
+		return nil
+	}
+	rawFD := strings.TrimPrefix(path, prefix)
+	fd, err := strconv.Atoi(rawFD)
+	if err != nil || fd <= int(os.Stderr.Fd()) {
+		return fmt.Errorf("invalid pinned supervisor executable path %q", path)
+	}
+	if err := syscall.Close(fd); err != nil {
+		return fmt.Errorf("close pinned supervisor executable fd %d: %w", fd, err)
+	}
+	return nil
 }
 
 func wrapContainerInitPayload() {
