@@ -498,7 +498,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := os.Mkdir(stagedRootFS, 0o700); err != nil {
 		return fmt.Errorf("create staged rootfs mountpoint: %w", err)
 	}
-	if err := syscall.Mount(cfg.RootFS, stagedRootFS, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+	if err := attachPinnedRootFS(cfg.RootFS, stagedRootFS); err != nil {
 		return fmt.Errorf("attach pinned rootfs to child mount namespace: %w", err)
 	}
 	targetRootFS := stagedRootFS
