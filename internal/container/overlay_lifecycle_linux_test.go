@@ -107,14 +107,17 @@ func TestConsumeOverlayWorkDirAcceptsPrivateParentDirectoryAndClearsEnv(t *testi
 	if got != dir {
 		t.Fatalf("got workdir %q, want %q", got, dir)
 	}
-	for _, key := range []string{overlayWorkDirEnv, sentinelEnvKey, "MINICONTAINER_FUTURE_CONTROL"} {
-		if _, ok := os.LookupEnv(key); ok {
-			t.Fatalf("runtime environment %q leaked after consumption", key)
+	if _, ok := os.LookupEnv(overlayWorkDirEnv); ok {
+		t.Fatalf("overlay workdir marker survived consumption")
+	}
+	for _, key := range []string{sentinelEnvKey, "MINICONTAINER_FUTURE_CONTROL"} {
+		if _, ok := os.LookupEnv(key); !ok {
+			t.Fatalf("unrelated runtime marker %q was consumed too early", key)
 		}
 	}
 }
 
-func TestConsumeOverlayWorkDirDisabledStillClearsReservedEnv(t *testing.T) {
+func TestConsumeOverlayWorkDirDisabledConsumesOnlyOwnMarker(t *testing.T) {
 	t.Setenv(overlayWorkDirEnv, "/forged/value")
 	t.Setenv(sentinelEnvKey, "1")
 	got, err := consumeOverlayWorkDir(false)
@@ -124,10 +127,11 @@ func TestConsumeOverlayWorkDirDisabledStillClearsReservedEnv(t *testing.T) {
 	if got != "" {
 		t.Fatalf("disabled consume returned %q", got)
 	}
-	for _, key := range []string{overlayWorkDirEnv, sentinelEnvKey} {
-		if _, ok := os.LookupEnv(key); ok {
-			t.Fatalf("reserved runtime environment %q leaked for non-overlay payload", key)
-		}
+	if _, ok := os.LookupEnv(overlayWorkDirEnv); ok {
+		t.Fatalf("disabled overlay marker survived consumption")
+	}
+	if _, ok := os.LookupEnv(sentinelEnvKey); !ok {
+		t.Fatalf("unrelated init marker was consumed too early")
 	}
 }
 
