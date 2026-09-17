@@ -640,6 +640,9 @@ func ContainerInit(cfg Config) (resultErr error) {
 	// the eventual ForkExec onto an unrestricted OS thread.
 	runtime.LockOSThread()
 
+	if err := applyProcessIOPriorityPolicy(); err != nil {
+		return fmt.Errorf("process io priority: %w", err)
+	}
 	if err := applyNoNewPrivilegesPolicy(); err != nil {
 		return fmt.Errorf("no-new-privileges: %w", err)
 	}
