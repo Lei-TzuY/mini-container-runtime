@@ -326,6 +326,9 @@ func ExecInit(containerPID int, _ string, command []string, debug bool) error {
 	}
 	defer startWriter.Close()
 	runtime.LockOSThread()
+	if err := applyProcessIOPriorityPolicy(); err != nil {
+		return fmt.Errorf("process io priority: %w", err)
+	}
 	if err := prepareExecThread(); err != nil {
 		return err
 	}
