@@ -59,6 +59,7 @@ readlink /proc/self/ns/pid > /evidence/pid.ns
 readlink /proc/self/ns/user > /evidence/user.ns
 readlink /proc/self/ns/cgroup > /evidence/cgroup.ns
 tr '\\000' ' ' < /proc/1/cmdline > /evidence/init.cmdline
+awk '/^PPid:/ {print $2}' /proc/self/status > /evidence/payload.ppid
 grep -Eq '^NoNewPrivs:[[:space:]]*1$' /proc/self/status
 grep -Eq '^Seccomp:[[:space:]]*2$' /proc/self/status
 cg_path="$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)"
@@ -136,7 +137,7 @@ require_file() {
     exit 1
   }
 }
-for name in result mnt.ns pid.ns user.ns cgroup.ns init.cmdline memory.max pids.max; do
+for name in result mnt.ns pid.ns user.ns cgroup.ns init.cmdline payload.ppid memory.max pids.max; do
   require_file "$evidence/$name"
 done
 
@@ -156,8 +157,12 @@ done
   echo "user namespace was not isolated" >&2
   exit 1
 }
-grep -q '__minicontainer-init-supervisor' "$evidence/init.cmdline" || {
-  echo "PID 1 was not the minictl init supervisor" >&2
+grep -q 'minictl' "$evidence/init.cmdline" || {
+  echo "PID 1 was not the minictl runtime" >&2
+  exit 1
+}
+[[ "$(<"$evidence/payload.ppid")" == "1" ]] || {
+  echo "payload was not supervised directly by PID 1: PPid=$(<"$evidence/payload.ppid")" >&2
   exit 1
 }
 [[ "$(<"$evidence/memory.max")" == "134217728" ]] || {
