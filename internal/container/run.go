@@ -450,14 +450,6 @@ func ContainerInit(cfg Config) (resultErr error) {
 	}
 	defer func() { initStatus.finish(resultErr) }()
 
-	supervisorExecutable, err := pinInitSupervisorExecutable(cfg.Command)
-	if err != nil {
-		return err
-	}
-	if supervisorExecutable != nil {
-		defer supervisorExecutable.Close()
-	}
-
 	runtimeHostsFile, err := runtimeHostsFileFromFD(cfg.BridgeNetwork)
 	if err != nil {
 		return fmt.Errorf("open runtime hosts file: %w", err)
@@ -653,22 +645,12 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
-	binary := ""
-	if supervisorExecutable != nil {
-		binary, err = initSupervisorExecutablePath(supervisorExecutable)
-		if err != nil {
-			return err
-		}
-		cfg.Command[0] = binary
-	} else {
-		binary, err = exec.LookPath(cfg.Command[0])
-		if err != nil {
-			binary = cfg.Command[0]
-		}
+	supervisor, err := prepareInitSupervisor(cfg.Command)
+	if err != nil {
+		return fmt.Errorf("prepare init supervisor: %w", err)
 	}
-
 	if cfg.Debug {
-		fmt.Printf("[init] exec: %s %v\n", binary, cfg.Command[1:])
+		fmt.Printf("[init] supervise: %s %v\n", supervisor.binary, supervisor.command[1:])
 	}
 
 	if err := os.Unsetenv(sentinelEnvKey); err != nil {
@@ -685,8 +667,12 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err := initStatus.readyForExec(); err != nil {
 		return err
 	}
-	if err := syscall.Exec(binary, cfg.Command, env); err != nil {
-		return fmt.Errorf("exec %s: %w", binary, err)
+	exitCode, err := supervisor.run(env)
+	if err != nil {
+		return fmt.Errorf("supervise payload: %w", err)
+	}
+	if exitCode != 0 {
+		return &PayloadExitError{Code: exitCode}
 	}
 
 	return nil
