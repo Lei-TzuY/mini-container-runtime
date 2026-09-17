@@ -175,19 +175,17 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		return fmt.Errorf("prepare tmpfs mount policy: %w", err)
 	}
 
-	overlayWorkDir, err := createParentOverlayWorkDir(true, os.MkdirTemp)
+	runtimeWorkDir, err := createParentRuntimeWorkDir(os.MkdirTemp)
 	if err != nil {
 		return err
 	}
-	if overlayWorkDir != "" {
-		cmd.Env = appendOverlayWorkDirEnv(cmd.Env, overlayWorkDir)
-		defer func() {
-			resultErr = finishOverlayWorkDir(resultErr, overlayWorkDir, os.RemoveAll)
-			if cfg.Debug && resultErr == nil {
-				fmt.Println("[parent] container exited cleanly")
-			}
-		}()
-	}
+	cmd.Env = appendRuntimeWorkDirEnv(cmd.Env, runtimeWorkDir)
+	defer func() {
+		resultErr = finishRuntimeWorkDir(resultErr, runtimeWorkDir, os.RemoveAll)
+		if cfg.Debug && resultErr == nil {
+			fmt.Println("[parent] container exited cleanly")
+		}
+	}()
 
 	runtimeHostsFile, err := createRuntimeHostsFile(cfg.BridgeNetwork)
 	if err != nil {
@@ -414,9 +412,6 @@ func runOnce(cfg Config, lifecycleStore *state.Store) (resultErr error) {
 		return resultErr
 	}
 
-	if cfg.Debug && overlayWorkDir == "" {
-		fmt.Println("[parent] container exited cleanly")
-	}
 	return nil
 }
 
@@ -487,7 +482,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 		fmt.Println("[init] mount namespace propagation set to private")
 	}
 
-	overlayTmp, err := consumeOverlayWorkDir(true)
+	runtimeTmp, err := consumeRuntimeWorkDir()
 	if err != nil {
 		return fmt.Errorf("runtime setup workdir: %w", err)
 	}
@@ -499,7 +494,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 	if err != nil {
 		return fmt.Errorf("pinned rootfs path: %w", err)
 	}
-	stagedRootFS := filepath.Join(overlayTmp, "rootfs")
+	stagedRootFS := filepath.Join(runtimeTmp, "rootfs")
 	if err := os.Mkdir(stagedRootFS, 0o700); err != nil {
 		return fmt.Errorf("create staged rootfs mountpoint: %w", err)
 	}
@@ -512,7 +507,7 @@ func ContainerInit(cfg Config) (resultErr error) {
 	}
 
 	if cfg.Overlay {
-		overlayDirs, err := rootfs.PrepareOverlay(targetRootFS, overlayTmp)
+		overlayDirs, err := rootfs.PrepareOverlay(targetRootFS, runtimeTmp)
 		if err != nil {
 			return fmt.Errorf("prepare overlay: %w", err)
 		}
