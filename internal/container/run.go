@@ -565,6 +565,10 @@ func ContainerInit(cfg Config) (resultErr error) {
 		}
 	}
 
+	if err := mountCgroupV2View(targetRootFS, resourceLimitsRequested(cfg) || cfg.CgroupNS, cfg.Debug); err != nil {
+		return fmt.Errorf("cgroup v2 view: %w", err)
+	}
+
 	devPath := filepath.Join(targetRootFS, "dev")
 	if err := os.MkdirAll(devPath, 0755); err != nil {
 		return fmt.Errorf("mkdir dev: %w", err)
