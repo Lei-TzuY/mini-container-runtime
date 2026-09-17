@@ -4,33 +4,72 @@ package container
 
 import (
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
 
-// attachPinnedRootFS clones the admitted rootfs mount referenced by source and
-// attaches that clone to a directory in the container's mount namespace.
+func consumePinnedRootFSPath(fallback string) (string, error) {
+	path, present := os.LookupEnv(pinnedRootFSPathEnvKey)
+	if !present {
+		return fallback, nil
+	}
+	if err := os.Unsetenv(pinnedRootFSPathEnvKey); err != nil {
+		return "", fmt.Errorf("clear pinned rootfs path environment: %w", err)
+	}
+	if path == "" {
+		return "", fmt.Errorf("pinned rootfs path marker is empty")
+	}
+	return path, nil
+}
+
+// attachPinnedRootFS reopens the admitted pathname from inside the child's
+// mount namespace, proves that it still names the directory pinned by the
+// parent, then clones and attaches that child-local mount tree.
 //
-// The source descriptor is inherited from the parent namespace. Legacy
-// mount(MS_BIND) cannot attach a mount reached through that foreign mount
-// object. open_tree(2) creates a detached clone and move_mount(2) attaches it
-// through an already-open target directory, preserving both the pinned-inode
-// TOCTOU boundary and the child mount-namespace boundary.
-func attachPinnedRootFS(source, target string) error {
-	if source == "" || target == "" {
-		return fmt.Errorf("rootfs source and target must be non-empty")
+// A descriptor inherited from the parent retains the parent's mount object and
+// cannot itself be used as a mount target/source in the child's namespace.
+// Reopening without the identity comparison would reintroduce a pathname
+// replacement race; comparing the already-open objects before open_tree keeps
+// the operation fail-closed.
+func attachPinnedRootFS(pinnedSource, admittedPath, target string) error {
+	if pinnedSource == "" || admittedPath == "" || target == "" {
+		return fmt.Errorf("rootfs pinned source, admitted path, and target must be non-empty")
 	}
 
-	sourceFD, err := unix.Open(source, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	pinnedFD, err := unix.Open(pinnedSource, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return fmt.Errorf("open pinned rootfs: %w", err)
+		return fmt.Errorf("open inherited pinned rootfs: %w", err)
 	}
-	defer unix.Close(sourceFD)
+	defer unix.Close(pinnedFD)
+
+	currentFD, err := unix.Open(admittedPath, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("reopen admitted rootfs in child namespace: %w", err)
+	}
+	defer unix.Close(currentFD)
+
+	var pinnedStat, currentStat unix.Stat_t
+	if err := unix.Fstat(pinnedFD, &pinnedStat); err != nil {
+		return fmt.Errorf("stat inherited pinned rootfs: %w", err)
+	}
+	if err := unix.Fstat(currentFD, &currentStat); err != nil {
+		return fmt.Errorf("stat child-local admitted rootfs: %w", err)
+	}
+	if pinnedStat.Dev != currentStat.Dev || pinnedStat.Ino != currentStat.Ino {
+		return fmt.Errorf(
+			"admitted rootfs identity changed before child mount attachment: pinned dev=%d ino=%d, current dev=%d ino=%d",
+			pinnedStat.Dev,
+			pinnedStat.Ino,
+			currentStat.Dev,
+			currentStat.Ino,
+		)
+	}
 
 	treeFlags := uint(unix.OPEN_TREE_CLONE | unix.AT_EMPTY_PATH | unix.O_CLOEXEC)
-	treeFD, err := unix.OpenTree(sourceFD, "", treeFlags)
+	treeFD, err := unix.OpenTree(currentFD, "", treeFlags)
 	if err != nil {
-		return fmt.Errorf("clone pinned rootfs mount: %w", err)
+		return fmt.Errorf("clone child-local rootfs mount: %w", err)
 	}
 	defer unix.Close(treeFD)
 
