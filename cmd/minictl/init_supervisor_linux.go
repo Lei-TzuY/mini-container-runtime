@@ -19,6 +19,7 @@ import (
 )
 
 const (
+	initSupervisorArg       = container.InitSupervisorArg
 	processUIDRuntimeEnv    = "MINICONTAINER_PROCESS_UID"
 	processGIDRuntimeEnv    = "MINICONTAINER_PROCESS_GID"
 	processGroupsRuntimeEnv = "MINICONTAINER_PROCESS_GROUPS"
