@@ -106,10 +106,10 @@ func UpdateContainerResources(st *state.Store, containerID string, cfg cgroups.U
 	return err
 }
 
-// UpdateContainerResourcesResolved applies resource changes only while the
-// exact persisted process generation remains alive and returns that canonical
-// snapshot on success. The state generation lock serializes the multi-file
-// cgroup transaction against concurrent updates and lifecycle transitions.
+// UpdateContainerResourcesResolved applies resource changes while the exact
+// persisted process generation remains alive and commits the same requested
+// limits to the durable restart spec before releasing generation serialization.
+// A later restart therefore cannot silently restore stale pre-update limits.
 func UpdateContainerResourcesResolved(
 	st *state.Store,
 	containerID string,
@@ -122,14 +122,29 @@ func UpdateContainerResourcesResolved(
 	}
 	defer handle.Close()
 
-	err = st.WithRunningGenerationLocked(c.ID, c.PID, c.PIDStartTime, func() error {
+	err = st.UpdateRunningRestartSpec(c.ID, c.PID, c.PIDStartTime, func(spec *state.RestartSpec) error {
 		if err := requireCgroupControlGenerationAlive(handle, c, "update", "before"); err != nil {
 			return err
 		}
 		if err := cgroups.UpdateLimits(cgroupName, cfg, debug); err != nil {
 			return fmt.Errorf("update container cgroup: %w", err)
 		}
-		return requireCgroupControlGenerationAlive(handle, c, "update", "after")
+		if err := requireCgroupControlGenerationAlive(handle, c, "update", "after"); err != nil {
+			return err
+		}
+		if cfg.MemoryMax > 0 {
+			spec.Memory = cfg.MemoryMax
+		}
+		if cfg.CPUs > 0 {
+			spec.CPUs = cfg.CPUs
+		}
+		if cfg.CPUWeight > 0 {
+			spec.CPUWeight = cfg.CPUWeight
+		}
+		if cfg.PidsMax > 0 {
+			spec.PidsLimit = cfg.PidsMax
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
