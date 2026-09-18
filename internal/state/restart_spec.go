@@ -149,3 +149,72 @@ func cloneRestartTmpfsMounts(mounts []RestartTmpfsMount) []RestartTmpfsMount {
 	}
 	return cloned
 }
+
+// UpdateRunningRestartSpec serializes a live kernel mutation with the durable
+// restart policy for the same process generation. The callback runs while the
+// store and cross-process state locks are held; it must not call Store methods.
+// Its spec mutations are committed only after the live operation succeeds.
+func (s *Store) UpdateRunningRestartSpec(
+	id string,
+	pid int,
+	pidStartTime uint64,
+	update func(*RestartSpec) error,
+) (resultErr error) {
+	if s == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	if pid <= 0 || pidStartTime == 0 {
+		return fmt.Errorf("container %s has invalid process generation %d/%d", id, pid, pidStartTime)
+	}
+	if update == nil {
+		return fmt.Errorf("restart spec update callback is nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lockFile == nil {
+		return ErrStoreClosed
+	}
+	if err := lockStateFile(s.lockFile); err != nil {
+		return err
+	}
+	defer func() {
+		if err := unlockStateFile(s.lockFile); err != nil && resultErr == nil {
+			resultErr = err
+		}
+	}()
+
+	current, err := s.getUnlocked(id)
+	if err != nil {
+		return fmt.Errorf("load current container %s under restart update lock: %w", id, err)
+	}
+	if current.Status != StatusRunning || current.PID != pid || current.PIDStartTime != pidStartTime {
+		return fmt.Errorf("container %s running generation changed: expected %d/%d, found status=%s generation=%d/%d", id, pid, pidStartTime, current.Status, current.PID, current.PIDStartTime)
+	}
+
+	data, err := readRegularStateFile(restartSpecPath(s.ctrDir, id), "container restart spec")
+	if err != nil {
+		return fmt.Errorf("read restart spec for live update: %w", err)
+	}
+	var spec RestartSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return fmt.Errorf("unmarshal restart spec for live update: %w", err)
+	}
+	if spec.RootFS == "" || len(spec.Command) == 0 {
+		return fmt.Errorf("container %s restart spec is incomplete", id)
+	}
+	if err := update(&spec); err != nil {
+		return err
+	}
+	data, err = json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal updated restart spec: %w", err)
+	}
+	if err := atomicWriteFile(s.ctrDir, restartSpecPath(s.ctrDir, id), data); err != nil {
+		return fmt.Errorf("persist updated restart spec: %w", err)
+	}
+	return nil
+}
